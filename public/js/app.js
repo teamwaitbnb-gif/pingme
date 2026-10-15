@@ -259,6 +259,18 @@ function connectSocket() {
     wasConnected = true;
   });
   socket.on('connect_error', (e) => { if (e.message === 'unauthorized') { S.me = null; showAuth(); } });
+  // After a redeploy, two copies of the server can briefly run side by side. If this phone is still on
+  // the old copy, reconnect so calls and messages reach everyone (never in the middle of a call).
+  socket.on('hello', ({ instance }) => { S.instance = instance; });
+  const checkInstance = async () => {
+    if (!S.instance || S.calls?.active() || document.hidden) return;
+    try {
+      const cfg = await api('GET', '/api/config');
+      if (cfg.instance && cfg.instance !== S.instance) { socket.disconnect(); socket.connect(); }
+    } catch {}
+  };
+  setInterval(checkInstance, 60000);
+  document.addEventListener('visibilitychange', checkInstance);
   socket.on('msg:new', onNewMessage);
   socket.on('msg:update', (m) => { upsertMessage(m); updateChatPreview(m.chatId, m); });
   socket.on('msg:remove', ({ chatId, id }) => {

@@ -14,6 +14,8 @@ const U = require('./usernames');
 const PORT = Number(process.env.PORT || 8080);
 const MAX_UPLOAD = 45 * 1024 * 1024; // DB max_allowed_packet is 64MB
 const COOKIE = 'mm_sess';
+// Identifies this running copy of the server (changes on every deploy).
+const INSTANCE_ID = (process.env.K_REVISION || 'local') + '-' + require('crypto').randomBytes(4).toString('hex');
 const REACTION_MAX = 16;
 const DEFAULT_SETTINGS = { readReceipts: true, typing: true, lastSeen: true, previews: true };
 // Advanced features each person can switch on/off (first-run setup + Settings → Features).
@@ -1082,6 +1084,7 @@ app.get('/api/config', (req, res) => {
     });
   }
   res.json({
+    instance: INSTANCE_ID,
     iceServers: ice,
     vapidPublicKey: push.enabled ? process.env.VAPID_PUBLIC_KEY : null,
     maxUpload: MAX_UPLOAD,
@@ -1542,6 +1545,7 @@ const sockHandler = (socket, fn) => async (data, ack) => {
 io.on('connection', (socket) => {
   const uid = socket.uid;
   socket.join('u:' + uid);
+  socket.emit('hello', { instance: INSTANCE_ID });
   const first = !online.has(uid);
   if (first) online.set(uid, new Set());
   online.get(uid).add(socket);
@@ -1749,7 +1753,11 @@ function callInvite(call) {
 }
 
 function userInCall(userId) {
-  for (const c of calls.values()) for (const p of c.participants.values()) if (p.userId === userId) return c;
+  for (const c of calls.values()) {
+    for (const [sid, p] of c.participants) {
+      if (p.userId === userId && io.sockets.sockets.get(sid)?.connected) return c;
+    }
+  }
   return null;
 }
 
@@ -1963,6 +1971,8 @@ db.init().then(async () => {
     throw e;
   });
   server.listen(PORT, () => console.log(`Ping Me running on http://localhost:${PORT}`));
+  // On redeploy Cloud Run stops the old copy: disconnect everyone cleanly so phones reconnect to the new one.
+  process.on('SIGTERM', () => { io.disconnectSockets(true); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); });
 }).catch((e) => {
   console.error('Database connection failed:', e.message);
   process.exit(1);

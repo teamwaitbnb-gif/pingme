@@ -9,6 +9,8 @@ const INFO = {
   geolocation: { icon: 'map', label: 'location' },
 };
 
+export async function permissionState(name) { return state(name); }
+
 async function state(name) {
   try { return (await navigator.permissions.query({ name })).state; } catch { return 'prompt'; }
 }

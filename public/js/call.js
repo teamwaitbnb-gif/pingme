@@ -12,7 +12,7 @@ import { h, icon, avatar, toast, actionSheet, promptDialog, fmtDur, isIOS, isMob
 import { sounds } from './media.js';
 import { feature, api } from './core.js';
 import { sign, verify, rememberKey } from './keys.js';
-import { ensurePermission } from './perm.js';
+import { ensurePermission, permissionState } from './perm.js';
 
 const fingerprint = (sdp) => (/a=fingerprint:\S+ ([0-9A-F:]+)/i.exec(sdp || '') || [])[1] || '';
 
@@ -141,7 +141,13 @@ export function initCalls(ctx) {
 
   // ───────── session lifecycle ─────────
 
+  // A call object without a live screen is a leftover (e.g. the connection dropped mid-call). Clear it.
+  function dropStaleCall() {
+    if (call && (!call.ui || !call.ui.root.isConnected)) { const c = call; call = null; try { c.stream?.getTracks().forEach((t) => t.stop()); } catch {} }
+  }
+
   async function start(chatId, video, { reason = '' } = {}) {
+    dropStaleCall();
     if (call) { toast('You are already in a call'); restore(); return; }
     if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) return toast('Calls are not supported in this browser', { error: true });
     if (!(await ensurePermission(video ? ['camera', 'microphone'] : ['microphone'], video ? 'So the person you call can see and hear you.' : 'So the person you call can hear you.'))) return;
@@ -149,8 +155,12 @@ export function initCalls(ctx) {
     try { stream = await getMedia({ video }); } catch (e) { return toast(mediaError(e), { error: true, timeout: 6000 }); }
     call = newSession({ chatId, video, stream, outgoing: true });
     buildUI();
+    const mine = call;
+    // If the server never answers (connection dropped), don't leave a half-started call around.
+    const startTimeout = setTimeout(() => { if (call === mine && !call.id) { toast('Couldn’t start the call — check your connection', { error: true }); cleanup(); } }, 15000);
     socket.emit('call:start', { chatId, video, reason }, async (res) => {
-      if (!call) return;
+      clearTimeout(startTimeout);
+      if (!call || call !== mine) return;
       if (!res?.ok) { toast(res?.error || 'Call failed', { error: true }); return cleanup(); }
       if (res.needReason) {
         // "Reason to call": they haven't chatted with you yet, so they'll see why you're calling first.
@@ -203,14 +213,22 @@ export function initCalls(ctx) {
     const inv = incoming?.invite;
     closeIncoming();
     if (!inv) return;
+    if (video && (await permissionState('camera')) === 'denied') { video = false; toast('Camera is blocked — answering with audio'); }
     if (!(await ensurePermission(video ? ['camera', 'microphone'] : ['microphone'], video ? 'So they can see and hear you.' : 'So they can hear you.'))) {
       socket.emit('call:decline', { callId: inv.callId });
       return;
     }
-    let stream;
+    let stream, mediaErr = null;
     try { stream = await getMedia({ video }); } catch (e) {
+      mediaErr = e;
+      // Camera refused? Still answer — with audio only.
+      if (video && e?.name === 'NotAllowedError') {
+        try { stream = await getMedia({ video: false }); toast('Answering with audio — camera access is off'); } catch (e2) { mediaErr = e2; }
+      }
+    }
+    if (!stream) {
       socket.emit('call:decline', { callId: inv.callId });
-      return toast(mediaError(e), { error: true, timeout: 6000 });
+      return toast(mediaError(mediaErr), { error: true, timeout: 6000 });
     }
     call = newSession({ chatId: inv.chatId, video: inv.video, stream, outgoing: false });
     call.id = inv.callId;
@@ -940,6 +958,7 @@ export function initCalls(ctx) {
   // ───────── incoming ─────────
 
   function showIncoming(inv) {
+    dropStaleCall();
     if (call) {
       if (call.id === inv.callId) return;
       socket.emit('call:decline', { callId: inv.callId, busy: true });
@@ -1040,7 +1059,16 @@ export function initCalls(ctx) {
       }
     } catch (e) { console.warn('signal error', e); }
   });
-  socket.on('disconnect', () => { if (call && call.state !== 'active') { toast('Connection lost', { error: true }); cleanup(); } });
+  socket.on('disconnect', () => {
+    if (!call) return;
+    if (call.state !== 'active') { toast('Connection lost', { error: true }); cleanup(); return; }
+    call.lostAt = Date.now();
+  });
+  // The server ends a call when this phone's connection drops; after reconnecting, clear it locally
+  // so we're never stuck as "busy" (which auto-declined the next incoming call).
+  socket.on('connect', () => {
+    if (call?.lostAt) { toast('Call ended — the connection dropped', { error: true }); cleanup(); }
+  });
 
   return {
     start,
