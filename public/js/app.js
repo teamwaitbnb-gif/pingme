@@ -18,6 +18,7 @@ import { lockEnabled, showLock, isHidden } from './lock.js';
 import { secureText, openEyesOnly } from './secure.js';
 import { scanScam, detectPromise, INTENTS } from './smart.js';
 import { verifyPhoto } from './keys.js';
+import { ensurePermission } from './perm.js';
 
 const app = document.getElementById('app');
 const TAPBACKS = ['❤️', '👍', '👎', '😂', '‼️', '❓'];
@@ -31,11 +32,22 @@ if (window.visualViewport) {
     app.style.height = vv.height + 'px';
     app.style.bottom = 'auto';
     app.style.transform = vv.offsetTop ? `translateY(${vv.offsetTop}px)` : '';
+    // Keyboard open → no home-indicator padding under the composer (removes the gap above the keyboard).
+    document.documentElement.classList.toggle('kb-open', window.innerHeight - vv.height > 120);
     if (conv.nearBottom) scrollToBottom();
   };
   vv.addEventListener('resize', fit);
   vv.addEventListener('scroll', fit);
 }
+
+// Keep the app pinned like a native app: no page rubber-banding, no pinch / double-tap zoom.
+// Only real scroll areas (lists, chats, sheets) move.
+const SCROLLERS = '.msgs, .sb-list, .sheet-body, .onboard-in, .actions .grp, .ctx .menu, .tray, .people-row, .story-strip, .emoji-grid, .eo-content, textarea, .tabs, .chips, .opts-bar, .sugg-row, .stats, .gate, .auth, .vb, .st-text, .lockscreen, .wrapped';
+document.addEventListener('touchmove', (e) => {
+  if (e.touches.length > 1) { if (!e.target.closest('.vb')) e.preventDefault(); return; }
+  if (!e.target.closest(SCROLLERS)) e.preventDefault();
+}, { passive: false });
+['gesturestart', 'gesturechange'].forEach((ev) => document.addEventListener(ev, (e) => { if (!e.target.closest?.('.vb')) e.preventDefault(); }, { passive: false }));
 
 // ═══════════════════════════ boot ═══════════════════════════
 
@@ -57,7 +69,8 @@ async function boot() {
     } catch {}
   }
   if (authError || linked || m) history.replaceState(null, '', '/');
-  const needGate = !isStandalone() && !sessionStorage.getItem('mm:gate-skip') && !signup && !authError;
+  // Never nag people who already installed Ping Me (or opened it from a home-screen shortcut).
+  const needGate = !isStandalone() && !store.get('installed', false) && !sessionStorage.getItem('mm:gate-skip') && !signup && !authError;
   if (needGate) await showInstallGate();
   if (signup?.ticket) return showChooseUsername(signup);
   let me = null;
@@ -95,7 +108,7 @@ export function showInstallGate({ force = false } = {}) {
     } else {
       steps = [
         h('div', { class: 'step' }, h('span', { class: 'n' }, '1'), h('span', null, 'Tap the ', icon('dotsv'), ' menu in your browser')),
-        h('div', { class: 'step' }, h('span', { class: 'n' }, '2'), h('span', null, 'Tap ', h('b', null, android ? 'Install app' : 'Install Ping Me'), ' or ', h('b', null, 'Add to Home screen'))),
+        h('div', { class: 'step' }, h('span', { class: 'n' }, '2'), h('span', null, 'Tap ', h('b', null, android ? 'Install app' : 'Install Ping Me'), android ? ' — if asked, choose ' : '', android ? h('b', null, 'Install') : null, android ? ' (not “Create shortcut”)' : '')),
         h('div', { class: 'step' }, h('span', { class: 'n' }, '3'), h('span', null, 'Open ', h('b', null, 'Ping Me'), ' from your home screen')),
       ];
     }
@@ -104,7 +117,7 @@ export function showInstallGate({ force = false } = {}) {
       deferredInstall.prompt();
       const { outcome } = await deferredInstall.userChoice.catch(() => ({}));
       deferredInstall = null;
-      if (outcome === 'accepted') { toast('Ping Me installed! Open it from your home screen.'); done(); }
+      if (outcome === 'accepted') { store.set('installed', true); toast('Ping Me installed! Open it from your home screen.'); done(); }
     } }, icon('download'), 'Install Ping Me');
     const gate = h('div', { class: 'gate' },
       h('img', { class: 'app-icon', src: '/icons/icon-512.png', alt: 'Ping Me' }),
@@ -117,7 +130,7 @@ export function showInstallGate({ force = false } = {}) {
       iosSafari ? h('div', { class: 'arrow' }, icon('down')) : null);
     if (!deferredInstall) installBtn.hidden = true;
     addEventListener('beforeinstallprompt', () => { installBtn.hidden = false; }, { once: true });
-    addEventListener('appinstalled', () => { toast('Ping Me installed!'); done(); }, { once: true });
+    addEventListener('appinstalled', () => { store.set('installed', true); toast('Ping Me installed!'); done(); }, { once: true });
     document.body.append(gate);
   });
 }
@@ -1637,6 +1650,7 @@ export function sendPayload(chatId, payload) {
 
 async function startRecording() {
   const chatId = S.current;
+  if (!(await ensurePermission(['microphone'], 'To record voice messages.'))) return;
   const lvl = h('div', { class: 'lvl' });
   const t = h('span', { class: 't' }, '0:00');
   let rec;

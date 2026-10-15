@@ -12,6 +12,7 @@ import { h, icon, avatar, toast, actionSheet, promptDialog, fmtDur, isIOS, isMob
 import { sounds } from './media.js';
 import { feature, api } from './core.js';
 import { sign, verify, rememberKey } from './keys.js';
+import { ensurePermission } from './perm.js';
 
 const fingerprint = (sdp) => (/a=fingerprint:\S+ ([0-9A-F:]+)/i.exec(sdp || '') || [])[1] || '';
 
@@ -107,12 +108,18 @@ export function initCalls(ctx) {
 
   // ───────── local media ─────────
 
+  // Phones held upright capture portrait video; asking for landscape there made the other side look zoomed in.
+  function captureSize(p) {
+    const portrait = isMobile() && matchMedia('(orientation: portrait)').matches;
+    return portrait ? { width: { ideal: p.h }, height: { ideal: p.w } } : { width: { ideal: p.w }, height: { ideal: p.h } };
+  }
+
   async function getMedia({ audio = true, video = false, facing = 'user' }) {
     const p = profile();
     const ns = store.get('noiseSuppression', true);
     const constraints = {
       audio: audio ? { echoCancellation: true, noiseSuppression: ns, autoGainControl: true, channelCount: { ideal: 1 }, sampleRate: { ideal: 48000 } } : false,
-      video: video ? { width: { ideal: p.w }, height: { ideal: p.h }, frameRate: { ideal: p.fps, max: p.fps }, facingMode: { ideal: facing }, aspectRatio: { ideal: 16 / 9 } } : false,
+      video: video ? { ...captureSize(p), frameRate: { ideal: p.fps, max: p.fps }, facingMode: { ideal: facing } } : false,
     };
     try {
       return await navigator.mediaDevices.getUserMedia(constraints);
@@ -137,6 +144,7 @@ export function initCalls(ctx) {
   async function start(chatId, video, { reason = '' } = {}) {
     if (call) { toast('You are already in a call'); restore(); return; }
     if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) return toast('Calls are not supported in this browser', { error: true });
+    if (!(await ensurePermission(video ? ['camera', 'microphone'] : ['microphone'], video ? 'So the person you call can see and hear you.' : 'So the person you call can hear you.'))) return;
     let stream;
     try { stream = await getMedia({ video }); } catch (e) { return toast(mediaError(e), { error: true, timeout: 6000 }); }
     call = newSession({ chatId, video, stream, outgoing: true });
@@ -195,6 +203,10 @@ export function initCalls(ctx) {
     const inv = incoming?.invite;
     closeIncoming();
     if (!inv) return;
+    if (!(await ensurePermission(video ? ['camera', 'microphone'] : ['microphone'], video ? 'So they can see and hear you.' : 'So they can hear you.'))) {
+      socket.emit('call:decline', { callId: inv.callId });
+      return;
+    }
     let stream;
     try { stream = await getMedia({ video }); } catch (e) {
       socket.emit('call:decline', { callId: inv.callId });
@@ -557,6 +569,7 @@ export function initCalls(ctx) {
       call.videoOn = false;
       if (!call.screen) await replaceTrack('video', null);
     } else {
+      if (!(await ensurePermission(['camera'], 'So the people on this call can see you.'))) return;
       try {
         const s = await getMedia({ audio: false, video: true, facing: call.facing });
         const t = s.getVideoTracks()[0];
@@ -633,7 +646,7 @@ export function initCalls(ctx) {
         store.set('callQuality', q);
         const p = profile();
         const t = call.stream.getVideoTracks()[0];
-        if (t) { try { await t.applyConstraints({ width: { ideal: p.w }, height: { ideal: p.h }, frameRate: { ideal: p.fps, max: p.fps } }); } catch {} }
+        if (t) { try { await t.applyConstraints({ ...captureSize(p), frameRate: { ideal: p.fps, max: p.fps } }); } catch {} }
         tuneSenders();
         toast(`Quality set to ${q === 'auto' ? 'Auto' : p.label}`);
       }
@@ -741,7 +754,22 @@ export function initCalls(ctx) {
     peer.tile.addEventListener('dblclick', () => peer.tile.classList.toggle('contain'));
   }
 
+  // Fill the tile when the video's shape matches it; otherwise show the whole picture (no heavy crop).
+  function fitVideo(peer) {
+    const v = peer.videoEl, t = peer.tile;
+    if (!v?.videoWidth || !t) return;
+    const videoPortrait = v.videoHeight > v.videoWidth;
+    const tilePortrait = t.clientHeight > t.clientWidth;
+    t.classList.toggle('contain', !!peer.media.screen || videoPortrait !== tilePortrait);
+  }
+
   function attachRemote(peer) {
+    if (!peer.fitBound) {
+      peer.fitBound = true;
+      peer.videoEl.addEventListener('loadedmetadata', () => fitVideo(peer));
+      peer.videoEl.addEventListener('resize', () => fitVideo(peer));
+      addEventListener('resize', () => fitVideo(peer));
+    }
     if (peer.videoEl.srcObject !== peer.stream) peer.videoEl.srcObject = peer.stream;
     peer.videoEl.play().catch(() => {});
     renderTile(peer);

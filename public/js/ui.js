@@ -415,7 +415,17 @@ export function longPress(el, fn, ms = 420) {
 export const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 export const isAndroid = () => /Android/i.test(navigator.userAgent);
 export const isMobile = () => isIOS() || isAndroid() || matchMedia('(pointer: coarse)').matches;
-export const isStandalone = () => matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+// Launched from the home screen? Covers installed apps (standalone/fullscreen/minimal-ui), iOS,
+// Android TWA, and plain home-screen shortcuts (which open start_url with ?source=homescreen).
+export const isStandalone = () =>
+  ['standalone', 'fullscreen', 'minimal-ui', 'window-controls-overlay'].some((m) => matchMedia(`(display-mode: ${m})`).matches)
+  || navigator.standalone === true
+  || document.referrer.startsWith('android-app://')
+  || new URLSearchParams(location.search).get('source') === 'homescreen'
+  || sessionStorage.getItem('pm:homescreen') === '1';
+// Remember a home-screen launch for the rest of this session (the URL is cleaned up later).
+if (new URLSearchParams(location.search).get('source') === 'homescreen') { try { sessionStorage.setItem('pm:homescreen', '1'); localStorage.setItem('mm:installed', 'true'); } catch {} }
+if (matchMedia('(display-mode: standalone)').matches || navigator.standalone === true) { try { localStorage.setItem('mm:installed', 'true'); } catch {} }
 
 export const store = {
   get(k, d = null) { try { const v = localStorage.getItem('mm:' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },

@@ -1,4 +1,5 @@
-// Media helpers: image compression, video metadata, voice notes, screen effects.
+// Media helpers: image compression, video metadata, voice notes, screen effects, photo cropper.
+import { h, openSheet } from './ui.js';
 
 // ───── images ─────
 // Re-encode photos on-device before upload: max 2560px long edge, high quality.
@@ -64,6 +65,77 @@ export async function avatarDataUrl(file) {
   c.width = c.height = 384;
   c.getContext('2d').drawImage(bmp, (bmp.width - s) / 2, (bmp.height - s) / 2, s, s, 0, 0, 384, 384);
   return c.toDataURL(webpEncode ? 'image/webp' : 'image/jpeg', 0.85);
+}
+
+// ───── profile / group photo cropper ─────
+// Drag to position, pinch / scroll / slider to zoom, inside a circle. Returns a 512×512 data URL.
+export async function cropImage(file, { title = 'Move and scale' } = {}) {
+  let bmp;
+  try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
+  catch { try { bmp = await loadImg(file); } catch { return null; } }
+  const iw = bmp.width, ih = bmp.height;
+  const SIZE = 280;
+  const canvas = h('canvas', { class: 'crop-canvas', width: SIZE * 2, height: SIZE * 2 });
+  canvas.style.width = canvas.style.height = SIZE + 'px';
+  const ctx = canvas.getContext('2d');
+  const minScale = SIZE / Math.min(iw, ih);
+  let scale = minScale, x = (SIZE - iw * scale) / 2, y = (SIZE - ih * scale) / 2;
+  const clamp = () => {
+    x = Math.min(0, Math.max(SIZE - iw * scale, x));
+    y = Math.min(0, Math.max(SIZE - ih * scale, y));
+  };
+  const draw = () => {
+    clamp();
+    ctx.setTransform(2, 0, 0, 2, 0, 0);
+    ctx.clearRect(0, 0, SIZE, SIZE);
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(bmp, x, y, iw * scale, ih * scale);
+  };
+  const zoomTo = (ns, cx = SIZE / 2, cy = SIZE / 2) => {
+    ns = Math.min(minScale * 5, Math.max(minScale, ns));
+    x = cx - ((cx - x) / scale) * ns;
+    y = cy - ((cy - y) / scale) * ns;
+    scale = ns; draw();
+    slider.value = String(scale / minScale);
+  };
+  const slider = h('input', { type: 'range', min: '1', max: '5', step: '0.01', value: '1', class: 'crop-zoom', 'aria-label': 'Zoom' });
+  slider.oninput = () => zoomTo(minScale * Number(slider.value));
+  // drag + pinch
+  const pts = new Map();
+  let pinch0 = null;
+  canvas.addEventListener('pointerdown', (e) => { canvas.setPointerCapture(e.pointerId); pts.set(e.pointerId, { x: e.clientX, y: e.clientY }); if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch0 = { d: Math.hypot(a.x - b.x, a.y - b.y), s: scale }; } });
+  canvas.addEventListener('pointermove', (e) => {
+    const prev = pts.get(e.pointerId);
+    if (!prev) return;
+    pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    if (pts.size === 2 && pinch0) { const [a, b] = [...pts.values()]; zoomTo(pinch0.s * Math.hypot(a.x - b.x, a.y - b.y) / pinch0.d); return; }
+    x += e.clientX - prev.x; y += e.clientY - prev.y; draw();
+  });
+  const up = (e) => { pts.delete(e.pointerId); if (pts.size < 2) pinch0 = null; };
+  canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', up);
+  canvas.addEventListener('wheel', (e) => { e.preventDefault(); const r = canvas.getBoundingClientRect(); zoomTo(scale * (e.deltaY < 0 ? 1.08 : 0.93), e.clientX - r.left, e.clientY - r.top); }, { passive: false });
+  draw();
+  return new Promise((resolve) => {
+    let result = null;
+    openSheet({
+      title, left: { label: 'Cancel' },
+      right: { label: 'Choose', onClick: (close) => {
+        const out = document.createElement('canvas');
+        out.width = out.height = 512;
+        const k = 512 / SIZE;
+        const o = out.getContext('2d');
+        o.imageSmoothingQuality = 'high';
+        o.drawImage(bmp, x * k, y * k, iw * scale * k, ih * scale * k);
+        result = out.toDataURL(webpEncode ? 'image/webp' : 'image/jpeg', 0.86);
+        close();
+      } },
+      body: h('div', { class: 'crop' },
+        h('div', { class: 'crop-frame' }, canvas, h('div', { class: 'crop-mask' })),
+        h('div', { class: 'crop-ctrl' }, h('span', null, '−'), slider, h('span', null, '+')),
+        h('p', { class: 'muted small center' }, 'Drag to move · pinch, scroll or slide to zoom')),
+      onClose: () => { bmp.close?.(); resolve(result); },
+    });
+  });
 }
 
 // ───── voice notes ─────

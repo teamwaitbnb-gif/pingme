@@ -1,9 +1,9 @@
 // Ping Me service worker: app-shell caching + app-style notifications.
-const VERSION = 'pm-v5';
+const VERSION = 'pm-v6';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/manifest.webmanifest',
   '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',
-  '/js/onboarding.js', '/js/lock.js', '/js/keys.js', '/js/secure.js', '/js/smart.js', '/js/stories.js',
+  '/js/onboarding.js', '/js/lock.js', '/js/keys.js', '/js/secure.js', '/js/smart.js', '/js/stories.js', '/js/perm.js',
   '/icons/icon.svg', '/icons/logo.svg', '/icons/logo-h.svg', '/icons/hand.svg', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png', '/icons/badge-96.png',
   '/sounds/message.wav', '/sounds/tick.wav', '/sounds/sent.wav', '/sounds/ringtone.wav', '/sounds/ringback.wav', '/sounds/join.wav', '/sounds/end.wav',
 ];

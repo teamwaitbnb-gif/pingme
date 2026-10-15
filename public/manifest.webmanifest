@@ -7,7 +7,8 @@
   "scope": "/",
   "display": "standalone",
   "display_override": [
-    "standalone"
+    "standalone",
+    "minimal-ui"
   ],
   "orientation": "any",
   "background_color": "#ffffff",
@@ -91,5 +92,6 @@
       "form_factor": "wide",
       "label": "Ping Me on desktop"
     }
-  ]
+  ],
+  "prefer_related_applications": false
 }

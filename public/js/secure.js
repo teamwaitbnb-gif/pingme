@@ -4,6 +4,7 @@
 //  • Eyes-only — content shows only while the front camera sees exactly one face; a second face
 //    (shoulder-surfer) or no face hides it instantly. Face detection runs on the device.
 import { h, icon, registerLayer } from './ui.js';
+import { ensurePermission } from './perm.js';
 
 const CELL = 2; // CSS px per noise cell
 
@@ -109,7 +110,8 @@ async function getDetector() {
   return detectorPromise;
 }
 
-export function openEyesOnly(renderContent) {
+export async function openEyesOnly(renderContent) {
+  if (!(await ensurePermission(['camera'], 'To check that only you are looking at this message. Nothing is recorded or sent.'))) return;
   const status = h('div', { class: 'eo-status' }, 'Starting face check…');
   const video = h('video', { autoplay: true, playsinline: true, muted: true });
   video.muted = true;

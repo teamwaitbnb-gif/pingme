@@ -3,7 +3,7 @@ import {
   h, icon, avatar, toast, openSheet, actionSheet, confirmDialog, promptDialog, toggle, cell,
   fmtSize, fmtDur, lastSeenText, disappearLabel, isIOS, isStandalone, store,
 } from './ui.js';
-import { avatarDataUrl, SCREEN_EFFECTS, BUBBLE_EFFECTS, playScreenEffect } from './media.js';
+import { cropImage, SCREEN_EFFECTS, BUBBLE_EFFECTS, playScreenEffect } from './media.js';
 import { usernameField, googleButton, GOOGLE_LOGO } from './auth.js';
 import { S, api, upload, user, userAvatar, fileUrl, otherMember, chatTitle, chatAvatar, isMuted, mergeUsers, prefs, applyPrefs, BUBBLES, feature } from './core.js';
 import {
@@ -15,6 +15,7 @@ import { featureList, FEATURE_GROUPS } from './onboarding.js';
 import { storyStrip } from './stories.js';
 import { lockEnabled, hasDuress, setPin, setDuressPin, disableLock, hiddenChats, setHiddenChats, checkPin } from './lock.js';
 import { signPhoto } from './keys.js';
+import { ensurePermission } from './perm.js';
 import { INTENTS } from './smart.js';
 
 const err = (e) => toast(e.message || String(e), { error: true });
@@ -150,12 +151,19 @@ export function openSettings() {
   }
 
   async function changeAvatar() {
-    const choice = S.me.avatarV ? await actionSheet({ actions: [{ label: 'Choose photo', value: 'pick' }, { label: 'Remove photo', value: 'rm', danger: true }] }) : 'pick';
+    const choice = S.me.avatarV ? await actionSheet({ actions: [{ label: 'Choose new photo', value: 'pick' }, { label: 'Adjust current photo', value: 'adjust' }, { label: 'Remove photo', value: 'rm', danger: true }] }) : 'pick';
+    if (choice === 'adjust') {
+      const blob = await fetch(`/api/avatar/u/${S.me.id}?v=${S.me.avatarV}`).then((r) => r.blob()).catch(() => null);
+      const url = blob && (await cropImage(blob, { title: 'Adjust photo' }));
+      if (url) save({ avatar: url });
+      return;
+    }
     if (choice === 'rm') return save({ avatar: null });
     if (choice !== 'pick') return;
     const f = await pickFile('image/*');
     if (!f) return;
-    try { save({ avatar: await avatarDataUrl(f) }); } catch { toast('Could not read that image', { error: true }); }
+    const url = await cropImage(f, { title: 'Profile photo' });
+    if (url) save({ avatar: url }); else if (url === null && !f.type.startsWith('image/')) toast('Could not read that image', { error: true });
   }
 
   draw();
@@ -462,7 +470,9 @@ export function openChatInfo(chatId) {
 async function changeGroupPhoto(chat) {
   const f = await pickFile('image/*');
   if (!f) return;
-  try { await api('PATCH', `/api/chats/${chat.id}`, { avatar: await avatarDataUrl(f) }); await refreshChat(chat.id); } catch (e) { err(e); }
+  const url = await cropImage(f, { title: 'Group photo' });
+  if (!url) return;
+  try { await api('PATCH', `/api/chats/${chat.id}`, { avatar: url }); await refreshChat(chat.id); } catch (e) { err(e); }
 }
 
 async function memberMenu(chat, m, meRole) {
@@ -760,8 +770,9 @@ export function openMessageInfo(m, focus) {
 
 // ═══════════════════════════ location ═══════════════════════════
 
-export function sendLocation(chatId, replyTo) {
+export async function sendLocation(chatId, replyTo) {
   if (!navigator.geolocation) return toast('Location is not available', { error: true });
+  if (!(await ensurePermission(['geolocation'], 'To share where you are in this chat — only when you choose to.'))) return;
   const close = toast('Getting your location…', { timeout: 15000 });
   navigator.geolocation.getCurrentPosition(async (pos) => {
     close();
@@ -1074,6 +1085,7 @@ function petCard(chat) {
 // ═══════════════════════════ Verified Real camera ═══════════════════════════
 
 export async function openVerifiedCamera(chatId) {
+  if (!(await ensurePermission(['camera'], 'To take a Verified Real photo — signed on this device so people know it’s genuine.'))) return;
   let stream = null, facing = 'environment', shot = null;
   const video = h('video', { autoplay: true, playsinline: true, muted: true });
   video.muted = true;

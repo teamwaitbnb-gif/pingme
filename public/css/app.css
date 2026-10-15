@@ -224,10 +224,10 @@ textarea.field { height: auto; min-height: 80px; padding: 12px 16px; resize: ver
 .m.me .bubble a { color: inherit; text-decoration: underline; }
 /* Bubble tails on the last bubble of a run */
 .m.last .bubble.tail::before, .m.last .bubble.tail::after { content: ""; position: absolute; bottom: 0; height: 20px; }
-.m.last:not(.me) .bubble.tail::before { left: -7px; width: 20px; background: var(--them); border-bottom-right-radius: 16px 14px; }
-.m.last:not(.me) .bubble.tail::after { left: -26px; width: 26px; background: var(--bg); border-bottom-right-radius: 10px; }
-.m.last.me .bubble.tail::before { right: -7px; width: 20px; background: var(--me2); border-bottom-left-radius: 16px 14px; }
-.m.last.me .bubble.tail::after { right: -26px; width: 26px; background: var(--bg); border-bottom-left-radius: 10px; }
+.m.last:not(.me) .bubble.tail::before { left: -6px; width: 20px; background: var(--them); border-bottom-right-radius: 16px 14px; }
+.m.last:not(.me) .bubble.tail::after { left: -8px; width: 8px; background: var(--bg); border-bottom-right-radius: 8px; }
+.m.last.me .bubble.tail::before { right: -6px; width: 20px; background: var(--me2); border-bottom-left-radius: 16px 14px; }
+.m.last.me .bubble.tail::after { right: -8px; width: 8px; background: var(--bg); border-bottom-left-radius: 8px; }
 .bubble.emoji { background: none !important; padding: 0 2px; font-size: 48px; line-height: 1.15; }
 .bubble.emoji.e1 { font-size: 64px; }
 .bubble.emoji::before, .bubble.emoji::after { display: none; }
@@ -1022,3 +1022,40 @@ svg.i { stroke-width: 1.8; }
 /* centred intro + system lines in the message column */
 .msgs > .sys { margin-left: auto; margin-right: auto; max-width: 760px; }
 .msgs > .sys.intro { margin: 24px auto 8px; display: flex; flex-direction: column; align-items: center; }
+
+/* Native-app feel: no zoom on double-tap, no page bounce, keyboard-aware composer */
+html, body { touch-action: manipulation; overscroll-behavior: none; -webkit-text-size-adjust: 100%; }
+.msgs, .sb-list, .sheet-body, .onboard-in, .people-row, .story-strip { overscroll-behavior: contain; }
+:root.kb-open { --sab: 0px; }
+:root.kb-open .composer-wrap { padding-bottom: 6px; }
+
+/* Ping Me's own permission screen */
+.perm { position: fixed; inset: 0; z-index: 140; background: var(--overlay); display: flex; align-items: flex-end; justify-content: center; padding: 12px; animation: fadein 0.2s; }
+@media (min-width: 761px) { .perm { align-items: center; } }
+.perm-card { width: 100%; max-width: 400px; background: var(--elev); border-radius: 24px; padding: 26px 22px calc(16px + var(--sab)); text-align: center; animation: up 0.3s cubic-bezier(0.2, 0.9, 0.3, 1); box-shadow: var(--shadow); }
+.perm-logo { width: 60px; height: 60px; border-radius: 14px; box-shadow: 0 0 0 0.5px var(--sep); }
+.perm-icons { display: flex; justify-content: center; gap: 10px; margin: 14px 0 4px; }
+.perm-icons span { width: 40px; height: 40px; border-radius: 50%; background: var(--fill); display: grid; place-items: center; }
+.perm-icons svg { width: 20px; height: 20px; }
+.perm-card h2 { margin: 10px 0 6px; font-size: 20px; letter-spacing: -0.3px; }
+.perm-card p { margin: 0 0 18px; color: var(--text2); line-height: 1.45; font-size: 15px; }
+.perm-later { display: block; width: 100%; margin-top: 10px; color: var(--text2); font-size: 15px; padding: 6px; }
+.perm-card small { display: block; margin-top: 10px; color: var(--text3); font-size: 12px; line-height: 1.4; }
+.perm-logo, .notif-card > img { display: block; margin: 0 auto; }
+
+/* Call screen: top bar pinned to the top (it was being pushed down over the buttons while ringing) */
+.call .top { position: absolute; top: 0; left: 0; right: 0; }
+.call .ring-center { padding-top: calc(90px + var(--sat)); padding-bottom: 170px; }
+.call .tile.contain { background: #000; }
+.call .tile.contain video { object-fit: contain; }
+.call .controls { align-items: center; }
+.call .bottom { pointer-events: none; }
+.call .bottom .controls, .call .bottom .incoming-actions { pointer-events: auto; }
+
+/* photo cropper */
+.crop { display: grid; justify-items: center; gap: 16px; padding: 6px 0 10px; }
+.crop-frame { position: relative; width: 280px; height: 280px; border-radius: 18px; overflow: hidden; background: #000; touch-action: none; }
+.crop-canvas { display: block; cursor: grab; touch-action: none; }
+.crop-mask { position: absolute; inset: 0; pointer-events: none; border-radius: 50%; box-shadow: 0 0 0 200px rgba(0,0,0,0.55); outline: 2px solid rgba(255,255,255,0.85); outline-offset: -2px; }
+.crop-ctrl { display: flex; align-items: center; gap: 12px; width: 280px; color: var(--text2); font-size: 20px; }
+.crop-zoom { flex: 1; accent-color: var(--text); }
