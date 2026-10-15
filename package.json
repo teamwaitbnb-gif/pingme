@@ -1,0 +1,25 @@
+{
+  "name": "ping-me",
+  "version": "1.0.0",
+  "description": "Ping Me - encrypted messaging and HD video calling PWA",
+  "main": "server/index.js",
+  "type": "commonjs",
+  "scripts": {
+    "setup": "node server/setup.js",
+    "start": "node server/index.js",
+    "dev": "node --watch server/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "UNLICENSED",
+  "private": true,
+  "dependencies": {
+    "compression": "^1.8.2",
+    "dotenv": "^16.6.1",
+    "express": "^4.22.3",
+    "mysql2": "^3.24.6",
+    "socket.io": "^4.8.4",
+    "web-push": "^3.6.7"
+  }
+}
