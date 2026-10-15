@@ -1,11 +1,11 @@
 // Ping Me service worker: app-shell caching + app-style notifications.
-const VERSION = 'pm-v6';
+const VERSION = 'pm-v7';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/manifest.webmanifest',
   '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',
   '/js/onboarding.js', '/js/lock.js', '/js/keys.js', '/js/secure.js', '/js/smart.js', '/js/stories.js', '/js/perm.js',
   '/icons/icon.svg', '/icons/logo.svg', '/icons/logo-h.svg', '/icons/hand.svg', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png', '/icons/badge-96.png',
-  '/sounds/message.wav', '/sounds/tick.wav', '/sounds/sent.wav', '/sounds/ringtone.wav', '/sounds/ringback.wav', '/sounds/join.wav', '/sounds/end.wav',
+  '/sounds/message.wav', '/sounds/tick.wav', '/sounds/sent.wav', '/sounds/ringtone.wav', '/sounds/ringback.wav', '/sounds/join.wav', '/sounds/end.wav', '/sounds/ping.wav',
 ];
 
 self.addEventListener('install', (e) => {
@@ -50,6 +50,9 @@ self.addEventListener('fetch', (e) => {
 // whenever the app is open.
 const VIBRATE_MSG = [40, 60, 40, 60, 120];
 const VIBRATE_CALL = [600, 300, 600, 300, 600, 300, 600];
+const VIBRATE_PING = [60, 80, 60, 80, 220];
+let audioReadyAt = 0; // last time the open app said it can ring by itself
+self.addEventListener('message', (e) => { if (e.data?.type === 'audio') audioReadyAt = e.data.ready ? Date.now() : 0; });
 const canActions = typeof Notification !== 'undefined' && 'actions' in Notification.prototype;
 
 async function hasFocusedClient() {
@@ -81,8 +84,9 @@ async function showMessage(d) {
     icon: '/icons/icon-192.png',
     badge: '/icons/badge-96.png',
     timestamp: d.ts || Date.now(),
-    vibrate: d.urgent ? VIBRATE_CALL : VIBRATE_MSG,
+    vibrate: d.urgent ? VIBRATE_CALL : d.ping ? VIBRATE_PING : VIBRATE_MSG,
     requireInteraction: !!d.urgent,
+    silent: false,
     actions: canActions ? [{ action: 'reply', title: 'Reply' }, { action: 'read', title: 'Mark as Read' }] : undefined,
     data: { url: d.url || '/', chatId: d.chatId, lines, count, type: 'msg' },
   });
@@ -94,6 +98,7 @@ async function showCall(d) {
     tag: d.tag,
     renotify: true,
     requireInteraction: true,
+    silent: false,
     icon: '/icons/icon-192.png',
     badge: '/icons/badge-96.png',
     timestamp: d.ts || Date.now(),
@@ -115,8 +120,9 @@ self.addEventListener('push', (e) => {
   try { d = e.data.json(); } catch { d = { type: 'msg', title: 'Ping Me', body: e.data?.text() || '', tag: 'meetme' }; }
   e.waitUntil((async () => {
     if (d.type === 'call') {
-      // The open app shows its own full-screen ringing UI.
-      if (await hasFocusedClient()) return;
+      // The call is re-sent every few seconds while ringing, so the phone keeps sounding like a real call.
+      // Stay quiet only when Ping Me is open on screen AND able to play its own ringtone.
+      if ((await hasFocusedClient()) && Date.now() - audioReadyAt < 10 * 60000) return;
       return showCall(d);
     }
     if (d.type === 'call-ended') {

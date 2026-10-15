@@ -79,6 +79,14 @@ wav('ringback.wav', render(3.0, (b) => {
   }
 }, -14));
 
+// The Ping: a soft, warm double "knock-knock" with a little shimmer — thinking of you.
+wav('ping.wav', render(1.2, (b) => {
+  bell(b, 0.0, N.C6, { amp: 0.9, decay: 0.16, attack: 0.006 });
+  bell(b, 0.16, N.C6, { amp: 0.9, decay: 0.16, attack: 0.006 });
+  bell(b, 0.38, N.E6, { amp: 0.6, decay: 0.5 });
+  bell(b, 0.38, N.G5, { amp: 0.4, decay: 0.6 });
+}, -8));
+
 // Call connected / ended: two gentle notes up / down.
 wav('join.wav', render(0.7, (b) => { bell(b, 0, N.E5, { decay: 0.18 }); bell(b, 0.1, N.A5, { decay: 0.25 }); }, -10));
 wav('end.wav', render(0.7, (b) => { bell(b, 0, N.A5, { decay: 0.18 }); bell(b, 0.12, N.E5, { decay: 0.28 }); }, -10));

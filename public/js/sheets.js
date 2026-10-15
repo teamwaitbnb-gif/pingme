@@ -5,7 +5,7 @@ import {
 } from './ui.js';
 import { cropImage, SCREEN_EFFECTS, BUBBLE_EFFECTS, playScreenEffect } from './media.js';
 import { usernameField, googleButton, GOOGLE_LOGO } from './auth.js';
-import { S, api, upload, user, userAvatar, fileUrl, otherMember, chatTitle, chatAvatar, isMuted, mergeUsers, prefs, applyPrefs, BUBBLES, feature } from './core.js';
+import { S, api, emit, upload, user, userAvatar, fileUrl, otherMember, chatTitle, chatAvatar, isMuted, mergeUsers, prefs, applyPrefs, BUBBLES, feature } from './core.js';
 import {
   openChat, closeChat, renderList, renderHeader, renderMessages, refreshChat, refreshMe, startDirect, deleteConversation,
   send, setSendAt, sendPayload, jumpTo, setupPush, logout, showInstallGate,
@@ -312,7 +312,7 @@ export function openNewMessage() {
     result,
     h('div', { class: 'group' },
       cell({ icon: 'users', color: '#34c759', label: 'New Group', chevron: true, onClick: () => { s.close(); openNewGroup(); } }),
-      cell({ icon: 'link', color: '#0a84ff', label: 'Invite a friend', sub: 'Share your Ping Me link', onClick: () => shareLink(`${location.origin}/?add=${S.me.username}`, S.me) })),
+      cell({ icon: 'link', color: '#0a84ff', label: 'Invite with a link', sub: 'They can reply without installing anything', onClick: () => { s.close(); openInviteLink(); } })),
     people.length ? h('div', { class: 'group-label' }, 'Contacts') : null,
     people.length ? h('div', { class: 'group' }, people.map((u) => h('div', { class: 'user-row', style: { cursor: 'pointer' }, onclick: () => { s.close(); startDirect(u).catch(err); } },
       avatar({ id: u.id, name: u.name, src: userAvatar(u.id), size: 40, online: u.online }),
@@ -1195,4 +1195,142 @@ export async function triggerSos() {
     startSosTracking();
     S.calls.start(r.primaryChatId, false, { reason: 'SOS' });
   } catch (e) { err(e); }
+}
+
+// ═══════════════════════════ invite with a link (reply without installing) ═══════════════════════════
+
+export function openInviteLink() {
+  const msg = h('textarea', { class: 'field', rows: 3, maxlength: 300, placeholder: 'Write a first message (optional)' });
+  msg.value = 'Hey! Let’s chat on Ping Me 👋';
+  const out = h('div');
+  openSheet({
+    title: 'Invite with a link', left: { label: 'Close' },
+    body: h('div', null,
+      h('p', { class: 'muted small', style: { margin: '0 4px 12px' } }, 'They open the link, see your message and reply right away — no app or sign-up needed.'),
+      msg,
+      h('button', { class: 'btn', style: { marginTop: '12px' }, onclick: async (e) => {
+        e.currentTarget.disabled = true;
+        try {
+          const { url } = await api('POST', '/api/guest-links', { message: msg.value });
+          const text = `${msg.value.trim() ? msg.value.trim() + '\n' : ''}${url}`;
+          out.replaceChildren(
+            h('div', { class: 'link-box' }, url),
+            h('div', { class: 'share-row' },
+              h('button', { class: 'btn', onclick: () => shareLink(url, S.me, msg.value.trim() || 'Chat with me on Ping Me') }, icon('share'), 'Share'),
+              h('a', { class: 'btn secondary', href: `https://wa.me/?text=${encodeURIComponent(text)}`, target: '_blank', rel: 'noopener' }, 'WhatsApp'),
+              h('button', { class: 'btn secondary', onclick: () => navigator.clipboard?.writeText(url).then(() => toast('Link copied')) }, icon('copy'), 'Copy')));
+        } catch (ex) { err(ex); e.currentTarget.disabled = false; }
+      } }, icon('link'), 'Create link'),
+      out),
+  });
+}
+
+// ═══════════════════════════ save a guest account ═══════════════════════════
+
+export function openUpgrade() {
+  const uf = usernameField({ nameSource: () => S.me.name, autofocus: true });
+  const pw = h('input', { class: 'field', type: 'password', placeholder: 'Password (8+ characters)', autocomplete: 'new-password' });
+  const max = new Date(); max.setFullYear(max.getFullYear() - 13);
+  const birth = h('input', { class: 'field date', type: 'date', max: max.toISOString().slice(0, 10), min: '1900-01-01' });
+  openSheet({
+    title: 'Save your account', left: { label: 'Later' },
+    right: { label: 'Save', onClick: async (close) => {
+      if (!birth.value) return toast('Please enter your date of birth', { error: true });
+      try {
+        const { user: u } = await api('POST', '/api/me/upgrade', { username: uf.input.value.trim(), password: pw.value, birth: birth.value });
+        refreshMe(u); close();
+        toast('Account saved — you can now sign in anywhere');
+        if (!isStandalone()) showInstallGate({ force: true });
+      } catch (e) { err(e); }
+    } },
+    body: h('div', { class: 'upgrade' },
+      h('p', { class: 'muted small' }, 'Pick a username and password so you can sign in on any phone, and add Ping Me to your home screen.'),
+      uf.el, pw,
+      h('label', { class: 'field-label' }, h('span', null, 'Date of birth'), birth)),
+  });
+}
+
+// ═══════════════════════════ Us space ═══════════════════════════
+
+export async function openUs(chat, after) {
+  if (!chat) return;
+  const other = user(otherMember(chat));
+  const s = openSheet({ title: 'Us', full: true, left: { label: 'Done' }, onClose: () => after?.() });
+  const draw = async () => {
+    let us;
+    try { us = await api('GET', `/api/chats/${chat.id}/us`); } catch (e) { return err(e); }
+    const sinceTxt = new Date(us.sinceAt).toLocaleDateString([], { day: 'numeric', month: 'long', year: 'numeric' });
+    s.body.replaceChildren(
+      h('div', { class: 'us-top' },
+        h('div', { class: 'us-avs' },
+          avatar({ id: S.me.id, name: S.me.name, src: S.me.avatarV ? `/api/avatar/u/${S.me.id}?v=${S.me.avatarV}` : null, size: 72 }),
+          h('span', { class: 'us-heart' }, icon('heart')),
+          avatar({ id: other.id, name: other.name, src: userAvatar(other.id), size: 72 })),
+        h('div', { class: 'us-days' }, us.days.toLocaleString()),
+        h('div', { class: 'muted' }, `day${us.days === 1 ? '' : 's'} together · since ${sinceTxt}`),
+        h('button', { class: 'link small', onclick: async () => {
+          const input = h('input', { class: 'field date', type: 'date', value: us.since || '', max: new Date().toISOString().slice(0, 10) });
+          openSheet({ title: 'Together since', left: { label: 'Cancel' }, right: { label: 'Save', onClick: async (close) => { try { await api('PATCH', `/api/chats/${chat.id}/us`, { since: input.value || null }); close(); draw(); } catch (e) { err(e); } } },
+            body: h('div', null, input, h('p', { class: 'muted small' }, 'Your special date — the day you met, started dating or became best friends. Both of you see it.')) });
+        } }, us.since ? 'Change date' : 'Set your special date')),
+      h('div', { class: 'us-cards' },
+        h('div', { class: 'us-card' }, icon('fire'), h('b', null, String(us.streak)), h('span', null, 'day streak'), h('small', null, us.bothToday ? 'You both chatted today' : us.iSentToday ? `Waiting for ${other.name.split(' ')[0]} today` : 'Send a message to keep it going')),
+        h('div', { class: 'us-card' }, icon('calendar'), us.anniversary ? h('b', null, us.anniversary.inDays === 0 ? 'Today!' : String(us.anniversary.inDays)) : h('b', null, '—'),
+          h('span', null, us.anniversary ? (us.anniversary.inDays === 0 ? `${us.anniversary.years} year anniversary` : `days to ${us.anniversary.years ? us.anniversary.years + ' year ' : ''}anniversary`) : 'set your date'), h('small', null, '')),
+        h('div', { class: 'us-card' }, icon('bubbles'), h('b', null, us.messages.toLocaleString()), h('span', null, 'messages'), h('small', null, `${us.pings} pings`))),
+      h('div', { class: 'row', style: { gap: '10px', margin: '0 0 22px' } },
+        h('button', { class: 'btn', onclick: () => { s.close(); document.querySelector('.ping-btn')?.click(); } }, h('img', { class: 'btn-hand', src: '/icons/hand.svg', alt: '' }), 'Send a Ping'),
+        h('button', { class: 'btn secondary', onclick: () => openLetterComposer(chat, draw) }, icon('mail'), 'Letter')),
+      h('div', { class: 'group-label' }, 'Open-when letters'),
+      us.letters.length ? h('div', { class: 'group' }, us.letters.map((l) => {
+        const mine = l.senderId === S.me.id;
+        const sub = l.locked ? `Opens ${new Date(l.unlockAt).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })}` : mine ? (l.openedAt ? 'Opened' : 'Not opened yet') : l.openedAt ? 'Read' : 'Ready to open';
+        return cell({ icon: l.locked && !mine ? 'lock' : 'mail', label: l.title, sub: `${mine ? 'From you' : 'For you'} · ${sub}`, chevron: true, onClick: () => viewLetter({ id: l.id, chatId: chat.id, senderId: l.senderId, letter: l }, draw) });
+      })) : h('div', { class: 'empty-list', style: { padding: '20px' } }, 'Write letters for later — “Open when you miss me”, “Open on your birthday”. They stay sealed until it’s time.'));
+  };
+  draw();
+}
+
+const LETTER_IDEAS = ['Open when you miss me', 'Open when you can’t sleep', 'Open when you need a smile', 'Open when you’re stressed', 'Open on your birthday', 'Open on our anniversary'];
+
+export function openLetterComposer(chat, after) {
+  const title = h('input', { class: 'field', placeholder: 'Open when…', maxlength: 80, value: LETTER_IDEAS[0] });
+  const text = h('textarea', { class: 'field letter-paper', rows: 8, maxlength: 5000, placeholder: 'Write your letter…' });
+  const lock = h('input', { class: 'field date', type: 'date', min: new Date(Date.now() + 86400000).toISOString().slice(0, 10) });
+  openSheet({
+    title: 'Open-when letter', left: { label: 'Cancel' }, full: true,
+    right: { label: 'Send', onClick: async (close) => {
+      if (!title.value.trim() || !text.value.trim()) return toast('Add a title and write something', { error: true });
+      const unlockAt = lock.value ? new Date(lock.value + 'T09:00:00').getTime() : null;
+      try {
+        await sendPayload(chat.id, { kind: 'letter', letter: { title: title.value.trim(), text: text.value.trim(), unlockAt } });
+        close(); after?.();
+        toast(unlockAt ? `Sealed until ${new Date(unlockAt).toLocaleDateString([], { day: 'numeric', month: 'short' })}` : 'Letter sent');
+      } catch (e) { err(e); }
+    } },
+    body: h('div', { class: 'letter-form' },
+      h('div', { class: 'chip-pick' }, LETTER_IDEAS.map((i) => h('button', { onclick: () => { title.value = i; } }, i))),
+      title, text,
+      h('label', { class: 'field-label' }, h('span', null, 'Keep it sealed until (optional)'), lock),
+      h('p', { class: 'muted small' }, 'They can open it whenever they need it — or, if you pick a date, only from that day.')),
+  });
+}
+
+export async function viewLetter(m, after) {
+  const l = m.letter || {};
+  const mine = m.senderId === S.me.id;
+  if (l.locked && !mine) return toast(`This letter opens on ${new Date(l.unlockAt).toLocaleDateString([], { day: 'numeric', month: 'long', year: 'numeric' })}`);
+  let full = l;
+  if (!l.text) {
+    try { const r = await emit('letter:open', { id: m.id }); full = r.message.letter; } catch (e) { return err(e); }
+  }
+  const from = mine ? 'You' : user(m.senderId).name;
+  openSheet({
+    title: '', left: { label: 'Close' }, full: true, onClose: () => after?.(),
+    body: h('div', { class: 'letter-view' },
+      h('div', { class: 'letter-seal' }, icon('mail')),
+      h('h2', null, full.title),
+      h('div', { class: 'letter-text' }, full.text),
+      h('div', { class: 'letter-from' }, `— ${from}`)),
+  });
 }

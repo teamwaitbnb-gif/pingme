@@ -6,6 +6,12 @@ import { storyStrip } from './stories.js';
 
 export const FEATURE_GROUPS = [
   {
+    title: 'Together', items: [
+      ['ping', 'hand', 'The Ping', 'One tap sends a “thinking of you” buzz — a special sound and vibration, no words needed.'],
+      ['usSpace', 'heart', 'Us space', 'Days together, your streak, anniversary countdown and open-when letters for two.'],
+    ],
+  },
+  {
     title: 'Messaging', items: [
       ['secureMessages', 'shieldcheck', 'Screenshot-proof messages', 'Send text that reads fine on screen but shows only static in screenshots.'],
       ['eyesOnly', 'eye', 'Eyes-only messages', 'Opens only while one face is looking at the screen; hides if someone peeks.'],

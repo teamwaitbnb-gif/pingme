@@ -8,6 +8,7 @@ module.exports = function features(x) {
     app, io, db, C, push, auth, wrap, bad, notFound, HttpError, toInt, clampStr, now, ms,
     requireMember, getUser, publicUser, insertMessage, loadMessage, emitToUser, joinUserToChat, rateLimit,
     createSession, findUserIdByUsername, meView, inviteHash, INVITES_PER_USER, userCache,
+    createUser, usernameProblem, unameHash, unameCanon, U, sessionUser, parseCookies, COOKIE, parseBirth, streaksFor,
   } = x;
 
   const sharesChat = (a, b) => db.one(
@@ -427,6 +428,144 @@ module.exports = function features(x) {
       topWord: top(words), topEmoji: top(emojis), users,
       pet: petFor(chatId, Number(allTime.n), ms(allTime.last)),
     });
+  }));
+
+  // ───────────────────── reply without installing (guest links) ─────────────────────
+  // Share a link; the other person reads your message and replies right in the browser with just
+  // their name. Later they can save the account (username, password, birthday) and install the app.
+
+  const origin = (req) => (process.env.PUBLIC_URL || `${req.protocol}://${req.get('host')}`).replace(/\/$/, '');
+  const linkRow = (token) => db.one('SELECT * FROM guest_links WHERE token_hash=?', [C.sha256('guest:' + String(token || ''))]);
+
+  app.post('/api/guest-links', auth, wrap(async (req, res) => {
+    rateLimit('glink:' + req.uid, 20, 3600000);
+    const token = crypto.randomBytes(15).toString('base64url');
+    const msg = clampStr(req.body.message, 300).trim();
+    await db.q('INSERT INTO guest_links (token_hash, user_id, msg_enc) VALUES (?,?,?)', [C.sha256('guest:' + token), req.uid, msg ? C.enc(msg) : null]);
+    res.json({ url: `${origin(req)}/join/${token}`, token });
+  }));
+
+  app.get('/api/guest-links/:token', wrap(async (req, res) => {
+    rateLimit('glinkv:' + req.ip, 60, 60000);
+    const row = await linkRow(req.params.token);
+    const inviter = row && (await getUser(Number(row.user_id)));
+    if (!inviter) throw notFound('This invite link has expired');
+    res.json({ inviter: { id: inviter.id, name: inviter.name, avatarV: inviter.avatarV }, message: C.dec(row.msg_enc) });
+  }));
+
+  app.get('/api/guest-links/:token/avatar', wrap(async (req, res) => {
+    const row = await linkRow(req.params.token);
+    const u = row && (await db.one('SELECT avatar_enc FROM users WHERE id=?', [row.user_id]));
+    const m = u?.avatar_enc && /^data:(image\/[a-z]+);base64,(.*)$/.exec(C.dec(u.avatar_enc) || '');
+    if (!m) return res.status(404).end();
+    res.setHeader('Content-Type', m[1]);
+    res.setHeader('Cache-Control', 'private, max-age=3600');
+    res.end(Buffer.from(m[2], 'base64'));
+  }));
+
+  app.post('/api/guest-links/:token/accept', wrap(async (req, res) => {
+    rateLimit('glinka:' + req.ip, 10, 600000);
+    const row = await linkRow(req.params.token);
+    const inviterId = row && Number(row.user_id);
+    if (!inviterId || !(await getUser(inviterId))) throw notFound('This invite link has expired');
+    let uid = await sessionUser(parseCookies(req.headers.cookie)[COOKIE]);
+    let created = false;
+    if (!uid) {
+      const name = clampStr(req.body.name, 60).trim();
+      if (!name) throw bad('Please enter your name');
+      if (req.body.ageOk !== true) throw bad('Please confirm you’re 13 or older');
+      let username = null;
+      for (let i = 0; i < 20 && !username; i++) {
+        const cand = 'guest' + crypto.randomInt(100000, 9999999);
+        if (!(await usernameProblem(cand))) username = cand;
+      }
+      uid = await createUser({ username, name, guest: true });
+      await createSession(req, res, uid);
+      created = true;
+    }
+    if (uid === inviterId) throw bad('That’s your own invite link — share it with someone else');
+    const chatId = await ensureDirectChat(inviterId, uid);
+    const msg = C.dec(row.msg_enc);
+    if (created && msg) await insertMessage({ chatId, senderId: inviterId, kind: 'text', body: { text: msg } });
+    await db.q('UPDATE guest_links SET uses=uses+1 WHERE token_hash=?', [row.token_hash]);
+    res.json({ user: await meView(uid), chatId });
+  }));
+
+  // Guests save their account: username, password, birthday.
+  app.post('/api/me/upgrade', auth, wrap(async (req, res) => {
+    const me = await getUser(req.uid);
+    if (!me.settings.guest) throw bad('Your account is already saved');
+    const username = U.normalize(clampStr(req.body.username, 40));
+    const problem = await usernameProblem(username, req.uid);
+    if (problem) throw bad(problem);
+    const pw = String(req.body.password || '');
+    if (pw.length < 8 || pw.length > 200) throw bad('Password must be at least 8 characters');
+    const birth = parseBirth(req.body.birth);
+    const settings = { ...me.settings, guest: false };
+    delete settings.features; delete settings.trusted;
+    const rowS = await db.one('SELECT settings_enc FROM users WHERE id=?', [req.uid]);
+    const stored = { ...(C.decJson(rowS.settings_enc, {}) || {}), guest: false };
+    await db.q('UPDATE users SET uname_hash=?, uname_canon=?, uname_enc=?, pass_hash=?, birth_enc=?, settings_enc=? WHERE id=?',
+      [unameHash(username), unameCanon(username), C.enc(username), await C.hashPassword(pw), C.enc(birth), C.enc(stored), req.uid]);
+    userCache.delete(req.uid);
+    res.json({ user: await meView(req.uid) });
+  }));
+
+  // ───────────────────── Us space (direct chats) ─────────────────────
+
+  const DAY_MS = 86400000;
+  app.get('/api/chats/:id/us', auth, wrap(async (req, res) => {
+    const chatId = toInt(req.params.id);
+    await requireMember(chatId, req.uid);
+    const chat = await db.one('SELECT type, extra_enc, created_at FROM chats WHERE id=?', [chatId]);
+    if (chat.type !== 'direct') throw bad('Us space is for one-to-one chats');
+    const extra = C.decJson(chat.extra_enc, {}) || {};
+    const first = await db.one("SELECT MIN(created_at) t FROM messages WHERE chat_id=? AND kind NOT IN ('system','call')", [chatId]);
+    const firstAt = first?.t ? ms(first.t) : ms(chat.created_at);
+    const sinceAt = extra.since ? new Date(extra.since + 'T00:00:00+05:30').getTime() : firstAt;
+    const today = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+    const todayRows = await db.q("SELECT DISTINCT sender_id FROM messages WHERE chat_id=? AND deleted=0 AND kind NOT IN ('system','call') AND DATE(CONVERT_TZ(created_at,'+00:00','+05:30'))=?", [chatId, today]);
+    const total = await db.one("SELECT COUNT(*) n FROM messages WHERE chat_id=? AND deleted=0 AND kind NOT IN ('system','call')", [chatId]);
+    const pings = await db.one("SELECT COUNT(*) n FROM messages WHERE chat_id=? AND kind='ping'", [chatId]);
+    // next anniversary of the "together since" date
+    let anniversary = null;
+    if (extra.since) {
+      const [, m, d] = extra.since.split('-').map(Number);
+      const now = new Date();
+      let next = new Date(now.getFullYear(), m - 1, d);
+      if (next < new Date(now.getFullYear(), now.getMonth(), now.getDate())) next = new Date(now.getFullYear() + 1, m - 1, d);
+      anniversary = { at: next.getTime(), years: next.getFullYear() - Number(extra.since.slice(0, 4)), inDays: Math.round((next - new Date(now.getFullYear(), now.getMonth(), now.getDate())) / DAY_MS) };
+    }
+    const letterRows = await db.q("SELECT * FROM messages WHERE chat_id=? AND kind='letter' AND deleted=0 ORDER BY id DESC LIMIT 50", [chatId]);
+    const { serializeMessagesFor } = x;
+    res.json({
+      since: extra.since || null, sinceAt, label: extra.label || '',
+      days: Math.max(0, Math.floor((Date.now() - sinceAt) / DAY_MS)),
+      streak: (await streaksFor([chatId])).get(chatId) || 0,
+      bothToday: todayRows.length >= 2, iSentToday: todayRows.some((r) => Number(r.sender_id) === req.uid),
+      messages: Number(total.n), pings: Number(pings.n), anniversary,
+      letters: (await serializeMessagesFor(letterRows, req.uid)).map((m) => ({ id: m.id, senderId: m.senderId, createdAt: m.createdAt, ...m.letter })),
+    });
+  }));
+
+  app.patch('/api/chats/:id/us', auth, wrap(async (req, res) => {
+    const chatId = toInt(req.params.id);
+    await requireMember(chatId, req.uid);
+    const chat = await db.one('SELECT type, extra_enc FROM chats WHERE id=?', [chatId]);
+    if (chat.type !== 'direct') throw bad('Us space is for one-to-one chats');
+    const extra = C.decJson(chat.extra_enc, {}) || {};
+    if (req.body.since !== undefined) {
+      if (req.body.since === null || req.body.since === '') delete extra.since;
+      else {
+        const v = String(req.body.since);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(v) || new Date(v).getTime() > Date.now()) throw bad('Pick a date in the past');
+        extra.since = v;
+      }
+    }
+    if (typeof req.body.label === 'string') extra.label = clampStr(req.body.label, 40).trim();
+    await db.q('UPDATE chats SET extra_enc=? WHERE id=?', [C.enc(extra), chatId]);
+    io.to('c:' + chatId).emit('us:changed', { chatId });
+    res.json({ ok: true });
   }));
 
   return {

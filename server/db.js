@@ -37,6 +37,7 @@ const SCHEMA = [
     avatar_v BIGINT NOT NULL DEFAULT 0,
     created_by BIGINT UNSIGNED NOT NULL,
     disappear_secs INT NOT NULL DEFAULT 0,
+    extra_enc TEXT NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     last_msg_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
   )`,
@@ -59,7 +60,7 @@ const SCHEMA = [
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     chat_id BIGINT UNSIGNED NOT NULL,
     sender_id BIGINT UNSIGNED NOT NULL,
-    kind ENUM('text','image','video','audio','file','location','poll','call','system') NOT NULL,
+    kind ENUM('text','image','video','audio','file','location','poll','call','system','ping','letter') NOT NULL,
     body_enc MEDIUMTEXT NOT NULL,
     reply_to BIGINT UNSIGNED NULL,
     attachment_id BIGINT UNSIGNED NULL,
@@ -175,6 +176,14 @@ const SCHEMA = [
     approved_at DATETIME(3) NULL,
     INDEX (user_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS guest_links (
+    token_hash CHAR(64) PRIMARY KEY,
+    user_id BIGINT UNSIGNED NOT NULL,
+    msg_enc TEXT NULL,
+    uses INT NOT NULL DEFAULT 0,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX (user_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS push_subs (
     endpoint_hash CHAR(64) PRIMARY KEY,
     user_id BIGINT UNSIGNED NOT NULL,
@@ -222,6 +231,13 @@ async function migrate(dbName) {
   if (!users.has('birth_enc')) await pool.query('ALTER TABLE users ADD COLUMN birth_enc TEXT NULL AFTER email_enc');
   const messages = await cols('messages');
   if (!messages.has('read_ttl')) await pool.query('ALTER TABLE messages ADD COLUMN read_ttl INT NULL AFTER deleted');
+  // New message kinds: the Ping and open-when letters.
+  const [[kindCol]] = await pool.query("SELECT COLUMN_TYPE t FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='messages' AND COLUMN_NAME='kind'", [dbName]);
+  if (!kindCol.t.includes("'letter'")) {
+    await pool.query("ALTER TABLE messages MODIFY kind ENUM('text','image','video','audio','file','location','poll','call','system','ping','letter') NOT NULL");
+  }
+  const chats = await cols('chats');
+  if (!chats.has('extra_enc')) await pool.query('ALTER TABLE chats ADD COLUMN extra_enc TEXT NULL AFTER disappear_secs');
   await pool.query('ALTER TABLE users MODIFY pass_hash VARCHAR(255) NULL');
 }
 

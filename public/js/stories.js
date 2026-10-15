@@ -7,6 +7,13 @@ const bubble = (text, me = false, extra = '') => h('div', { class: `sd-b ${me ? 
 
 // Each demo returns a small looping animation built from plain DOM + CSS keyframes.
 const DEMOS = {
+  ping: () => h('div', { class: 'sd sd-ping' },
+    h('div', { class: 'sd-phone' }, h('img', { class: 'wave', src: '/icons/hand.svg', alt: '' })),
+    h('b', null, 'Vijay pinged you'), h('small', null, 'Thinking of you')),
+  usSpace: () => h('div', { class: 'sd sd-us' },
+    h('div', { class: 'big' }, '128'), h('small', null, 'days together'),
+    h('div', { class: 'row1' }, icon('fire'), '21-day streak'),
+    h('div', { class: 'row2' }, icon('mail'), 'Open when you miss me')),
   secureMessages: () => {
     const live = secureText('Door code 4417', { maxWidth: 170, color: '#000', fontSize: 18 });
     return h('div', { class: 'sd sd-secure' },
@@ -61,6 +68,8 @@ const DEMOS = {
 };
 
 const EXAMPLES = {
+  ping: 'Busy day? Tap the hand — her phone gives a soft knock-knock buzz so she knows you’re thinking of her.',
+  usSpace: 'See how many days you’ve been together, keep your daily streak alive, and leave “open when” letters for later.',
   secureMessages: 'Share a door code or OTP. If anyone screenshots it, they only get static.',
   eyesOnly: 'Send a surprise plan. It opens only while one face looks — if someone peeks over the shoulder, it hides.',
   vanishAfterRead: 'Send a Wi-Fi password. Once it’s read, a timer starts and the message disappears.',
@@ -82,6 +91,7 @@ const EXAMPLES = {
 
 const DURATION = 6500;
 const SHORT = {
+  ping: 'Ping', usSpace: 'Us',
   secureMessages: 'Private', eyesOnly: 'Eyes-only', vanishAfterRead: 'Vanish', intentTags: 'Intent', promiseTracker: 'Promise',
   scamRadar: 'Scam radar', verifiedDevices: 'Verified', reasonToCall: 'Reason', whisperMode: 'Whisper', callRewind: 'Rewind',
   spatialAudio: 'Spatial', sos: 'SOS', checkIn: 'Check-in', groupPets: 'Pets', wrapped: 'Wrapped', whosRight: 'Who’s right', verifiedCamera: 'Real photo',

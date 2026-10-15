@@ -825,6 +825,8 @@ export function initCalls(ctx) {
       document.body.append(h('div', { class: 'call-return', onclick: restore }, 'Return to call'));
     }
     ui.nameEl.textContent = title();
+    // While it's still ringing, keep the screen simple: no minimise / ⋯ until the call connects.
+    ui.root.querySelectorAll('.top .tb').forEach((b) => { b.style.visibility = call.state === 'active' ? 'visible' : 'hidden'; });
 
     // background avatar while ringing
     const otherId = chat?.type === 'direct' ? chat.members.find((m) => m.id !== ctx.me().id)?.id : null;

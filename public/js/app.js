@@ -4,7 +4,7 @@ import {
 } from './ui.js';
 import { compressImage, videoMeta, VoiceRecorder, player, playScreenEffect, sounds, SCREEN_EFFECTS, BUBBLE_EFFECTS } from './media.js';
 import { initCalls } from './call.js';
-import { showAuth as renderAuth, showChooseUsername, setSignedInHandler } from './auth.js';
+import { showAuth as renderAuth, showChooseUsername, setSignedInHandler, showJoin } from './auth.js';
 import {
   S, api, upload, emit, user, userAvatar, fileUrl, otherMember, chatTitle, chatAvatar, isMuted, isBlocked, mergeUsers, prefs, applyPrefs, feature,
 } from './core.js';
@@ -12,6 +12,7 @@ import {
   openSettings, openNewMessage, openChatInfo, openViewer, openForward, openPoll, openSchedule, openScheduledList,
   openEmojiPicker, openMessageInfo, sendLocation, muteMenu, openSendOptions,
   openMessageOptions, openWhosRight, openVerifiedCamera, openSafety, openRecoveryRequests, shareWhosRight,
+  openUs, openLetterComposer, openInviteLink, openUpgrade, viewLetter,
 } from './sheets.js';
 import { showOnboarding } from './onboarding.js';
 import { lockEnabled, showLock, isHidden } from './lock.js';
@@ -69,6 +70,8 @@ async function boot() {
     } catch {}
   }
   if (authError || linked || m) history.replaceState(null, '', '/');
+  const join = /^\/join\/([\w-]+)/.exec(location.pathname);
+  if (join) return showJoin(join[1]);
   // Never nag people who already installed Ping Me (or opened it from a home-screen shortcut).
   const needGate = !isStandalone() && !store.get('installed', false) && !sessionStorage.getItem('mm:gate-skip') && !signup && !authError;
   if (needGate) await showInstallGate();
@@ -148,6 +151,11 @@ function startApp() {
   app.replaceChildren();
   S.chats.clear(); S.msgs.clear(); S.current = null;
   if (!S.me.settings?.onboarded) setTimeout(() => showOnboarding(() => { renderList(); askNotificationsOnce(true); }), 50);
+  const pendingJoin = sessionStorage.getItem('pm:join');
+  if (pendingJoin) {
+    sessionStorage.removeItem('pm:join');
+    api('POST', `/api/guest-links/${pendingJoin}/accept`, {}).then((r) => loadChats().then(() => openChat(r.chatId))).catch((e) => toast(e.message, { error: true }));
+  }
   const search = h('input', { type: 'search', placeholder: 'Search', enterkeyhint: 'search', autocomplete: 'off' });
   const clearBtn = h('button', { class: 'clear', hidden: true, onclick: () => { search.value = ''; onSearch(''); } }, icon('xc'));
   els.meBtn = h('button', { class: 'me-btn', title: 'Account & settings', 'aria-label': 'Settings', onclick: () => openSettings() });
@@ -294,6 +302,7 @@ function connectSocket() {
   });
   socket.on('chat:changed', ({ chatId }) => refreshChat(chatId));
   socket.on('scheduled:sent', ({ chatId }) => loadScheduled(chatId));
+  socket.on('us:changed', ({ chatId }) => { if (S.current === chatId) renderUsBar(); });
   socket.on('msg:expiry', ({ chatId, id, expiresAt }) => {
     const m = S.msgs.get(chatId)?.list.find((x) => x.id === id);
     if (m) { m.expiresAt = expiresAt; if (S.current === chatId) renderMessages(); }
@@ -427,6 +436,12 @@ export function renderList() {
       h('button', { class: 'x', 'aria-label': 'Dismiss', onclick: () => { store.set('pushBannerDismissed', true); renderList(); } }, icon('x'))));
   }
 
+  if (S.me.settings?.guest) {
+    frag.push(h('button', { class: 'guest-card', onclick: openUpgrade },
+      h('img', { src: '/icons/hand.svg', alt: '' }),
+      h('div', null, h('b', null, 'Save your Ping Me account'), h('span', null, 'Keep your chats on every device and get the app.')),
+      icon('chev')));
+  }
   const visible = all.filter((c) => !c.archived);
   const pinned = visible.filter((c) => c.pinned);
   const rest = visible.filter((c) => !c.pinned);
@@ -438,7 +453,8 @@ export function renderList() {
   frag.push(rest.map(chatRow));
   if (!visible.length) {
     frag.push(h('div', { class: 'empty-list' }, icon('msg'), h('div', null, h('b', null, 'No messages yet')),
-      h('div', null, 'Tap ', h('a', { href: '#', onclick: (e) => { e.preventDefault(); openNewMessage(); } }, 'compose'), ' to message someone by their username, or share your invite link from Settings.')));
+      h('div', null, 'Message someone by username, or send a link — they can reply without installing anything.'),
+      h('button', { class: 'btn invite-btn', onclick: () => openInviteLink() }, icon('link'), 'Invite with a link')));
   }
   els.list.replaceChildren(...frag.flat());
 }
@@ -451,7 +467,7 @@ function chatRow(c) {
     avatar({ id: c.type === 'group' ? c.id : other, name: chatTitle(c), src: chatAvatar(c), size: 50, online: u?.online, group: c.type === 'group' }),
     h('div', { class: 'body' },
       h('div', { class: 'top' },
-        h('span', { class: 'name' }, chatTitle(c), u?.birthdayToday ? icon('gift', 'bday') : null),
+        h('span', { class: 'name' }, chatTitle(c), u?.birthdayToday ? icon('gift', 'bday') : null, c.streak >= 2 && feature('usSpace') ? h('span', { class: 'streak', title: `${c.streak}-day streak` }, icon('fire'), c.streak) : null),
         h('span', { class: 'time' }, isMuted(c) ? icon('belloff') : null, c.lastMessage ? fmtListTime(c.lastMessage.createdAt) : '', c.unread ? h('span', { class: 'badge', style: isMuted(c) ? { background: 'var(--text3)' } : null }, c.unread > 99 ? '99+' : c.unread) : null)),
       h('div', { class: 'prev' }, chatPreview(c))));
   longPress(row, () => chatMenu(c));
@@ -642,15 +658,17 @@ function buildConv(chat) {
   conv.sendAt = null;
   conv.opts = { intent: null, secure: false, eyes: false, vanish: false };
   els.head = h('header', { class: 'cv-head' });
+  els.usBar = h('button', { class: 'us-bar', hidden: true, onclick: () => openUs(S.chats.get(S.current), renderUsBar) });
   els.pinBar = h('div', { class: 'pinned-bar', hidden: true });
   els.msgs = h('div', { class: 'msgs', role: 'log', 'aria-live': 'polite' });
   els.typingRow = h('div', { class: 'typing-row', hidden: true });
   els.jump = h('button', { class: 'jump-btn', hidden: true, 'aria-label': 'Scroll to latest', onclick: () => { const st = S.msgs.get(S.current); if (st?.gapAfter) loadMessages(S.current, { reset: true }); else scrollToBottom(true); } }, icon('down'));
   els.composerWrap = h('div', { class: 'composer-wrap' });
-  els.conv.replaceChildren(els.head, els.pinBar, els.msgs, els.typingRow, els.jump, els.composerWrap);
+  els.conv.replaceChildren(els.head, els.usBar, els.pinBar, els.msgs, els.typingRow, els.jump, els.composerWrap);
   els.msgs.addEventListener('scroll', onScroll, { passive: true });
   setupDrop();
   renderHeader();
+  renderUsBar();
   renderComposer();
   renderTyping();
 }
@@ -674,6 +692,7 @@ export function renderHeader() {
       h('div', { class: 'txt' },
         h('div', { class: 'nm' }, chatTitle(chat), isMuted(chat) ? icon('belloff') : null, chat.disappearSecs ? icon('timer') : null, icon('chev')),
         h('div', { class: 'st' + (on && !typers.length ? ' on' : '') }, status))),
+    chat.type === 'direct' && feature('ping') && !isBlocked(chat) && !u?.deleted ? h('button', { class: 'icon-btn ping-btn', title: 'Send a Ping — thinking of you', 'aria-label': 'Send a Ping', onclick: () => sendPing(chat) }, h('img', { src: '/icons/hand.svg', alt: '' })) : null,
     isBlocked(chat) || u?.deleted ? null : h('button', { class: 'icon-btn', title: 'Audio call', 'aria-label': 'Audio call', onclick: () => S.calls.start(chat.id, false) }, icon('phone')),
     isBlocked(chat) || u?.deleted ? null : h('button', { class: 'icon-btn', title: 'Video call', 'aria-label': 'Video call', onclick: () => S.calls.start(chat.id, true) }, icon('video')));
   renderPinnedBar();
@@ -833,6 +852,7 @@ async function onNewMessage(m) {
     if (chat.archived && m.kind !== 'system') chat.archived = false;
     const viewing = S.current === m.chatId && !document.hidden && conv.nearBottom;
     if (!mine && m.kind !== 'system' && !viewing && !fresh) chat.unread = (chat.unread || 0) + 1;
+    if (m.kind !== 'system' && m.kind !== 'call' && chat.type === 'direct' && S.current === m.chatId) setTimeout(renderUsBar, 300);
     if (!mine) setTyping(m.chatId, m.senderId, false);
   }
   if (S.current === m.chatId) {
@@ -844,9 +864,11 @@ async function onNewMessage(m) {
     if (!mine && SCREEN_EFFECTS[m.effect] && !document.hidden) playScreenEffect(m.effect);
     if (mine && SCREEN_EFFECTS[m.effect]) playScreenEffect(m.effect);
   }
+  if (!mine && m.kind === 'ping' && !document.hidden) { sounds.ping(); playPingEffect(); }
+  if (!mine && m.kind === 'letter' && S.current === m.chatId) renderUsBar();
   if (!mine && m.kind !== 'system' && chat && !isMuted(chat) && !m.silent && !document.hidden) {
     const inThisChat = S.current === m.chatId;
-    if (prefs().sounds) inThisChat ? sounds.tick() : sounds.message();
+    if (prefs().sounds && m.kind !== 'ping') inThisChat ? sounds.tick() : sounds.message();
     if (!inThisChat) showBanner(chat, m);
   }
   renderList();
@@ -933,6 +955,7 @@ export function renderMessages() {
       nodes.push(getNode('d' + m.id, String(Math.floor(m.createdAt / 60000)), () => h('div', { class: 'day', html: fmtDay(m.createdAt) })));
     }
     if (m.kind === 'system') { nodes.push(getNode('m' + m.id, 's' + m.id, () => h('div', { class: 'sys', 'data-id': m.id }, systemText(m, chat)))); continue; }
+    if (m.kind === 'ping') { nodes.push(getNode('m' + (m.clientId || m.id), 'p' + m.id + (m.pending ? 'x' : ''), () => pingRow(m, chat))); continue; }
     const first = !sameGroup(prev, m) || (prev && m.createdAt - prev.createdAt > 3600000);
     const last = !sameGroup(m, next) || (next && next.createdAt - m.createdAt > 3600000);
     const status = i === lastMineIdx ? receiptStatus(m, chat) : '';
@@ -1079,6 +1102,7 @@ function buildBubble(m, mine, chat) {
           h('div', { class: 'lt' }, h('b', null, m.loc.label || 'Shared location'), h('span', { class: 'muted small' }, `${lat.toFixed(5)}, ${lng.toFixed(5)}${m.loc.acc ? ` · ±${Math.round(m.loc.acc)}m` : ''}`))));
     }
     case 'poll': return h('div', { class: 'bubble' }, pollEl(m, chat));
+    case 'letter': return letterCard(m, mine);
     case 'call': {
       const c = m.call || {};
       const missed = c.missed;
@@ -1091,6 +1115,61 @@ function buildBubble(m, mine, chat) {
     }
     default: return h('div', { class: 'bubble' }, m.text || '');
   }
+}
+
+// ─────── the Ping ───────
+function pingRow(m, chat) {
+  const mine = m.senderId === S.me.id;
+  const other = user(otherMember(chat) || m.senderId).name.split(' ')[0];
+  return h('div', { class: 'ping-row' + (mine ? ' me' : ''), 'data-id': m.id },
+    h('img', { class: 'ping-hand', src: '/icons/hand.svg', alt: '' }),
+    h('div', null, h('b', null, mine ? `You pinged ${other}` : `${user(m.senderId).name.split(' ')[0]} pinged you`), h('small', null, `Thinking of you · ${fmtTime(m.createdAt)}`)));
+}
+
+async function sendPing(chat) {
+  navigator.vibrate?.(20);
+  sounds.ping();
+  playPingEffect(true);
+  try { await emit('msg:send', { chatId: chat.id, kind: 'ping' }); }
+  catch (e) { toast(e.message, { error: true }); }
+}
+
+function playPingEffect(small = false) {
+  document.querySelector('.ping-fx')?.remove();
+  const fx = h('div', { class: 'ping-fx' + (small ? ' small' : '') }, h('img', { src: '/icons/hand.svg', alt: '' }));
+  document.body.append(fx);
+  setTimeout(() => fx.remove(), small ? 900 : 1900);
+}
+
+// ─────── open-when letters ───────
+function letterCard(m, mine) {
+  const l = m.letter || {};
+  const state = mine
+    ? (l.openedAt ? `Opened ${fmtListTime(l.openedAt)}` : l.locked ? `Unlocks ${new Date(l.unlockAt).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })}` : 'Not opened yet')
+    : (l.locked ? `Opens on ${new Date(l.unlockAt).toLocaleDateString([], { day: 'numeric', month: 'short', year: 'numeric' })}` : l.openedAt ? 'Tap to read again' : 'Tap to open');
+  return h('button', { class: 'bubble letter' + (l.locked && !mine ? ' locked' : ''), type: 'button', onclick: (e) => { e.stopPropagation(); if (!m.pending) viewLetter(m); } },
+    h('span', { class: 'env' }, icon(l.locked && !mine ? 'lock' : 'mail')),
+    h('span', { class: 'lt' }, h('small', null, 'Open-when letter'), h('b', null, l.title || 'Letter'), h('em', null, state)));
+}
+
+// ─────── Us strip under the header ───────
+async function renderUsBar() {
+  const chat = S.chats.get(S.current);
+  if (!els.usBar) return;
+  if (!chat || chat.type !== 'direct' || !feature('usSpace')) { els.usBar.hidden = true; return; }
+  try {
+    const us = await api('GET', `/api/chats/${chat.id}/us`);
+    if (S.current !== chat.id) return;
+    S.us = us;
+    els.usBar.hidden = false;
+    els.usBar.replaceChildren(
+      h('span', { class: 'us-pill' }, icon('heart'), 'Us'),
+      h('span', null, `${us.days} day${us.days === 1 ? '' : 's'}`),
+      us.streak ? h('span', { class: 'us-streak' }, icon('fire'), us.streak) : null,
+      us.anniversary && us.anniversary.inDays <= 30 ? h('span', null, us.anniversary.inDays === 0 ? 'Anniversary today!' : `Anniversary in ${us.anniversary.inDays}d`) : null,
+      !us.bothToday && us.streak ? h('span', { class: 'us-hint' }, 'Chat today to keep it') : null,
+      h('span', { class: 'spacer' }), icon('chev'));
+  } catch { els.usBar.hidden = true; }
 }
 
 function openEyes(m, mine) {
@@ -1470,6 +1549,8 @@ async function plusMenu() {
   const r = await actionSheet({
     align: 'left',
     actions: [
+      chat.type === 'direct' && feature('ping') ? { label: 'Send a Ping', icon: 'hand', value: 'ping' } : null,
+      chat.type === 'direct' && feature('usSpace') ? { label: 'Write an open-when letter', icon: 'mail', value: 'letter' } : null,
       { label: 'Photos & Videos', icon: 'image', value: 'media' },
       isMobile() ? { label: 'Camera', icon: 'camera', value: 'camera' } : null,
       feature('verifiedCamera') ? { label: 'Verified Real photo', icon: 'shield', value: 'vr' } : null,
@@ -1495,6 +1576,8 @@ async function plusMenu() {
   if (r === 'whosright') openWhosRight(chat);
   if (r === 'vr') openVerifiedCamera(chat.id);
   if (r === 'safety') openSafety(chat.id);
+  if (r === 'ping') sendPing(chat);
+  if (r === 'letter') openLetterComposer(chat);
 }
 
 function setupDrop() {

@@ -260,3 +260,58 @@ function showRecoveryStatus(rec) {
   poll();
   timer = setInterval(poll, 5000);
 }
+
+// ───── reply without installing (guest link) ─────
+// Opened from a shared /join/<token> link: see who invited you and their message, type your name,
+// and you're chatting. No username, password or app install needed to start.
+
+export async function showJoin(token) {
+  const card = h('div', { class: 'card join' }, h('div', { class: 'spinner', style: { margin: '40px auto' } }));
+  app().replaceChildren(h('div', { class: 'auth' }, card));
+  let info;
+  try { info = await api('GET', `/api/guest-links/${encodeURIComponent(token)}`); }
+  catch (e) {
+    card.replaceChildren(logo(), h('h1', null, 'Link expired'), h('p', { class: 'sub' }, e.message),
+      h('button', { class: 'btn', onclick: () => { history.replaceState(null, '', '/'); showAuth('register'); } }, 'Create an account'));
+    return;
+  }
+  const accept = async (body) => {
+    const r = await api('POST', `/api/guest-links/${encodeURIComponent(token)}/accept`, body);
+    S.me = r.user;
+    sessionStorage.removeItem('pm:join');
+    history.replaceState(null, '', '/?chat=' + r.chatId);
+    onSignedIn();
+  };
+  // Already signed in? Go straight to the chat.
+  try { const { user } = await api('GET', '/api/session'); if (user) return await accept({}); } catch (e) { if (e.status && e.status !== 401) toast(e.message, { error: true }); }
+
+  const first = info.inviter.name.split(' ')[0];
+  const err = h('div', { class: 'err' });
+  const name = h('input', { class: 'field', placeholder: 'Your name', autocomplete: 'name', maxlength: 60 });
+  const age = h('input', { type: 'checkbox' });
+  const btn = h('button', { class: 'btn', type: 'submit' }, `Reply to ${first}`);
+  const av = h('div', { class: 'join-av' }, h('span', null, first[0]?.toUpperCase() || '?'));
+  if (info.inviter.avatarV) {
+    const img = h('img', { src: `/api/guest-links/${encodeURIComponent(token)}/avatar`, alt: '' });
+    img.onload = () => av.replaceChildren(img);
+  }
+  const form = h('form', { class: 'card join', novalidate: true, onsubmit: async (e) => {
+    e.preventDefault();
+    err.textContent = '';
+    if (!name.value.trim()) return (err.textContent = 'Please enter your name');
+    if (!age.checked) return (err.textContent = 'Please confirm you’re 13 or older');
+    btn.disabled = true;
+    try { await accept({ name: name.value.trim(), ageOk: true }); } catch (ex) { err.textContent = ex.message; btn.disabled = false; }
+  } },
+    h('img', { class: 'brand-logo small', src: '/icons/logo.svg', alt: 'pingme' }),
+    av,
+    h('h1', null, `${info.inviter.name} invited you`),
+    info.message ? h('div', { class: 'join-msg' }, info.message) : h('p', { class: 'sub' }, `Chat with ${first} on Ping Me — private messages and HD calls.`),
+    name,
+    h('label', { class: 'join-age' }, age, h('span', null, 'I’m 13 or older')),
+    err, btn,
+    h('p', { class: 'muted small center' }, 'No app or sign-up needed — you can save your account later.'),
+    h('div', { class: 'switch' }, 'Have an account? ', h('a', { href: '#', class: 'link', onclick: (e) => { e.preventDefault(); sessionStorage.setItem('pm:join', token); history.replaceState(null, '', '/'); showAuth('login'); } }, 'Sign in')));
+  card.replaceWith(form);
+  setTimeout(() => name.focus(), 200);
+}

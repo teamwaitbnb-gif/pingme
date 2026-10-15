@@ -21,6 +21,7 @@ const FEATURES = {
   scamRadar: true, promiseTracker: true, intentTags: true, secureMessages: true, eyesOnly: true,
   vanishAfterRead: true, checkIn: true, verifiedDevices: true, reasonToCall: true, whisperMode: true,
   callRewind: true, spatialAudio: true, sos: true, groupPets: true, wrapped: true, whosRight: true, verifiedCamera: true,
+  ping: true, usSpace: true,
 };
 const MIN_AGE = 13;
 
@@ -84,7 +85,7 @@ async function getUser(id) {
     avatarV: Number(r.avatar_v) || 0,
     settings: (() => {
       const s = C.decJson(r.settings_enc, {}) || {};
-      return { ...DEFAULT_SETTINGS, ...s, features: { ...FEATURES, ...(s.features || {}) }, trusted: Array.isArray(s.trusted) ? s.trusted : [], onboarded: !!s.onboarded };
+      return { ...DEFAULT_SETTINGS, ...s, features: { ...FEATURES, ...(s.features || {}) }, trusted: Array.isArray(s.trusted) ? s.trusted : [], onboarded: !!s.onboarded, guest: !!s.guest };
     })(),
     birth: C.dec(r.birth_enc),
     lastSeen: ms(r.last_seen),
@@ -225,6 +226,7 @@ async function serializeChats(viewerId, chatId = null) {
     [viewerId, ids, viewerId]
   );
   const unread = new Map(unreadRows.map((r) => [Number(r.chat_id), Number(r.n)]));
+  const streaks = await streaksFor(rows.filter((r) => r.type === 'direct').map((r) => Number(r.id)));
 
   return rows.map((r) => {
     const id = Number(r.id);
@@ -244,8 +246,33 @@ async function serializeChats(viewerId, chatId = null) {
       members: members.get(id) || [],
       lastMessage: lastMsgs.get(id) || null,
       unread: unread.get(id) || 0,
+      streak: streaks.get(id) || 0,
     };
   });
+}
+
+// Streak = consecutive days (India time) on which BOTH people sent something, ending today or yesterday.
+const istDay = (t) => new Date(t + 5.5 * 3600000).toISOString().slice(0, 10);
+async function streaksFor(chatIds) {
+  const out = new Map();
+  if (!chatIds.length) return out;
+  const rows = await db.q(
+    `SELECT chat_id, DATE(CONVERT_TZ(created_at, '+00:00', '+05:30')) d, COUNT(DISTINCT sender_id) n FROM messages
+      WHERE chat_id IN (?) AND created_at > ? AND deleted=0 AND kind NOT IN ('system','call')
+      GROUP BY chat_id, d`, [chatIds, new Date(Date.now() - 400 * 86400000)]);
+  const days = new Map();
+  for (const r of rows) if (Number(r.n) >= 2) {
+    const d = r.d instanceof Date ? r.d.toISOString().slice(0, 10) : String(r.d).slice(0, 10);
+    if (!days.has(Number(r.chat_id))) days.set(Number(r.chat_id), new Set());
+    days.get(Number(r.chat_id)).add(d);
+  }
+  const today = istDay(Date.now()), yesterday = istDay(Date.now() - 86400000);
+  for (const [cid, set] of days) {
+    let cur = set.has(today) ? today : set.has(yesterday) ? yesterday : null, n = 0;
+    while (cur && set.has(cur)) { n++; cur = new Date(new Date(cur + 'T00:00:00Z').getTime() - 86400000).toISOString().slice(0, 10); }
+    out.set(cid, n);
+  }
+  return out;
 }
 
 function preview(m) {
@@ -262,6 +289,8 @@ function preview(m) {
     case 'location': return m.loc?.label || 'Location';
     case 'poll': return m.poll?.q || 'Poll';
     case 'call': return (m.call?.missed ? 'Missed ' : '') + (m.call?.video ? 'video call' : 'audio call');
+    case 'ping': return 'Pinged you — thinking of you';
+    case 'letter': return 'Letter: ' + (m.letter?.title || 'Open when…');
     default: return m.text || '';
   }
 }
@@ -334,6 +363,8 @@ async function serializeMessages(rows, viewerId, { light = false } = {}) {
       pinned: !!r.pinned,
       replyTo: r.reply_to ? replies.get(Number(r.reply_to)) || { id: Number(r.reply_to), missing: true } : null,
       reactions: reactions.get(id) || [],
+      ping: b.ping || null,
+      letter: b.letter ? letterView(b.letter, Number(r.sender_id) === viewerId) : null,
       intent: b.intent || null,
       secure: !!b.secure,
       eyes: !!b.eyes,
@@ -347,6 +378,14 @@ async function serializeMessages(rows, viewerId, { light = false } = {}) {
   });
 }
 
+// Open-when letters: the recipient only receives the text once it's unlocked AND they open it.
+function letterView(l, isSender) {
+  const locked = !!l.unlockAt && l.unlockAt > Date.now();
+  const v = { title: l.title, unlockAt: l.unlockAt || null, openedAt: l.openedAt || null, locked };
+  if (isSender || l.openedAt) v.text = l.text;
+  return v;
+}
+
 async function loadMessage(id, viewerId) {
   const row = await db.one('SELECT * FROM messages WHERE id=?', [id]);
   if (!row) return null;
@@ -355,7 +394,7 @@ async function loadMessage(id, viewerId) {
 
 // ─────────────────────────── messaging core ───────────────────────────
 
-const VALID_KINDS = new Set(['text', 'image', 'video', 'audio', 'file', 'location', 'poll']);
+const VALID_KINDS = new Set(['text', 'image', 'video', 'audio', 'file', 'location', 'poll', 'ping', 'letter']);
 const VALID_EFFECTS = new Set(['slam', 'loud', 'gentle', 'ink', 'confetti', 'balloons', 'hearts', 'fireworks', 'lasers', 'celebrate']);
 
 async function buildBody(chatId, senderId, input) {
@@ -391,6 +430,15 @@ async function buildBody(chatId, senderId, input) {
     const lat = Number(input.loc?.lat), lng = Number(input.loc?.lng);
     if (!Number.isFinite(lat) || !Number.isFinite(lng)) throw bad('Bad location');
     body.loc = { lat, lng, acc: Number(input.loc?.acc) || undefined, label: clampStr(input.loc?.label || '', 120) || undefined };
+  } else if (kind === 'ping') {
+    body.ping = { long: !!input.ping?.long };
+  } else if (kind === 'letter') {
+    const title = clampStr(input.letter?.title || '', 80).trim();
+    const ltext = clampStr(input.letter?.text || '', 5000).trim();
+    if (!title || !ltext) throw bad('A letter needs a title and a message');
+    const unlockAt = Number(input.letter?.unlockAt) || null;
+    if (unlockAt && (unlockAt < Date.now() + 60000 || unlockAt > Date.now() + 5 * 365 * 86400000)) throw bad('Pick an unlock date in the future');
+    body.letter = { title, text: ltext, unlockAt };
   } else if (kind === 'poll') {
     const q = clampStr(input.poll?.q || '', 300).trim();
     const opts = (Array.isArray(input.poll?.opts) ? input.poll.opts : [])
@@ -401,6 +449,7 @@ async function buildBody(chatId, senderId, input) {
     throw bad('Message is empty');
   }
   if (INTENTS.has(input.intent)) body.intent = input.intent;
+  if (kind === 'ping' || kind === 'letter') return { kind, body, attachmentId: null, vanish: false };
   if (input.secure && (kind === 'text' || kind === 'image')) body.secure = true;
   if (input.eyes && ['text', 'image', 'video'].includes(kind)) body.eyes = true;
   if (kind === 'poll' && input.poll?.whosRight) body.poll.whosRight = true;
@@ -453,7 +502,15 @@ async function insertMessage({ chatId, senderId, kind, body, replyTo = null, att
   }
 
   const msg = await loadMessage(id, senderId);
-  io.to('c:' + chatId).emit('msg:new', { ...msg, clientId });
+  if (kind === 'letter') {
+    // Sender gets the full letter; everyone else gets it sealed.
+    const sealed = { ...msg, letter: letterView(body.letter, false), preview: msg.preview };
+    emitToUser(senderId, 'msg:new', { ...msg, clientId });
+    for (const s of online.get(senderId) || []) s.join('c:' + chatId);
+    io.to('c:' + chatId).except('u:' + senderId).emit('msg:new', sealed);
+  } else {
+    io.to('c:' + chatId).emit('msg:new', { ...msg, clientId });
+  }
   for (const u of onlineOthers) {
     io.to('c:' + chatId).emit('receipt', { chatId, userId: u, lastDelivered: id });
   }
@@ -481,12 +538,21 @@ async function notifyMembers(chatId, senderId, msg, members) {
     const urgent = msg.intent === 'urgent' || msg.sos;
     let body = previews ? (msg.effect === 'ink' ? 'Sent with Invisible Ink' : msg.preview) : 'New message';
     if (msg.sos) body = 'SOS — needs help now. Tap to see their live location.';
+    else if (msg.kind === 'ping') body = msg.ping?.long ? 'Pinged you — really missing you' : 'Pinged you — thinking of you';
+    else if (msg.kind === 'letter') body = 'Sent you a letter: ' + (msg.letter?.title || '');
     else if (urgent && previews) body = 'Urgent · ' + body;
     push.send(uid, {
       type: 'msg', title: previews || msg.sos ? (group || sender.name) : 'Ping Me', sender: previews && group ? sender.name : null,
-      body, tag: 'chat-' + chatId, url: '/?chat=' + chatId, chatId, msgId: msg.id, ts: msg.createdAt, urgent,
+      body, tag: 'chat-' + chatId, url: '/?chat=' + chatId, chatId, msgId: msg.id, ts: msg.createdAt, urgent, ping: msg.kind === 'ping',
     }, { urgency: urgent ? 'high' : 'normal' }).catch(() => {});
   }
+}
+
+// Broadcast a message update. Letters are rendered per viewer so sealed text never leaks.
+async function emitUpdate(chatId, id, actorId) {
+  const row = await db.one('SELECT kind FROM messages WHERE id=?', [id]);
+  if (row?.kind !== 'letter') return io.to('c:' + chatId).emit('msg:update', await loadMessage(id, actorId));
+  for (const uid of await activeMemberIds(chatId)) emitToUser(uid, 'msg:update', await loadMessage(id, uid));
 }
 
 async function systemMessage(chatId, actorId, sys) {
@@ -620,17 +686,17 @@ async function checkInvite(code) {
   return row.code_hash;
 }
 
-async function createUser({ username, name, password = null, email = null, birth, invite }) {
+async function createUser({ username, name, password = null, email = null, birth, invite, guest = false }) {
   const problem = await usernameProblem(username);
   if (problem) throw bad(problem);
-  const birthDate = parseBirth(birth);
-  const inviteRow = await checkInvite(invite);
+  const birthDate = guest ? null : parseBirth(birth);
+  const inviteRow = guest ? null : await checkInvite(invite);
   try {
     const r = await db.q(
       `INSERT INTO users (uname_hash, uname_canon, uname_enc, pass_hash, email_enc, birth_enc, name_enc, settings_enc, last_seen)
        VALUES (?,?,?,?,?,?,?,?,?)`,
       [unameHash(username), unameCanon(username), C.enc(username), password ? await C.hashPassword(password) : null,
-        email ? C.enc(email) : null, C.enc(birthDate), C.enc(name || username), C.enc({ ...DEFAULT_SETTINGS, features: FEATURES, onboarded: false }), now()]
+        email ? C.enc(email) : null, birthDate ? C.enc(birthDate) : null, C.enc(name || username), C.enc({ ...DEFAULT_SETTINGS, features: FEATURES, onboarded: guest, guest }), now()]
     );
     const uid = Number(r.insertId);
     if (inviteRow) {
@@ -1385,6 +1451,8 @@ const advanced = require('./features')({
   app, io, db, C, push, auth, wrap, bad, forbidden, notFound, HttpError, toInt, clampStr, now, ms,
   requireMember, getUser, publicUser, insertMessage, loadMessage, emitToUser, joinUserToChat, rateLimit,
   createSession, findUserIdByUsername, meView, inviteHash, INVITES_PER_USER, userCache,
+  createUser, usernameProblem, unameHash, unameCanon, U, sessionUser, parseCookies, COOKIE, parseBirth, emitUpdate, streaksFor,
+  serializeMessagesFor: serializeMessages,
 });
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
@@ -1505,6 +1573,7 @@ io.on('connection', (socket) => {
   socket.on('msg:send', sockHandler(socket, async (d) => {
     const chatId = toInt(d.chatId);
     await requireMember(chatId, uid);
+    if (d.kind === 'ping') rateLimit(`ping:${uid}:${chatId}`, 3, 30000);
     const chat = await db.one('SELECT type FROM chats WHERE id=?', [chatId]);
     if (chat.type === 'direct') {
       const others = (await activeMemberIds(chatId)).filter((x) => x !== uid);
@@ -1590,7 +1659,23 @@ io.on('connection', (socket) => {
     if (!row || row.deleted) throw notFound();
     await requireMember(Number(row.chat_id), uid);
     await db.q('UPDATE messages SET pinned=? WHERE id=?', [d.pinned ? 1 : 0, id]);
-    io.to('c:' + row.chat_id).emit('msg:update', await loadMessage(id, uid));
+    await emitUpdate(Number(row.chat_id), id, uid);
+  }));
+
+  socket.on('letter:open', sockHandler(socket, async (d) => {
+    const id = toInt(d.id);
+    const row = await db.one("SELECT chat_id, sender_id, body_enc FROM messages WHERE id=? AND kind='letter' AND deleted=0", [id]);
+    if (!row) throw notFound('Letter not found');
+    await requireMember(Number(row.chat_id), uid);
+    if (Number(row.sender_id) === uid) return { message: await loadMessage(id, uid) };
+    const body = C.decJson(row.body_enc, {});
+    if (body.letter.unlockAt && body.letter.unlockAt > Date.now()) throw bad('This letter can’t be opened yet');
+    if (!body.letter.openedAt) {
+      body.letter.openedAt = Date.now();
+      await db.q('UPDATE messages SET body_enc=? WHERE id=?', [C.enc(body), id]);
+    }
+    await emitUpdate(Number(row.chat_id), id, uid);
+    return { message: await loadMessage(id, uid) };
   }));
 
   socket.on('poll:vote', sockHandler(socket, async (d) => {
@@ -1676,6 +1761,13 @@ async function ringUsers(call, userIds) {
     if (await isBlockedBetween(call.startedBy, u)) continue;
     call.ringing.add(u);
     emitToUser(u, 'call:incoming', callInvite(call));
+    const title0 = chat.type === 'group' ? `${caller.name} · ${C.dec(chat.title_enc) || 'Group'}` : caller.name;
+    let rings = 0;
+    const t = setInterval(() => {
+      if (!calls.has(call.id) || !call.ringing.has(u) || ++rings > 8) return clearInterval(t);
+      push.send(u, { type: 'call', title: title0, body: `Incoming ${call.video ? 'video' : 'audio'} call` + (call.reason ? ` — “${call.reason}”` : ''), tag: 'call-' + call.id, url: `/?call=${call.id}&chat=${call.chatId}`, callId: call.id, chatId: call.chatId, video: call.video, ts: Date.now(), ring: rings }, { urgency: 'high', ttl: 10 }).catch(() => {});
+    }, 5000);
+    (call.ringTimers ||= []).push(t);
     const title = chat.type === 'group' ? `${caller.name} · ${C.dec(chat.title_enc) || 'Group'}` : caller.name;
     push.send(u, { type: 'call', title, body: `Incoming ${call.video ? 'video' : 'audio'} call` + (call.reason ? ` — “${call.reason}”` : ''), tag: 'call-' + call.id, url: `/?call=${call.id}&chat=${call.chatId}`, callId: call.id, chatId: call.chatId, video: call.video, ts: Date.now() }, { urgency: 'high', ttl: 45 }).catch(() => {});
   }
@@ -1783,6 +1875,7 @@ async function endCall(call, reason) {
   if (!calls.has(call.id)) return;
   calls.delete(call.id);
   clearTimeout(call.timer);
+  (call.ringTimers || []).forEach(clearInterval);
   for (const sid of call.participants.keys()) io.to(sid).emit('call:ended', { callId: call.id, reason });
   for (const u of call.ringing) {
     emitToUser(u, 'call:ended', { callId: call.id, reason });
