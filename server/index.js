@@ -1133,7 +1133,42 @@ app.get('/api/avatar/c/:id', auth, wrap(async (req, res) => {
 
 // ─────────────────────────── HTTP: chats ───────────────────────────
 
-app.get('/api/config', (req, res) => {
+// ICE servers for calls. STUN alone only works when both phones can reach each other directly —
+// mobile networks (Jio/Airtel/Vi carrier NAT) usually can't, so calls need a TURN relay.
+// Cloudflare TURN (CF_TURN_KEY_ID + CF_TURN_API_TOKEN) hands out short-lived credentials;
+// a fixed TURN server (TURN_URLS/USERNAME/CREDENTIAL) works too.
+const CF_TTL = 24 * 3600;
+let cfIce = { at: 0, list: null, pending: null };
+async function cloudflareIce() {
+  const id = process.env.CF_TURN_KEY_ID, token = process.env.CF_TURN_API_TOKEN;
+  if (!id || !token) return [];
+  if (cfIce.list && Date.now() - cfIce.at < (CF_TTL / 2) * 1000) return cfIce.list;
+  if (!cfIce.pending) {
+    cfIce.pending = (async () => {
+      try {
+        const r = await fetch(`${process.env.CF_TURN_API || 'https://rtc.live.cloudflare.com'}/v1/turn/keys/${encodeURIComponent(id)}/credentials/generate-ice-servers`, {
+          method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify({ ttl: CF_TTL }), signal: AbortSignal.timeout(5000),
+        });
+        if (!r.ok) throw new Error('Cloudflare TURN ' + r.status + ' ' + (await r.text()).slice(0, 200));
+        const d = await r.json();
+        const list = (Array.isArray(d.iceServers) ? d.iceServers : [d.iceServers]).filter(Boolean)
+          // Port 53 entries make browsers stall — Cloudflare's own docs say to drop them.
+          .map((s) => ({ ...s, urls: [].concat(s.urls).filter((u) => !/:53(\?|$)/.test(u)) }))
+          .filter((s) => s.urls.length);
+        cfIce = { at: Date.now(), list, pending: null };
+        return list;
+      } catch (e) {
+        console.error('TURN credentials failed:', e.message);
+        cfIce.pending = null;
+        return cfIce.list || [];
+      }
+    })();
+  }
+  return cfIce.pending;
+}
+
+async function iceServers() {
   const ice = [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }];
   if (process.env.TURN_URLS) {
     ice.push({
@@ -1142,9 +1177,22 @@ app.get('/api/config', (req, res) => {
       credential: process.env.TURN_CREDENTIAL || undefined,
     });
   }
+  ice.push(...(await cloudflareIce()));
+  return ice;
+}
+const hasRelay = (ice) => ice.some((s) => [].concat(s.urls).some((u) => /^turns?:/.test(u)));
+
+app.get('/api/ice', auth, wrap(async (req, res) => {
+  const ice = await iceServers();
+  res.json({ iceServers: ice, relay: hasRelay(ice) });
+}));
+
+// Public: STUN only. Relay credentials come from /api/ice, signed-in people only.
+app.get('/api/config', (req, res) => {
   res.json({
     instance: INSTANCE_ID,
-    iceServers: ice,
+    iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }],
+    relay: !!(process.env.TURN_URLS || (process.env.CF_TURN_KEY_ID && process.env.CF_TURN_API_TOKEN)),
     vapidPublicKey: push.enabled ? process.env.VAPID_PUBLIC_KEY : null,
     maxUpload: MAX_UPLOAD,
     googleClientId: oauth.enabled('google') ? process.env.GOOGLE_CLIENT_ID.split(',')[0].trim() : null,

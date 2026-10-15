@@ -24,6 +24,8 @@ const defaults = {
   TURN_URLS: '',
   TURN_USERNAME: '',
   TURN_CREDENTIAL: '',
+  CF_TURN_KEY_ID: '',
+  CF_TURN_API_TOKEN: '',
   PUBLIC_URL: '',
   GOOGLE_CLIENT_ID: '',
   APPLE_CLIENT_ID: '',

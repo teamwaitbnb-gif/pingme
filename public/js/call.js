@@ -148,13 +148,28 @@ export function initCalls(ctx) {
     if (call && (!call.ui || !call.ui.root.isConnected)) { const c = call; call = null; try { c.stream?.getTracks().forEach((t) => t.stop()); } catch {} }
   }
 
+  // Relay (TURN) servers come with short-lived credentials — fetch them before every call.
+  // Without a relay, phones on mobile data usually can't reach each other: ringing works, but no
+  // video or voice arrives.
+  let ice = null, iceAt = 0;
+  async function freshIce() {
+    if (ice && Date.now() - iceAt < 3600e3) return;
+    try {
+      const r = await Promise.race([api('GET', '/api/ice'), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 4000))]);
+      if (r?.iceServers?.length) { ice = r.iceServers; iceAt = Date.now(); }
+    } catch {}
+  }
+  setTimeout(freshIce, 3000);
+
   async function start(chatId, video, { reason = '' } = {}) {
     dropStaleCall();
     if (call) { toast('You are already in a call'); restore(); return; }
     if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) return toast('Calls are not supported in this browser', { error: true });
     if (!(await ensurePermission(video ? ['camera', 'microphone'] : ['microphone'], video ? 'So the person you call can see and hear you.' : 'So the person you call can hear you.'))) return;
+    const iceReady = freshIce();
     let stream;
     try { stream = await getMedia({ video }); } catch (e) { return toast(mediaError(e), { error: true, timeout: 6000 }); }
+    await iceReady;
     call = newSession({ chatId, video, stream, outgoing: true });
     buildUI();
     const mine = call;
@@ -215,6 +230,7 @@ export function initCalls(ctx) {
     const inv = incoming?.invite;
     closeIncoming();
     if (!inv) return;
+    const iceReady = freshIce();
     if (video && (await permissionState('camera')) === 'denied') { video = false; toast('Camera is blocked — answering with audio'); }
     if (!(await ensurePermission(video ? ['camera', 'microphone'] : ['microphone'], video ? 'So they can see and hear you.' : 'So they can hear you.'))) {
       socket.emit('call:decline', { callId: inv.callId });
@@ -234,6 +250,7 @@ export function initCalls(ctx) {
     }
     call = newSession({ chatId: inv.chatId, video: inv.video, stream, outgoing: false });
     call.id = inv.callId;
+    await iceReady;
     buildUI();
     join();
   }
@@ -428,7 +445,8 @@ export function initCalls(ctx) {
 
   function createPeer(socketId, userId, initiator) {
     if (call.peers.has(socketId)) return call.peers.get(socketId);
-    const pc = new RTCPeerConnection({ iceServers: ctx.config().iceServers, bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require', iceCandidatePoolSize: 2 });
+    // 'relay-only' (diagnostics): route media through TURN only, like the strictest mobile networks.
+    const pc = new RTCPeerConnection({ iceServers: ice || ctx.config().iceServers, iceTransportPolicy: store.get('relay-only', false) ? 'relay' : 'all', bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require', iceCandidatePoolSize: 2 });
     const peer = {
       socketId, userId, pc, initiator,
       stream: new MediaStream(),
@@ -472,6 +490,14 @@ export function initCalls(ctx) {
       renderTile(peer);
       updateStatus();
     };
+    // Never fail silently: if no media path appears, say so.
+    const session = call;
+    setTimeout(() => {
+      if (call !== session || !call.peers.has(socketId) || ['connected', 'closed'].includes(pc.connectionState)) return;
+      toast(ctx.config().relay
+        ? 'Still connecting — the network is slow. Try Wi-Fi or move to better signal.'
+        : 'Can’t connect the call on this network — the server’s call relay (TURN) isn’t set up yet.', { error: true, timeout: 8000 });
+    }, 20000);
     // Flush any ICE that arrived before we knew this peer.
     const q = call.pendingIce.get(socketId);
     if (q) { peer.queued = q; call.pendingIce.delete(socketId); }
@@ -487,6 +513,8 @@ export function initCalls(ctx) {
   }
 
   async function restartIce(peer) {
+    await freshIce(); // relay credentials may have expired on a long call
+    try { if (ice) peer.pc.setConfiguration({ ...peer.pc.getConfiguration(), iceServers: ice }); } catch {}
     try { peer.pc.restartIce?.(); await makeOffer(peer, true); } catch {}
   }
 
@@ -799,7 +827,10 @@ export function initCalls(ctx) {
     if (peer.videoEl.srcObject !== peer.stream) peer.videoEl.srcObject = peer.stream;
     const vt = peer.stream.getVideoTracks()[0];
     if (vt && peer.bgEl && peer.bgEl.srcObject?.getVideoTracks()[0] !== vt) { peer.bgEl.srcObject = new MediaStream([vt]); peer.bgEl.play().catch(() => {}); }
-    peer.videoEl.play().catch(() => {});
+    peer.videoEl.play().catch((e) => {
+      // Phone blocked sound until a tap — offer one, so the other person is never silent.
+      if (e?.name === 'NotAllowedError') toast('Tap here to hear the call', { timeout: 15000, onClick: () => { for (const p of call?.peers.values() || []) p.videoEl?.play().catch(() => {}); } });
+    });
     renderTile(peer);
     render();
   }
