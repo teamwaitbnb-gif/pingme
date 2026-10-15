@@ -60,20 +60,37 @@ wav('sent.wav', render(0.18, (b) => {
   }
 }, -12));
 
-// Ringtone (loops): slow, warm arpeggio with breathing room.
-wav('ringtone.wav', render(3.6, (b) => {
-  [[0, N.C5], [0.32, N.E5], [0.64, N.G5], [0.96, N.C6]].forEach(([t, f]) => bell(b, t, f, { amp: 0.9, decay: 0.55, attack: 0.02 }));
-  bell(b, 1.6, N.G5, { amp: 0.6, decay: 0.6, attack: 0.02 });
-}, -7));
-
-// Outgoing ring-back (loops): one soft tone every 3 seconds.
-wav('ringback.wav', render(3.0, (b) => {
-  for (let i = 0; i < RATE * 1.1; i++) {
+// Marimba-like mallet: bright attack, wooden overtones that fade fast, warm body.
+function mallet(buf, t0, freq, { amp = 1, decay = 0.38 } = {}) {
+  const start = Math.round(t0 * RATE);
+  const len = Math.min(buf.length - start, Math.round(decay * 6 * RATE));
+  for (let i = 0; i < len; i++) {
     const t = i / RATE;
-    const env = Math.min(1, t / 0.08) * Math.min(1, (1.1 - t) / 0.2);
-    b[i] = env * (Math.sin(2 * Math.PI * 440 * t) + 0.6 * Math.sin(2 * Math.PI * 480 * t));
+    const env = Math.min(1, t / 0.003) * Math.exp(-t / decay);
+    buf[start + i] += amp * env * (
+      Math.sin(2 * Math.PI * freq * t)
+      + 0.32 * Math.sin(2 * Math.PI * freq * 3.93 * t) * Math.exp(-t / (decay * 0.18))
+      + 0.10 * Math.sin(2 * Math.PI * freq * 9.2 * t) * Math.exp(-t / (decay * 0.06)));
   }
-}, -14));
+}
+const M = { B4: 493.88, E5: 659.25, Fs5: 739.99, Gs5: 830.61, B5: 987.77, Cs6: 1108.73, Ds6: 1244.51, E6: 1318.51, E4: 329.63, B3: 246.94, Cs4: 277.18, A3: 220 };
+
+// Ringtone (loops, ~4s): a bright, catchy two-phrase marimba melody over soft bass — clearly a call.
+wav('ringtone.wav', render(4.0, (b) => {
+  const q = 0.17; // one step
+  const phrase = (t0, notes) => notes.forEach(([step, f, a = 1]) => mallet(b, t0 + step * q, f, { amp: a }));
+  phrase(0, [[0, M.E5], [1, M.B5], [2, M.Gs5], [3, M.E6, 1.1], [4.5, M.Ds6, 0.9], [5.5, M.B5]]);
+  phrase(1.3, [[0, M.E5], [1, M.B5], [2, M.Gs5], [3, M.Cs6, 1.1], [4.5, M.B5, 0.9], [5.5, M.E6, 1.15]]);
+  // Bass anchors (quiet) so it sounds full on phone speakers too.
+  mallet(b, 0, M.E4, { amp: 0.45, decay: 0.6 }); mallet(b, 0.68, M.B3, { amp: 0.35, decay: 0.5 });
+  mallet(b, 1.3, M.Cs4, { amp: 0.45, decay: 0.6 }); mallet(b, 1.98, M.A3 * 1.5, { amp: 0.35, decay: 0.5 });
+}, -3));
+
+// Outgoing "calling…" tone (loops): two soft mallet notes every 2.8 seconds.
+wav('ringback.wav', render(2.8, (b) => {
+  mallet(b, 0, M.B4, { amp: 0.8, decay: 0.45 });
+  mallet(b, 0.22, M.E5, { amp: 1, decay: 0.6 });
+}, -12));
 
 // The Ping: a soft, warm double "knock-knock" with a little shimmer — thinking of you.
 wav('ping.wav', render(1.2, (b) => {

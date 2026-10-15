@@ -278,6 +278,21 @@ async function streaksFor(chatIds) {
   return out;
 }
 
+// Notification text: says plainly what kind of message it is.
+function notifyText(m) {
+  const dur = (s) => { s = Math.round(s || 0); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+  if (m.deleted || m.eyes || m.secure) return preview(m);
+  switch (m.kind) {
+    case 'image': return m.text ? `Photo · ${m.text}` : 'Sent a photo';
+    case 'video': return (m.att?.dur ? `Video (${dur(m.att.dur)})` : 'Sent a video') + (m.text ? ` · ${m.text}` : '');
+    case 'audio': return m.att?.dur ? `Voice message (${dur(m.att.dur)})` : 'Voice message';
+    case 'file': return `Document · ${m.att?.name || 'File'}`;
+    case 'location': return m.loc?.live ? 'Sharing live location' : 'Shared a location' + (m.loc?.label ? ` · ${m.loc.label}` : '');
+    case 'poll': return `Poll · ${m.poll?.q || ''}`;
+    default: return preview(m);
+  }
+}
+
 function preview(m) {
   if (!m) return '';
   if (m.deleted) return 'Message unsent';
@@ -539,14 +554,19 @@ async function notifyMembers(chatId, senderId, msg, members) {
     const group = chat.type === 'group' ? C.dec(chat.title_enc) || 'Group' : null;
     const previews = u.settings.previews;
     const urgent = msg.intent === 'urgent' || msg.sos;
-    let body = previews ? (msg.effect === 'ink' ? 'Sent with Invisible Ink' : msg.preview) : 'New message';
+    const hidden = msg.secure || msg.eyes || msg.effect === 'ink' || msg.readTtl;
+    let body = previews ? (msg.effect === 'ink' ? 'Sent with Invisible Ink' : notifyText(msg)) : 'New message';
     if (msg.sos) body = 'SOS — needs help now. Tap to see their live location.';
     else if (msg.kind === 'ping') body = msg.ping?.long ? 'Pinged you — really missing you' : 'Pinged you — thinking of you';
     else if (msg.kind === 'letter') body = 'Sent you a letter: ' + (msg.letter?.title || '');
     else if (urgent && previews) body = 'Urgent · ' + body;
+    const show = previews || msg.sos;
     push.send(uid, {
-      type: 'msg', title: previews || msg.sos ? (group || sender.name) : 'Ping Me', sender: previews && group ? sender.name : null,
+      type: 'msg', title: show ? (group || sender.name) : 'Ping Me', sender: show && group ? sender.name : null,
       body, tag: 'chat-' + chatId, url: '/?chat=' + chatId, chatId, msgId: msg.id, ts: msg.createdAt, urgent, ping: msg.kind === 'ping',
+      // Who + what, so the notification shows their face (or coloured initials) and a photo preview.
+      kind: msg.kind, from: show ? { id: senderId, name: sender.name, avatar: sender.avatarV ? `/api/avatar/u/${senderId}?v=${sender.avatarV}` : null } : null,
+      image: show && !hidden && msg.kind === 'image' && msg.att?.id ? `/api/files/${msg.att.id}` : null,
     }, { urgency: 'high', ttl: 24 * 3600 }).catch(() => {}); // high = delivered right away even when the phone is idle (Doze)
   }
 }
@@ -1889,11 +1909,11 @@ async function ringUsers(call, userIds) {
     let rings = 0;
     const t = setInterval(() => {
       if (!calls.has(call.id) || !call.ringing.has(u) || ++rings > 8) return clearInterval(t);
-      push.send(u, { type: 'call', title: title0, body: `Incoming ${call.video ? 'video' : 'audio'} call` + (call.reason ? ` — “${call.reason}”` : ''), tag: 'call-' + call.id, url: `/?call=${call.id}&chat=${call.chatId}`, callId: call.id, chatId: call.chatId, video: call.video, ts: Date.now(), ring: rings }, { urgency: 'high', ttl: 10 }).catch(() => {});
+      push.send(u, { type: 'call', title: title0, body: `Incoming ${call.video ? 'video' : 'audio'} call` + (call.reason ? ` — “${call.reason}”` : ''), tag: 'call-' + call.id, url: `/?call=${call.id}&chat=${call.chatId}`, callId: call.id, chatId: call.chatId, video: call.video, ts: Date.now(), ring: rings, from: { id: caller.id, name: caller.name, avatar: caller.avatarV ? `/api/avatar/u/${caller.id}?v=${caller.avatarV}` : null } }, { urgency: 'high', ttl: 10 }).catch(() => {});
     }, 5000);
     (call.ringTimers ||= []).push(t);
     const title = chat.type === 'group' ? `${caller.name} · ${C.dec(chat.title_enc) || 'Group'}` : caller.name;
-    push.send(u, { type: 'call', title, body: `Incoming ${call.video ? 'video' : 'audio'} call` + (call.reason ? ` — “${call.reason}”` : ''), tag: 'call-' + call.id, url: `/?call=${call.id}&chat=${call.chatId}`, callId: call.id, chatId: call.chatId, video: call.video, ts: Date.now() }, { urgency: 'high', ttl: 45 }).catch(() => {});
+    push.send(u, { type: 'call', title, body: `Incoming ${call.video ? 'video' : 'audio'} call` + (call.reason ? ` — “${call.reason}”` : ''), tag: 'call-' + call.id, url: `/?call=${call.id}&chat=${call.chatId}`, callId: call.id, chatId: call.chatId, video: call.video, ts: Date.now(), from: { id: caller.id, name: caller.name, avatar: caller.avatarV ? `/api/avatar/u/${caller.id}?v=${caller.avatarV}` : null } }, { urgency: 'high', ttl: 45 }).catch(() => {});
   }
 }
 

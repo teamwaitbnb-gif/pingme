@@ -1213,3 +1213,41 @@ html, body { touch-action: manipulation; overscroll-behavior: none; -webkit-text
 .media-box { position: relative; }
 .qr-chip { position: absolute; left: 8px; bottom: 8px; display: inline-flex; align-items: center; gap: 6px; padding: 7px 12px; border-radius: 999px; background: #fff; color: #000; font-size: 14px; font-weight: 600; box-shadow: 0 2px 10px rgba(0,0,0,.35); }
 .qr-chip svg { width: 16px; height: 16px; }
+
+/* Message banner (in-app): bigger, says who + what */
+.nbanner.msg { border-radius: 24px; padding: 12px 14px 12px; }
+.nbanner.msg .nb-top { padding: 0 2px 8px; font-size: 12.5px; text-transform: none; letter-spacing: 0; }
+.nbanner.msg .nb-top img { width: 18px; height: 18px; border-radius: 5px; }
+.nbanner.msg .nb-main { padding: 0; gap: 13px; align-items: center; }
+.nb-av { position: relative; flex-shrink: 0; }
+.nb-gbadge { position: absolute; right: -4px; bottom: -4px; border-radius: 50%; box-shadow: 0 0 0 2.5px var(--elev); }
+.nbanner.msg .nb-text b { font-size: 17px; font-weight: 700; }
+.nb-in { font-size: 13px; color: var(--text2); margin-top: -1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nbanner.msg .nb-body { font-size: 15.5px; opacity: 1; color: var(--text); margin-top: 2px; line-height: 1.32; }
+.nb-kind { width: 15px; height: 15px; vertical-align: -2px; margin-right: 5px; color: var(--text2); }
+.nb-thumb { width: 54px; height: 54px; border-radius: 12px; object-fit: cover; flex-shrink: 0; }
+.nb-actions { display: flex; gap: 8px; margin-top: 12px; }
+.nb-actions button { flex: 1; height: 38px; border-radius: 19px; font-size: 14.5px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: var(--fill); color: var(--text); }
+.nb-actions .nb-rbtn { padding: 0; background: var(--accent); color: var(--on-accent); }
+.nb-actions svg { width: 16px; height: 16px; }
+.nbanner.msg .nb-reply { padding: 12px 0 0; }
+.nbanner.msg.urgent { box-shadow: 0 0 0 2px #ff453a, 0 12px 40px rgba(0,0,0,.45); }
+
+/* Portrait only on phones (iPhone can't lock by code): cover the app when held sideways,
+   except during calls and in the photo/video viewer. */
+.rotate-back { display: none; }
+@media (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
+  body:not(:has(.call, .viewer, .photo-view, .qr-scan)) .rotate-back {
+    display: flex; position: fixed; inset: 0; z-index: 300; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
+    background: var(--bg); color: var(--text); text-align: center; }
+  .rotate-back b { font-size: 20px; }
+  .rotate-back span { color: var(--text2); font-size: 15px; }
+  .rb-phone { width: 34px; height: 58px; border: 3px solid currentColor; border-radius: 9px; margin-bottom: 10px; animation: rbTurn 1.6s ease-in-out infinite; }
+}
+@keyframes rbTurn { 0%, 30% { transform: rotate(-90deg); } 60%, 100% { transform: rotate(0deg); } }
+
+/* Chat rows line up with the logo + search bar (16px edge); the unread dot sits in the margin
+   instead of pushing every row right. Header avatar lines up with the search bar's right edge. */
+.chat-item { padding-left: 8px; }
+.chat-item .ub-dot { position: absolute; left: -5px; top: 50%; width: 8px; height: 8px; margin-top: -4px; }
+.sb-head { padding-right: calc(16px + var(--sar, 0px)); }

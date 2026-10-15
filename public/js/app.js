@@ -135,6 +135,20 @@ export function showInstallGate({ force = false } = {}) {
   });
 }
 
+// ─────── portrait only (like WhatsApp) ───────
+// Android installed app: lock the screen to portrait. iPhone has no lock API, so a sideways phone gets
+// a "turn upright" cover instead (calls and the photo/video viewer may still go sideways).
+function lockPortrait() {
+  if (!isMobile()) return;
+  try { screen.orientation?.lock?.('portrait')?.catch(() => {}); } catch {}
+}
+lockPortrait();
+document.addEventListener('visibilitychange', () => { if (!document.hidden) lockPortrait(); });
+if (isMobile()) {
+  document.body.append(h('div', { class: 'rotate-back', 'aria-hidden': 'true' },
+    h('div', { class: 'rb-phone' }), h('b', null, 'Turn your phone upright'), h('span', null, 'Ping Me works in portrait')));
+}
+
 // From a scanned / shared Ping Me QR code.
 addEventListener('pm:add-user', async (e) => {
   if (!S.me) return;
@@ -1911,22 +1925,55 @@ async function checkRecovery() {
 // tap to open, and "Reply" to answer without leaving what you're doing.
 
 let bannerEl = null, bannerTimer = null;
+// What kind of message, said plainly (with its own icon), so you know what arrived at a glance.
+function bannerWhat(m) {
+  const d = (s) => { s = Math.round(s || 0); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
+  if (m.effect === 'ink') return ['sparkle', 'Invisible Ink message'];
+  if (m.eyes) return ['eye', 'Eyes-only message'];
+  if (m.secure) return ['shield', 'Private message'];
+  if (m.sos) return ['lifebuoy', 'SOS — needs help now'];
+  switch (m.kind) {
+    case 'image': return ['camera', m.text || 'Photo'];
+    case 'video': return ['video', (m.att?.dur ? `Video · ${d(m.att.dur)}` : 'Video') + (m.text ? ` · ${m.text}` : '')];
+    case 'audio': return ['mic', m.att?.dur ? `Voice message · ${d(m.att.dur)}` : 'Voice message'];
+    case 'file': return ['file', m.att?.name || 'Document'];
+    case 'location': return ['map', m.loc?.label || 'Location'];
+    case 'poll': return ['poll', m.poll?.q || 'Poll'];
+    case 'ping': return ['hand', 'Pinged you — thinking of you'];
+    case 'letter': return ['mail', 'Sent you a letter'];
+    default: return [null, m.preview || m.text || ''];
+  }
+}
+
 function showBanner(chat, m) {
+  // Another message from the same chat while the banner is up: update it in place.
+  const same = bannerEl?.dataset.chat === String(chat.id);
+  const count = same ? Number(bannerEl.dataset.count || 1) + 1 : 1;
   bannerEl?.remove();
   clearTimeout(bannerTimer);
   const group = chat.type === 'group';
-  const body = (group ? user(m.senderId).name + ': ' : '') + (m.effect === 'ink' ? 'Invisible Ink' : m.preview || '');
+  const sender = user(m.senderId);
+  const [ic, text] = bannerWhat(m);
+  const thumb = m.kind === 'image' && m.att && !m.eyes && !m.secure && m.effect !== 'ink' && !m.readTtl
+    ? h('img', { class: 'nb-thumb', src: fileUrl(m.att), alt: '' }) : null;
   const replyBox = h('form', { class: 'nb-reply', hidden: true });
   const input = h('input', { placeholder: `Reply to ${group ? chatTitle(chat) : user(m.senderId).name.split(' ')[0]}…`, enterkeyhint: 'send', maxlength: 2000 });
   replyBox.append(input, h('button', { type: 'submit', 'aria-label': 'Send' }, icon('send')));
-  const el = h('div', { class: 'nbanner', role: 'alert' },
+  const el = h('div', { class: 'nbanner msg' + (m.intent === 'urgent' || m.sos ? ' urgent' : ''), role: 'alert', 'data-chat': chat.id, 'data-count': count },
+    h('div', { class: 'nb-top' }, h('img', { src: '/icons/icon-192.png', alt: '' }), h('span', null, 'Ping Me'),
+      h('span', { class: 'nb-time' }, count > 1 ? `${count} new messages · now` : 'now')),
     h('div', { class: 'nb-main' },
-      avatar({ id: group ? chat.id : m.senderId, name: chatTitle(chat), src: chatAvatar(chat), size: 40, group }),
+      h('div', { class: 'nb-av' },
+        avatar({ id: m.senderId, name: sender.name, src: userAvatar(m.senderId), size: 52 }),
+        group ? h('span', { class: 'nb-gbadge' }, avatar({ id: chat.id, name: chatTitle(chat), src: chatAvatar(chat), size: 22, group: true })) : null),
       h('div', { class: 'nb-text' },
-        h('div', { class: 'nb-top' }, h('img', { src: '/icons/icon-192.png', alt: '' }), h('span', null, 'PING ME'), h('span', { class: 'nb-time' }, 'now')),
-        h('b', null, chatTitle(chat)),
-        h('div', { class: 'nb-body' }, body)),
-      h('button', { class: 'nb-rbtn', type: 'button' }, 'Reply')),
+        h('b', null, sender.name),
+        group ? h('div', { class: 'nb-in' }, 'in ', chatTitle(chat)) : null,
+        h('div', { class: 'nb-body' }, ic ? icon(ic, 'nb-kind') : null, h('span', null, text))),
+      thumb),
+    h('div', { class: 'nb-actions' },
+      h('button', { class: 'nb-rbtn', type: 'button' }, icon('reply'), 'Reply'),
+      h('button', { class: 'nb-open', type: 'button' }, 'Open chat')),
     replyBox);
   const close = () => {
     clearTimeout(bannerTimer);
@@ -1935,12 +1982,11 @@ function showBanner(chat, m) {
     if (bannerEl === el) bannerEl = null;
   };
   const arm = (ms = 5000) => { clearTimeout(bannerTimer); bannerTimer = setTimeout(close, ms); };
-  el.querySelector('.nb-main').addEventListener('click', (e) => {
-    if (e.target.closest('.nb-rbtn')) return;
-    close(); openChat(chat.id);
-  });
+  const open = () => { close(); openChat(chat.id); };
+  el.querySelector('.nb-main').addEventListener('click', open);
+  el.querySelector('.nb-open').addEventListener('click', open);
   el.querySelector('.nb-rbtn').addEventListener('click', () => {
-    replyBox.hidden = false; el.querySelector('.nb-rbtn').hidden = true;
+    replyBox.hidden = false; el.querySelector('.nb-actions').hidden = true;
     clearTimeout(bannerTimer); input.focus();
   });
   input.addEventListener('blur', () => { if (!input.value) arm(2500); });

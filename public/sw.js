@@ -1,5 +1,5 @@
 // Ping Me service worker: app-shell caching + app-style notifications.
-const VERSION = 'pm-v12';
+const VERSION = 'pm-v14';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/manifest.webmanifest',
   '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',
@@ -69,37 +69,100 @@ async function hiddenByDuress(chatId) {
   } catch { return false; }
 }
 
+// ───── who sent it: their photo, or coloured initials ─────
+const GRADS = [['#ff9f0a', '#ff6b00'], ['#30d158', '#0f9d58'], ['#64d2ff', '#0a84ff'], ['#bf5af2', '#7d3cf0'], ['#ff6482', '#ff2d55'], ['#5ac8fa', '#007aff'], ['#ffd60a', '#ff9f0a'], ['#66d4cf', '#30b0c7']];
+const faceCache = new Map();
+const withTimeout = (p, ms) => Promise.race([p, new Promise((r) => setTimeout(() => r(null), ms))]);
+const canDraw = typeof OffscreenCanvas !== 'undefined';
+
+async function toDataUrl(blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+  return `data:${blob.type || 'image/png'};base64,${btoa(bin)}`;
+}
+
+async function loadBitmap(url) {
+  const r = await fetch(url, { credentials: 'include' });
+  if (!r.ok) return null;
+  return createImageBitmap(await r.blob());
+}
+
+const initials = (name = '') => name.trim().split(/\s+/).slice(0, 2).map((w) => [...w][0] || '').join('').toUpperCase() || '?';
+
+// A round 192px face for the notification's large icon.
+async function face(from) {
+  if (!from || !canDraw) return '/icons/icon-192.png';
+  const key = from.avatar || 'i:' + from.id + ':' + from.name;
+  if (faceCache.has(key)) return faceCache.get(key);
+  try {
+    const S = 192, c = new OffscreenCanvas(S, S), x = c.getContext('2d');
+    x.beginPath(); x.arc(S / 2, S / 2, S / 2, 0, Math.PI * 2); x.clip();
+    const bmp = from.avatar ? await withTimeout(loadBitmap(from.avatar), 2500) : null;
+    if (bmp) {
+      const k = Math.max(S / bmp.width, S / bmp.height);
+      x.drawImage(bmp, (S - bmp.width * k) / 2, (S - bmp.height * k) / 2, bmp.width * k, bmp.height * k);
+    } else {
+      const g = GRADS[Math.abs(Number(from.id) || 0) % GRADS.length];
+      const lg = x.createLinearGradient(0, 0, 0, S); lg.addColorStop(0, g[0]); lg.addColorStop(1, g[1]);
+      x.fillStyle = lg; x.fillRect(0, 0, S, S);
+      x.fillStyle = '#fff'; x.font = '600 76px -apple-system, Roboto, "Segoe UI", sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+      x.fillText(initials(from.name), S / 2, S / 2 + 4);
+    }
+    const url = await toDataUrl(await c.convertToBlob({ type: 'image/png' }));
+    if (faceCache.size > 50) faceCache.clear();
+    faceCache.set(key, url);
+    return url;
+  } catch { return '/icons/icon-192.png'; }
+}
+
+// Big picture for photo messages (downscaled so the notification stays light).
+async function picture(url) {
+  if (!url || !canDraw) return undefined;
+  try {
+    const bmp = await withTimeout(loadBitmap(url), 3500);
+    if (!bmp) return undefined;
+    const k = Math.min(1, 720 / Math.max(bmp.width, bmp.height));
+    const c = new OffscreenCanvas(Math.round(bmp.width * k), Math.round(bmp.height * k));
+    c.getContext('2d').drawImage(bmp, 0, 0, c.width, c.height);
+    return await toDataUrl(await c.convertToBlob({ type: 'image/jpeg', quality: 0.8 }));
+  } catch { return undefined; }
+}
+
 async function showMessage(d) {
-  // Group per chat: stack the latest lines into one notification, like a native app.
+  // One notification per chat that stacks the latest lines, like a native app.
   const existing = (await self.registration.getNotifications({ tag: d.tag }))[0];
   const prev = existing?.data?.lines || [];
   const line = d.sender ? `${d.sender}: ${d.body}` : d.body;
-  const lines = [...prev, line].slice(-5);
+  const lines = [...prev, line].slice(-6);
   const count = (existing?.data?.count || 0) + 1;
+  const [icon, image] = await Promise.all([face(d.from), picture(d.image)]);
   existing?.close();
-  await self.registration.showNotification(count > 1 ? `${d.title} (${count})` : d.title, {
+  const title = count > 1 ? `${d.title} · ${count} new messages` : d.title;
+  await self.registration.showNotification(title, {
     body: count > 1 ? lines.join('\n') : line,
     tag: d.tag,
     renotify: true,
-    icon: '/icons/icon-192.png',
+    icon,
+    image,
     badge: '/icons/badge-96.png',
     timestamp: d.ts || Date.now(),
     vibrate: d.urgent ? VIBRATE_CALL : d.ping ? VIBRATE_PING : VIBRATE_MSG,
     requireInteraction: !!d.urgent,
     silent: false,
-    actions: canActions ? [{ action: 'reply', title: 'Reply' }, { action: 'read', title: 'Mark as Read' }] : undefined,
+    actions: canActions ? [{ action: 'reply', title: 'Reply' }, { action: 'read', title: 'Mark as read' }] : undefined,
     data: { url: d.url || '/', chatId: d.chatId, lines, count, type: 'msg' },
   });
 }
 
 async function showCall(d) {
   await self.registration.showNotification(d.title || 'Ping Me', {
-    body: d.body || 'Incoming call',
+    body: (d.video ? 'Ping Me video call' : 'Ping Me voice call') + (d.body && /—/.test(d.body) ? ` ${d.body.slice(d.body.indexOf('—'))}` : ''),
     tag: d.tag,
     renotify: true,
     requireInteraction: true,
     silent: false,
-    icon: '/icons/icon-192.png',
+    icon: await face(d.from),
     badge: '/icons/badge-96.png',
     timestamp: d.ts || Date.now(),
     vibrate: VIBRATE_CALL,
