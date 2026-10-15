@@ -45,11 +45,7 @@ function wav(name, data) {
 
 const N = { C5: 523.25, E5: 659.25, G5: 783.99, A5: 880, C6: 1046.5, D6: 1174.7, E6: 1318.5 };
 
-// Incoming message: two soft notes, a gentle rising fifth.
-wav('message.wav', render(1.1, (b) => {
-  bell(b, 0.0, N.G5, { amp: 0.8, decay: 0.28 });
-  bell(b, 0.11, N.D6, { amp: 1, decay: 0.42 });
-}, -8));
+// Incoming message sound is a recorded tone: public/sounds/message.mp3 (not generated here).
 
 // Message in the chat you're viewing: one quiet drop.
 wav('tick.wav', render(0.45, (b) => bell(b, 0, N.E6, { amp: 1, decay: 0.09, attack: 0.006 }), -12));

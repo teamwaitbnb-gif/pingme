@@ -325,13 +325,17 @@ function ac() {
   return actx;
 }
 
+// Sounds that aren't generated WAVs (the message sound is a recorded notification tone).
+const SOUND_EXT = { message: 'mp3' };
+const soundUrl = (name) => `/sounds/${name}.${SOUND_EXT[name] || 'wav'}`;
+
 async function loadSounds() {
   const a = ac();
   if (!a) return;
   await Promise.all(SOUND_FILES.map(async (name) => {
     if (buffers.has(name)) return;
     try {
-      const data = await fetch(`/sounds/${name}.wav`).then((r) => r.arrayBuffer());
+      const data = await fetch(soundUrl(name)).then((r) => r.arrayBuffer());
       buffers.set(name, await new Promise((res, rej) => a.decodeAudioData(data, res, rej)));
     } catch {}
   }));
@@ -351,7 +355,7 @@ function play(name, { loop = false, volume = 1 } = {}) {
   const buf = buffers.get(name);
   if (!a || !buf) {
     // Not unlocked/decoded yet: fall back to a plain audio element (may be blocked before first tap).
-    const el = new Audio(`/sounds/${name}.wav`);
+    const el = new Audio(soundUrl(name));
     el.loop = loop; el.volume = volume;
     el.play().catch(() => {});
     return { stop: () => { el.pause(); el.src = ''; } };
