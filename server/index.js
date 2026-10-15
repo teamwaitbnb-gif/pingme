@@ -197,7 +197,7 @@ async function membersOf(chatIds, viewerId) {
 
 async function serializeChats(viewerId, chatId = null) {
   const rows = await db.q(
-    `SELECT c.*, cm.role, cm.last_read_id, cm.cleared_before_id, cm.muted_until, cm.pinned, cm.archived
+    `SELECT c.*, cm.role, cm.last_read_id, cm.cleared_before_id, cm.muted_until, cm.pinned, cm.archived, cm.removed
        FROM chat_members cm JOIN chats c ON c.id = cm.chat_id
       WHERE cm.user_id=? AND cm.active=1 ${chatId ? 'AND c.id=?' : ''}
       ORDER BY c.last_msg_at DESC`,
@@ -244,6 +244,7 @@ async function serializeChats(viewerId, chatId = null) {
       mutedUntil: Number(r.muted_until) || 0,
       pinned: !!r.pinned,
       archived: !!r.archived,
+      removed: !!r.removed,
       clearedBefore: Number(r.cleared_before_id),
       members: members.get(id) || [],
       lastMessage: lastMsgs.get(id) || null,
@@ -492,8 +493,8 @@ async function insertMessage({ chatId, senderId, kind, body, replyTo = null, att
   );
   const id = Number(res.insertId);
   await db.q('UPDATE chats SET last_msg_at=? WHERE id=?', [created, chatId]);
-  // New activity brings archived chats back, like iMessage.
-  await db.q('UPDATE chat_members SET archived=0 WHERE chat_id=? AND archived=1 AND active=1', [chatId]);
+  // New activity brings archived and deleted chats back, like iMessage.
+  if (kind !== 'system') await db.q('UPDATE chat_members SET archived=0, removed=0 WHERE chat_id=? AND (archived=1 OR removed=1) AND active=1', [chatId]);
   await db.q('UPDATE chat_members SET last_read_id=GREATEST(last_read_id,?), last_delivered_id=GREATEST(last_delivered_id,?) WHERE chat_id=? AND user_id=?', [id, id, chatId, senderId]);
 
   const members = await activeMemberIds(chatId);
@@ -546,7 +547,7 @@ async function notifyMembers(chatId, senderId, msg, members) {
     push.send(uid, {
       type: 'msg', title: previews || msg.sos ? (group || sender.name) : 'Ping Me', sender: previews && group ? sender.name : null,
       body, tag: 'chat-' + chatId, url: '/?chat=' + chatId, chatId, msgId: msg.id, ts: msg.createdAt, urgent, ping: msg.kind === 'ping',
-    }, { urgency: urgent ? 'high' : 'normal' }).catch(() => {});
+    }, { urgency: 'high', ttl: 24 * 3600 }).catch(() => {}); // high = delivered right away even when the phone is idle (Doze)
   }
 }
 
@@ -637,10 +638,53 @@ function setSessionCookie(req, res, t) {
 
 const clearSessionCookie = (res) => addCookie(res, `${COOKIE}=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0`);
 
+// Each phone / browser gets a permanent device id, so we know which device a session lives on.
+const DEVICE_COOKIE = 'mm_dev';
+function deviceHash(req) {
+  if (!req.deviceHash) {
+    let d = parseCookies(req.headers.cookie)[DEVICE_COOKIE];
+    if (!/^[\w-]{20,64}$/.test(d || '')) {
+      d = C.token();
+      req.newDeviceCookie = `${DEVICE_COOKIE}=${d}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${60 * 60 * 24 * 365 * 5}${req.secure ? '; Secure' : ''}`;
+    }
+    req.deviceHash = C.hmac('dev:' + d);
+  }
+  return req.deviceHash;
+}
+
 async function createSession(req, res, userId) {
   const t = C.token();
-  await db.q('INSERT INTO sessions (token_hash, user_id, ua_enc) VALUES (?,?,?)', [C.sha256(t), userId, C.enc(clampStr(req.get('user-agent') || '', 300))]);
+  const dev = deviceHash(req);
+  await db.q('DELETE FROM sessions WHERE user_id=? AND device_hash=?', [userId, dev]);
+  await db.q('INSERT INTO sessions (token_hash, user_id, ua_enc, device_hash) VALUES (?,?,?,?)', [C.sha256(t), userId, C.enc(clampStr(req.get('user-agent') || '', 300)), dev]);
   setSessionCookie(req, res, t);
+  if (req.newDeviceCookie) addCookie(res, req.newDeviceCookie);
+}
+
+function deviceLabel(ua = '') {
+  const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android phone' : /Mac OS/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows PC' : /Linux/.test(ua) ? 'Linux computer' : 'another device';
+  const br = /Edg\//.test(ua) ? 'Edge' : /SamsungBrowser/.test(ua) ? 'Samsung Internet' : /CriOS|Chrome\//.test(ua) ? 'Chrome' : /FxiOS|Firefox\//.test(ua) ? 'Firefox' : /Safari\//.test(ua) ? 'Safari' : '';
+  return br ? `${os} (${br})` : os;
+}
+
+// Strict rule: one account is signed in on one device at a time. Signing in somewhere new first asks
+// "log out there and continue here?" — the answer comes back to /api/login/takeover with this ticket.
+async function signInOrAsk(req, res, uid) {
+  const other = await db.one(
+    'SELECT ua_enc, last_used FROM sessions WHERE user_id=? AND (device_hash IS NULL OR device_hash<>?) AND last_used > ? ORDER BY last_used DESC LIMIT 1',
+    [uid, deviceHash(req), new Date(Date.now() - 90 * 86400000)]
+  );
+  if (!other) { await createSession(req, res, uid); return null; }
+  return { device: deviceLabel(C.dec(other.ua_enc) || ''), lastUsed: ms(other.last_used), ticket: C.enc({ takeover: uid, exp: Date.now() + 5 * 60000 }) };
+}
+
+async function signOutEverywhere(uid) {
+  emitToUser(uid, 'session:ended', {});
+  await db.q('DELETE FROM sessions WHERE user_id=?', [uid]);
+  await db.q('DELETE FROM push_subs WHERE user_id=?', [uid]); // the old phone stops getting notifications too
+  // Only the connections that exist right now (the old device) — never the new device's fresh one.
+  const old = [...(online.get(uid) || [])];
+  setTimeout(() => { for (const s of old) s.disconnect(true); }, 300);
 }
 
 // ───── usernames ─────
@@ -742,6 +786,19 @@ app.post('/api/login', wrap(async (req, res) => {
   const row = uid ? await db.one('SELECT pass_hash FROM users WHERE id=?', [uid]) : null;
   const ok = row?.pass_hash && (await C.verifyPassword(String(req.body.password || ''), row.pass_hash));
   if (!ok) throw new HttpError(401, row && !row.pass_hash ? 'This account signs in with Google' : 'Wrong username or password');
+  const conflict = await signInOrAsk(req, res, uid);
+  if (conflict) return res.json({ conflict });
+  res.json({ user: await meView(uid) });
+}));
+
+// "Log out on the other device and sign in here."
+app.post('/api/login/takeover', wrap(async (req, res) => {
+  rateLimit('takeover:' + req.ip, 10, 60000);
+  const t = C.decJson(String(req.body.ticket || ''));
+  if (!t || !t.takeover || t.exp < Date.now()) throw bad('That took too long — please sign in again');
+  const uid = Number(t.takeover);
+  if (!(await getUser(uid))) throw notFound('Account not found');
+  await signOutEverywhere(uid);
   await createSession(req, res, uid);
   res.json({ user: await meView(uid) });
 }));
@@ -802,7 +859,8 @@ async function completeOauth(req, res, identity, linkUid) {
   if (row) {
     const uid = Number(row.user_id);
     if (await getUser(uid)) {
-      await createSession(req, res, uid);
+      const conflict = await signInOrAsk(req, res, uid);
+      if (conflict) return { kind: 'conflict', conflict };
       return { kind: 'login', user: await meView(uid) };
     }
     await db.q('DELETE FROM oauth_accounts WHERE provider=? AND subject_hash=?', [identity.provider, subHash]);
@@ -851,6 +909,7 @@ async function oauthRedirect(req, res, provider, idToken, name) {
     clearOauthCookies(res);
     const r = await completeOauth(req, res, identity, linkUid);
     if (r.kind === 'login') return back('/');
+    if (r.kind === 'conflict') return back(`/#takeover=${encodeURIComponent(Buffer.from(JSON.stringify(r.conflict)).toString('base64url'))}`);
     if (r.kind === 'linked') return back(`/?linked=${provider}`);
     return back(`/#signup=${encodeURIComponent(Buffer.from(JSON.stringify(r)).toString('base64url'))}`);
   } catch (e) {
@@ -1122,7 +1181,7 @@ app.post('/api/chats', auth, wrap(async (req, res) => {
     let chatId;
     if (chat) {
       chatId = Number(chat.id);
-      await db.q('UPDATE chat_members SET active=1 WHERE chat_id=? AND user_id=?', [chatId, req.uid]);
+      await db.q('UPDATE chat_members SET active=1, removed=0 WHERE chat_id=? AND user_id=?', [chatId, req.uid]);
     } else {
       const r = await db.q('INSERT INTO chats (type, direct_key, created_by) VALUES (?,?,?)', ['direct', key, req.uid]);
       chatId = Number(r.insertId);
@@ -1226,7 +1285,7 @@ app.delete('/api/chats/:id', auth, wrap(async (req, res) => {
   await requireMember(id, req.uid);
   const chat = await db.one('SELECT type FROM chats WHERE id=?', [id]);
   const last = await db.one('SELECT MAX(id) mid FROM messages WHERE chat_id=?', [id]);
-  await db.q('UPDATE chat_members SET cleared_before_id=?, archived=1 WHERE chat_id=? AND user_id=?', [Number(last?.mid || 0), id, req.uid]);
+  await db.q('UPDATE chat_members SET cleared_before_id=?, removed=1, archived=0, pinned=0 WHERE chat_id=? AND user_id=?', [Number(last?.mid || 0), id, req.uid]);
   if (chat.type === 'group') await leaveGroup(id, req.uid, req.uid);
   res.json({ ok: true });
 }));
@@ -1443,6 +1502,15 @@ app.get('/api/files/:id', auth, wrap(async (req, res) => {
 app.post('/api/push/subscribe', auth, wrap(async (req, res) => {
   await push.subscribe(req.uid, req.body.subscription);
   res.json({ ok: true });
+}));
+
+// "Send test notification" in Settings — confirms notifications reach this phone.
+app.post('/api/push/test', auth, wrap(async (req, res) => {
+  rateLimit('ptest:' + req.uid, 5, 60000);
+  const n = (await db.one('SELECT COUNT(*) n FROM push_subs WHERE user_id=?', [req.uid])).n;
+  if (!Number(n)) throw bad('Notifications aren’t turned on for this device yet');
+  await push.send(req.uid, { type: 'msg', title: 'Ping Me', body: 'Notifications are working 🎉', tag: 'test', url: '/' }, { urgency: 'high' });
+  res.json({ ok: true, devices: Number(n) });
 }));
 
 app.post('/api/push/unsubscribe', auth, wrap(async (req, res) => {

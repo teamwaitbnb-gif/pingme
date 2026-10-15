@@ -1,20 +1,21 @@
 // Sheets & dialogs: settings, new message, chat info, viewer, forward, polls, scheduling…
 import {
-  h, icon, avatar, toast, openSheet, actionSheet, confirmDialog, promptDialog, toggle, cell,
-  fmtSize, fmtDur, lastSeenText, disappearLabel, isIOS, isStandalone, store,
+  h, icon, avatar, toast, openSheet, actionSheet, confirmDialog, promptDialog, toggle, cell, closeTop,
+  fmtSize, fmtDur, lastSeenText, disappearLabel, isIOS, isMobile, isStandalone, store,
 } from './ui.js';
 import { cropImage, SCREEN_EFFECTS, BUBBLE_EFFECTS, playScreenEffect } from './media.js';
 import { usernameField, googleButton, GOOGLE_LOGO } from './auth.js';
 import { S, api, emit, upload, user, userAvatar, fileUrl, otherMember, chatTitle, chatAvatar, isMuted, mergeUsers, prefs, applyPrefs, BUBBLES, feature } from './core.js';
 import {
   openChat, closeChat, renderList, renderHeader, renderMessages, refreshChat, refreshMe, startDirect, deleteConversation,
-  send, setSendAt, sendPayload, jumpTo, setupPush, logout, showInstallGate,
+  send, setSendAt, sendPayload, jumpTo, setupPush, logout,
   setMessageOpts, messageOpts, setCheckin, startSosTracking,
 } from './app.js';
 import { featureList, FEATURE_GROUPS } from './onboarding.js';
 import { storyStrip } from './stories.js';
 import { lockEnabled, hasDuress, setPin, setDuressPin, disableLock, hiddenChats, setHiddenChats, checkPin } from './lock.js';
 import { signPhoto } from './keys.js';
+import { installApp } from './install.js';
 import { ensurePermission } from './perm.js';
 import { INTENTS } from './smart.js';
 
@@ -40,7 +41,7 @@ export function openSettings() {
     const inviteUrl = `${location.origin}/?add=${me.username}`;
     s.body.replaceChildren(
       h('div', { class: 'profile-top' },
-        h('button', { onclick: changeAvatar, 'aria-label': 'Change photo' }, avatar({ id: me.id, name: me.name, src: me.avatarV ? `/api/avatar/u/${me.id}?v=${me.avatarV}` : null, size: 96 })),
+        h('button', { onclick: changeAvatar, 'aria-label': 'Change photo' }, avatar({ id: me.id, name: me.name, src: me.avatarV ? `/api/avatar/u/${me.id}?v=${me.avatarV}` : null, size: 96, zoom: true })),
         h('button', { class: 'link small', onclick: changeAvatar }, me.avatarV ? 'Edit photo' : 'Add photo'),
         h('h3', null, me.name),
         h('div', { class: 'u' }, '@' + me.username),
@@ -72,7 +73,11 @@ export function openSettings() {
 
       h('div', { class: 'group-label' }, 'Notifications'),
       h('div', { class: 'group' },
-        cell({ icon: 'bell', color: '#ff3b30', label: 'Push notifications', sub: notifStatus(), onClick: () => setupPush(true).then(draw) }),
+        cell({ icon: 'bell', color: '#ff3b30', label: 'Push notifications', sub: notifStatus(), onClick: () => notifHelpOrEnable().then(draw) }),
+        'Notification' in window && Notification.permission === 'granted' ? cell({ icon: 'send', label: 'Send test notification', sub: 'Close Ping Me after tapping to see it like a real notification', onClick: async () => {
+          try { await setupPush(false); await api('POST', '/api/push/test'); toast('Test sent — it should appear in a moment'); } catch (e) { err(e); }
+        } }) : null,
+        isMobile() ? cell({ icon: 'phone', color: '#34c759', label: 'Never miss a call', sub: 'Ring loud even when Ping Me is closed', chevron: true, onClick: openRingHelp }) : null,
         cell({ icon: 'eye', color: '#ff9500', label: 'Show previews', right: toggle(me.settings.previews, (v) => setPriv('previews', v)) }),
         cell({ icon: 'vol', color: '#ff2d55', label: 'In-app sounds', right: toggle(p.sounds, (v) => store.set('sounds', v)) })),
 
@@ -93,7 +98,7 @@ export function openSettings() {
 
       h('div', { class: 'group-label' }, 'Appearance'),
       h('div', { class: 'group' },
-        selectCell('moon', '#5856d6', 'Theme', 'theme', 'auto', [['auto', 'Automatic'], ['light', 'Light'], ['dark', 'Dark']], applyPrefs),
+        selectCell('moon', '#5856d6', 'Theme', 'theme', 'dark', [['auto', 'Automatic'], ['light', 'Light'], ['dark', 'Dark']], applyPrefs),
         selectCell('text', '#8e8e93', 'Text size', 'fontSize', 17, [[15, 'Small'], [17, 'Default'], [19, 'Large'], [21, 'Extra large']], () => { applyPrefs(); renderMessages(); }),
         h('div', { class: 'cell ic', style: { cursor: 'default' } }, h('span', { class: 'ci', style: { background: 'var(--me)' } }, icon('palette')), h('span', { class: 'lb' }, 'Bubble color')),
         h('div', { class: 'swatches' }, Object.entries(BUBBLES).map(([k, [a, b]]) => h('button', {
@@ -112,7 +117,7 @@ export function openSettings() {
       h('div', { class: 'group-foot' }, 'All messages, names, photos and files are encrypted with AES-256-GCM before being stored. Passwords are hashed with scrypt.'),
 
       h('div', { class: 'group' },
-        !isStandalone() ? cell({ icon: 'download', color: '#0a84ff', label: 'Add Ping Me to Home Screen', onClick: () => { s.close(); showInstallGate({ force: true }); } }) : null,
+        !isStandalone() ? cell({ icon: 'download', color: '#0a84ff', label: 'Install Ping Me app', sub: 'One tap on Android · quick guide on iPhone', onClick: () => installApp() }) : null,
         cell({ icon: 'logout', color: '#8e8e93', label: 'Sign out', onClick: async () => { if (await confirmDialog('Sign out of Ping Me on this device?', { ok: 'Sign Out', danger: true })) logout(); } }),
         cell({ icon: 'trash', color: '#ff3b30', label: 'Delete account', danger: true, onClick: deleteAccount })),
       h('div', { class: 'muted small center', style: { margin: '10px 0 20px' } }, 'Ping Me · v1.0'));
@@ -167,6 +172,40 @@ export function openSettings() {
   }
 
   draw();
+}
+
+// Turn notifications on — or explain exactly why they can't be yet on this phone.
+async function notifHelpOrEnable() {
+  if (isIOS() && !isStandalone()) {
+    toast('On iPhone, notifications work once Ping Me is on your Home Screen — opening the install guide', { timeout: 5000 });
+    return installApp();
+  }
+  if ('Notification' in window && Notification.permission === 'denied') {
+    return openSheet({ title: 'Notifications are blocked', left: { label: 'OK' }, body: h('div', null, h('p', null, isIOS()
+      ? 'Open iPhone Settings → Notifications → Ping Me → turn on Allow Notifications and Sounds.'
+      : 'Tap the lock / ⓘ icon next to the address (or long-press the Ping Me icon → App info → Notifications) and allow notifications. Then come back here.')) });
+  }
+  return setupPush(true);
+}
+
+// Phones decide how loud a closed app may ring. These are the switches that matter.
+function openRingHelp() {
+  const li = (...c) => h('li', null, ...c);
+  const steps = isIOS() ? [
+    li('Open iPhone ', h('b', null, 'Settings → Notifications → Ping Me'), ' and turn on ', h('b', null, 'Allow Notifications, Sounds, Banners'), ' and ', h('b', null, 'Time Sensitive'), '.'),
+    li('In ', h('b', null, 'Settings → Focus'), ', add Ping Me to allowed apps so calls ring during Do Not Disturb.'),
+    li('Keep Ping Me on your Home Screen — iPhone only delivers notifications to installed apps.'),
+  ] : [
+    li('Long-press the ', h('b', null, 'Ping Me'), ' icon → ', h('b', null, 'App info → Battery'), ' → choose ', h('b', null, 'Unrestricted'), ' (or “Don’t optimise”). This lets calls ring after you swipe Ping Me away from recents.'),
+    li('In ', h('b', null, 'App info → Notifications'), ', turn everything on and set importance to ', h('b', null, 'Alert / Pop on screen'), '. You can pick your own ringtone there too.'),
+    li('Xiaomi / Redmi / Oppo / Vivo / Realme: also turn on ', h('b', null, 'Autostart'), ' for Ping Me in Security / Phone Manager.'),
+  ];
+  openSheet({ title: 'Never miss a call', left: { label: 'Done' }, body: h('div', null,
+    h('p', { class: 'muted' }, 'When Ping Me is closed, your phone shows calls and messages for it — these settings make them ring out loud.'),
+    h('ol', { class: 'ring-help' }, steps),
+    'Notification' in window && Notification.permission === 'granted'
+      ? h('button', { class: 'btn', onclick: async () => { try { await setupPush(false); await api('POST', '/api/push/test'); toast('Test sent — lock your phone to hear it'); } catch (e) { err(e); } } }, 'Send a test now')
+      : h('button', { class: 'btn', onclick: () => notifHelpOrEnable() }, 'Turn on notifications')) });
 }
 
 function notifStatus() {
@@ -391,7 +430,7 @@ export function openChatInfo(chatId) {
     const blocked = other && S.blocked.has(other);
     s.body.replaceChildren(
       h('div', { class: 'profile-top' },
-        h('button', { onclick: group ? () => changeGroupPhoto(chat) : null }, avatar({ id: group ? chat.id : other, name: chatTitle(chat), src: chatAvatar(chat), size: 96, group })),
+        h('button', { onclick: group ? () => changeGroupPhoto(chat) : null }, avatar({ id: group ? chat.id : other, name: chatTitle(chat), src: chatAvatar(chat), size: 96, group, zoom: !group })),
         group ? h('button', { class: 'link small', onclick: () => changeGroupPhoto(chat) }, chat.avatarV ? 'Change photo' : 'Add photo') : null,
         h('h3', null, chatTitle(chat)),
         u ? h('div', { class: 'u' }, u.username ? '@' + u.username : '', u.online ? ' · Online' : lastSeenText(u) ? ' · ' + lastSeenText(u) : '') : h('div', { class: 'u' }, `${chat.members.length} members`),
@@ -414,7 +453,7 @@ export function openChatInfo(chatId) {
       group ? h('div', { class: 'group-label' }, `${chat.members.length} members`) : null,
       group ? h('div', { class: 'group' },
         chat.members.map((m) => { const mu = user(m.id); return h('div', { class: 'user-row', style: { cursor: 'pointer' }, onclick: () => memberMenu(chat, m, meRole).then(draw) },
-          avatar({ id: m.id, name: mu.name, src: userAvatar(m.id), size: 40, online: mu.online }),
+          avatar({ id: m.id, name: mu.name, src: userAvatar(m.id), size: 40, online: mu.online, zoom: true }),
           h('div', { class: 't' }, h('b', null, m.id === S.me.id ? `${mu.name} (You)` : mu.name), h('small', null, mu.username ? '@' + mu.username : '')),
           m.role === 'admin' ? h('span', { class: 'tag' }, 'Admin') : null); }),
         cell({ icon: 'useradd', label: 'Add people', accent: true, onClick: () => addMembers(chat).then(draw) })) : null,
@@ -497,7 +536,7 @@ async function memberMenu(chat, m, meRole) {
 }
 
 function closeAllAnd(fn) {
-  document.querySelectorAll('#layer > *').forEach((n) => n.remove());
+  while (closeTop()) { /* close every open layer properly (keeps Back history in sync) */ }
   fn();
 }
 
@@ -536,7 +575,7 @@ export function openUserProfile(userId) {
   const u = user(userId);
   const s = openSheet({ title: '', left: { label: 'Close' } });
   s.body.append(
-    h('div', { class: 'profile-top' }, avatar({ id: u.id, name: u.name, src: userAvatar(u.id), size: 96, online: u.online }),
+    h('div', { class: 'profile-top' }, avatar({ id: u.id, name: u.name, src: userAvatar(u.id), size: 96, online: u.online, zoom: true }),
       h('h3', null, u.name), h('div', { class: 'u' }, u.username ? '@' + u.username : ''), u.bio ? h('div', { class: 'bio' }, u.bio) : null,
       h('div', { class: 'muted small' }, lastSeenText(u))),
     h('div', { class: 'quick', style: { gridTemplateColumns: 'repeat(3, 1fr)' } },
@@ -1240,7 +1279,7 @@ export function openUpgrade() {
         const { user: u } = await api('POST', '/api/me/upgrade', { username: uf.input.value.trim(), password: pw.value, birth: birth.value });
         refreshMe(u); close();
         toast('Account saved — you can now sign in anywhere');
-        if (!isStandalone()) showInstallGate({ force: true });
+        if (!isStandalone()) installApp();
       } catch (e) { err(e); }
     } },
     body: h('div', { class: 'upgrade' },

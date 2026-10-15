@@ -1,10 +1,10 @@
 import {
-  h, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, longPress, richText, emojiCount,
-  fmtTime, fmtListTime, fmtDay, fmtDur, fmtSize, lastSeenText, isIOS, isAndroid, isMobile, isStandalone, store,
+  h, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, handleLayerPop, whenHistorySettled, longPress, richText, emojiCount,
+  fmtTime, fmtListTime, fmtDay, fmtDur, fmtSize, lastSeenText, isIOS, isMobile, isStandalone, store,
 } from './ui.js';
 import { compressImage, videoMeta, VoiceRecorder, player, playScreenEffect, sounds, SCREEN_EFFECTS, BUBBLE_EFFECTS } from './media.js';
 import { initCalls } from './call.js';
-import { showAuth as renderAuth, showChooseUsername, setSignedInHandler, showJoin } from './auth.js';
+import { showAuth as renderAuth, showChooseUsername, setSignedInHandler, showJoin, askTakeover } from './auth.js';
 import {
   S, api, upload, emit, user, userAvatar, fileUrl, otherMember, chatTitle, chatAvatar, isMuted, isBlocked, mergeUsers, prefs, applyPrefs, feature,
 } from './core.js';
@@ -20,11 +20,10 @@ import { secureText, openEyesOnly } from './secure.js';
 import { scanScam, detectPromise, INTENTS } from './smart.js';
 import { verifyPhoto } from './keys.js';
 import { ensurePermission } from './perm.js';
+import { installApp, installed } from './install.js';
 
 const app = document.getElementById('app');
 const TAPBACKS = ['❤️', '👍', '👎', '😂', '‼️', '❓'];
-let deferredInstall = null;
-addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); deferredInstall = e; });
 
 // iOS keyboard: keep the app sized to the visible viewport so the composer stays above the keyboard.
 if (window.visualViewport) {
@@ -69,11 +68,18 @@ async function boot() {
       signup = JSON.parse(new TextDecoder().decode(Uint8Array.from(bin, (c) => c.charCodeAt(0))));
     } catch {}
   }
-  if (authError || linked || m) history.replaceState(null, '', '/');
+  let takeover = null;
+  const tk = /^#takeover=([\w-]+)/.exec(location.hash);
+  if (tk) { try { takeover = JSON.parse(atob(tk[1].replace(/-/g, '+').replace(/_/g, '/'))); } catch {} }
+  if (authError || linked || m || tk) history.replaceState(null, '', '/');
   const join = /^\/join\/([\w-]+)/.exec(location.pathname);
   if (join) return showJoin(join[1]);
   // Never nag people who already installed Ping Me (or opened it from a home-screen shortcut).
-  const needGate = !isStandalone() && !store.get('installed', false) && !sessionStorage.getItem('mm:gate-skip') && !signup && !authError;
+  // Phones must use the installed app (that's what makes calls ring and notifications arrive), so
+  // there's no "continue in browser" there. Computers can still use the browser.
+  const phoneOnly = isMobile() && !store.get('dev-browser', false);
+  const needGate = !isStandalone() && !signup && !authError &&
+    (phoneOnly || (!store.get('installed', false) && !sessionStorage.getItem('mm:gate-skip')));
   if (needGate) await showInstallGate();
   if (signup?.ticket) return showChooseUsername(signup);
   let me = null;
@@ -85,6 +91,7 @@ async function boot() {
   } else {
     showAuth();
     if (authError) toast(authError, { error: true, timeout: 6000 });
+    if (takeover?.ticket) askTakeover(takeover);
   }
 }
 
@@ -98,42 +105,31 @@ function showAuth(mode) {
 // ─────── "Add Ping Me to your Home Screen" ───────
 export function showInstallGate({ force = false } = {}) {
   return new Promise((resolve) => {
-    const ios = isIOS(), android = isAndroid();
-    const iosSafari = ios && !/CriOS|FxiOS|EdgiOS/.test(navigator.userAgent);
+    const mustInstall = isMobile() && !isStandalone() && !force && !store.get('dev-browser', false);
     const done = () => { sessionStorage.setItem('mm:gate-skip', '1'); gate.remove(); resolve(); };
-    let steps;
-    if (ios) {
-      steps = [
-        h('div', { class: 'step' }, h('span', { class: 'n' }, '1'), h('span', null, 'Tap ', icon('iosshare'), iosSafari ? ' Share in the toolbar below' : ' Share (in the address bar or ⋯ menu)')),
-        h('div', { class: 'step' }, h('span', { class: 'n' }, '2'), h('span', null, 'Scroll and tap ', icon('addsq'), ' ', h('b', null, 'Add to Home Screen'))),
-        h('div', { class: 'step' }, h('span', { class: 'n' }, '3'), h('span', null, 'Tap ', h('b', null, 'Add'), ', then open ', h('b', null, 'Ping Me'), ' from your Home Screen')),
-      ];
-    } else {
-      steps = [
-        h('div', { class: 'step' }, h('span', { class: 'n' }, '1'), h('span', null, 'Tap the ', icon('dotsv'), ' menu in your browser')),
-        h('div', { class: 'step' }, h('span', { class: 'n' }, '2'), h('span', null, 'Tap ', h('b', null, android ? 'Install app' : 'Install Ping Me'), android ? ' — if asked, choose ' : '', android ? h('b', null, 'Install') : null, android ? ' (not “Create shortcut”)' : '')),
-        h('div', { class: 'step' }, h('span', { class: 'n' }, '3'), h('span', null, 'Open ', h('b', null, 'Ping Me'), ' from your home screen')),
-      ];
-    }
-    const installBtn = h('button', { class: 'btn', onclick: async () => {
-      if (!deferredInstall) return;
-      deferredInstall.prompt();
-      const { outcome } = await deferredInstall.userChoice.catch(() => ({}));
-      deferredInstall = null;
-      if (outcome === 'accepted') { store.set('installed', true); toast('Ping Me installed! Open it from your home screen.'); done(); }
-    } }, icon('download'), 'Install Ping Me');
+    const installedMsg = 'Ping Me is installed — open it from your home screen.';
+    const finished = () => { if (mustInstall) status.textContent = installedMsg; else setTimeout(done, 1200); };
+    const status = h('p', { class: 'muted small' });
+    const btn = h('button', { class: 'btn', onclick: async () => {
+      btn.disabled = true;
+      const r = await installApp();
+      btn.disabled = false;
+      if (r === 'installed') { status.textContent = installedMsg; finished(); }
+    } }, icon('download'), isIOS() ? 'Add to Home Screen' : 'Install Ping Me');
     const gate = h('div', { class: 'gate' },
       h('img', { class: 'app-icon', src: '/icons/icon-512.png', alt: 'Ping Me' }),
-      h('h1', null, 'Add Ping Me'),
-      h('p', null, 'Install Ping Me on your Home Screen for the full app experience — full screen, notifications for messages and calls, and one-tap access.'),
-      h('div', { class: 'steps' }, steps),
-      h('div', { class: 'gate-actions' },
-        deferredInstall || !ios ? installBtn : null,
-        h('button', { class: 'btn secondary', onclick: done }, force ? 'Close' : 'Continue in browser')),
-      iosSafari ? h('div', { class: 'arrow' }, icon('down')) : null);
-    if (!deferredInstall) installBtn.hidden = true;
-    addEventListener('beforeinstallprompt', () => { installBtn.hidden = false; }, { once: true });
-    addEventListener('appinstalled', () => { store.set('installed', true); toast('Ping Me installed!'); done(); }, { once: true });
+      h('h1', null, 'Get Ping Me'),
+      h('p', null, mustInstall && installed()
+        ? 'Ping Me is already on your phone. Open it from your home screen (or app drawer) — calls and notifications only work in the app.'
+        : 'Install the app for full screen, instant notifications for messages and calls, and one-tap access from your home screen.'),
+      h('div', { class: 'gate-perks' },
+        h('div', null, icon('bell'), 'Notifications for messages & calls'),
+        h('div', null, icon('video'), 'HD calls, full screen'),
+        h('div', null, icon('lock'), 'Private & encrypted')),
+      h('div', { class: 'gate-actions' }, btn,
+        mustInstall ? null : h('button', { class: 'btn secondary', onclick: done }, force ? 'Close' : 'Use in browser')),
+      status);
+    addEventListener('appinstalled', () => { store.set('installed', true); status.textContent = installedMsg; finished(); }, { once: true });
     document.body.append(gate);
   });
 }
@@ -166,6 +162,7 @@ function startApp() {
     h('div', { class: 'sb-head' },
       h('img', { class: 'sb-logo', src: '/icons/logo-h.svg', alt: 'pingme' }),
       h('div', { class: 'spacer' }),
+      installed() ? null : h('button', { class: 'get-app', onclick: () => installApp().then((r) => { if (r === 'installed') renderMeBtn(); }) }, icon('download'), 'Get app'),
       h('button', { class: 'icon-btn', title: 'New message', 'aria-label': 'New message', onclick: () => openNewMessage() }, icon('compose')),
       els.meBtn),
     els.title,
@@ -201,9 +198,17 @@ function startApp() {
     if (e.data?.type === 'open' && S.me) handleUrl(new URL(e.data.url, location.origin));
   });
   addEventListener('popstate', onPopState);
-  document.addEventListener('visibilitychange', () => { if (!document.hidden && S.me) { markRead(); updateBadge(); clearChatNotifications(S.current); } });
+  let pushChecked = 0;
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden || !S.me) return;
+    markRead(); updateBadge(); clearChatNotifications(S.current);
+    // Keep this phone's push subscription fresh (phones sometimes drop it) and pick up a permission
+    // the person just turned on in system settings.
+    if (Date.now() - pushChecked > 10 * 60000) { pushChecked = Date.now(); setupPush(false); }
+    if (!S.current) renderList();
+  });
   addEventListener('focus', () => S.me && markRead());
-  addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (!closeTop() && S.current && innerWidth <= 760) history.back(); } });
+  addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (!closeTop() && S.current) { if (history.state?.chat) history.back(); else closeChat(); } } });
   addEventListener('mm:unlocked', () => { if (S.current && isHidden(S.current)) closeChat(); S.msgs.clear(); loadChats().then(() => { if (S.current) loadMessages(S.current, { reset: true }); }); });
   setInterval(tickCountdowns, 1000);
 }
@@ -259,6 +264,13 @@ function connectSocket() {
     wasConnected = true;
   });
   socket.on('connect_error', (e) => { if (e.message === 'unauthorized') { S.me = null; showAuth(); } });
+  // Someone signed in to this account on another device (one device at a time).
+  socket.on('session:ended', () => {
+    S.calls?.hangup?.();
+    S.me = null; S.chats.clear(); S.msgs.clear();
+    showAuth();
+    toast('You were signed out because your account was signed in on another device', { timeout: 8000 });
+  });
   // After a redeploy, two copies of the server can briefly run side by side. If this phone is still on
   // the old copy, reconnect so calls and messages reach everyone (never in the middle of a call).
   socket.on('hello', ({ instance }) => { S.instance = instance; });
@@ -380,7 +392,7 @@ export async function refreshChat(chatId) {
 }
 
 function sortedChats() {
-  return [...S.chats.values()].filter((c) => !isHidden(c.id)).sort((a, b) => (b.lastMessage?.createdAt || b.lastMsgAt) - (a.lastMessage?.createdAt || a.lastMsgAt));
+  return [...S.chats.values()].filter((c) => !c.removed && !isHidden(c.id)).sort((a, b) => (b.lastMessage?.createdAt || b.lastMsgAt) - (a.lastMessage?.createdAt || a.lastMsgAt));
 }
 
 function updateBadge() {
@@ -442,10 +454,16 @@ export function renderList() {
     return;
   }
 
-  if (S.config.vapidPublicKey && 'Notification' in window && Notification.permission === 'default' && !store.get('pushBannerDismissed') && (isStandalone() || !isIOS())) {
-    frag.push(h('div', { class: 'sb-banner' }, icon('bell'),
-      h('div', { class: 'spacer', style: { cursor: 'pointer' }, onclick: () => setupPush(true) }, h('b', null, 'Turn on notifications'), 'Get alerted for new messages and calls.'),
-      h('button', { class: 'x', 'aria-label': 'Dismiss', onclick: () => { store.set('pushBannerDismissed', true); renderList(); } }, icon('x'))));
+  // In the installed app this stays until notifications are on — without them calls can't ring.
+  const perm = 'Notification' in window ? Notification.permission : 'granted';
+  if (S.config.vapidPublicKey && perm !== 'granted' && (isStandalone() || (perm === 'default' && !isIOS() && !store.get('pushBannerDismissed')))) {
+    const blocked = perm === 'denied';
+    frag.push(h('div', { class: 'sb-banner' + (blocked ? ' warn' : '') }, icon('bell'),
+      h('div', { class: 'spacer', style: { cursor: 'pointer' }, onclick: () => (blocked
+        ? toast(isIOS() ? 'Open iPhone Settings → Notifications → Ping Me → Allow Notifications' : 'Long-press the Ping Me icon → App info → Notifications → Allow', { timeout: 8000 })
+        : setupPush(true)) },
+      h('b', null, blocked ? 'Notifications are off' : 'Turn on notifications'), blocked ? 'You won’t hear calls or messages. Tap to see how to fix it.' : 'So calls ring and messages arrive even when Ping Me is closed.'),
+      isStandalone() ? null : h('button', { class: 'x', 'aria-label': 'Dismiss', onclick: () => { store.set('pushBannerDismissed', true); renderList(); } }, icon('x'))));
   }
 
   if (S.me.settings?.guest) {
@@ -476,7 +494,7 @@ function chatRow(c) {
   const u = other ? S.users.get(other) : null;
   const row = h('div', { class: 'chat-item' + (S.current === c.id ? ' active' : ''), onclick: () => openChat(c.id) },
     h('span', { class: 'ub-dot' + (c.unread && !isMuted(c) ? '' : ' none') }),
-    avatar({ id: c.type === 'group' ? c.id : other, name: chatTitle(c), src: chatAvatar(c), size: 50, online: u?.online, group: c.type === 'group' }),
+    avatar({ id: c.type === 'group' ? c.id : other, name: chatTitle(c), src: chatAvatar(c), size: 50, online: u?.online, group: c.type === 'group', zoom: true }),
     h('div', { class: 'body' },
       h('div', { class: 'top' },
         h('span', { class: 'name' }, chatTitle(c), u?.birthdayToday ? icon('gift', 'bday') : null, c.streak >= 2 && feature('usSpace') ? h('span', { class: 'streak', title: `${c.streak}-day streak` }, icon('fire'), c.streak) : null),
@@ -531,7 +549,7 @@ export async function deleteConversation(c) {
   await api('DELETE', `/api/chats/${c.id}`);
   S.msgs.delete(c.id);
   if (S.current === c.id) closeChat();
-  if (c.type === 'group') S.chats.delete(c.id); else { c.archived = true; c.lastMessage = null; c.unread = 0; }
+  if (c.type === 'group') S.chats.delete(c.id); else { c.removed = true; c.archived = false; c.pinned = false; c.lastMessage = null; c.unread = 0; }
   renderList();
 }
 
@@ -629,7 +647,9 @@ export function openChat(id, { around = null, push = true } = {}) {
   if (switching) saveDraft();
   S.current = id;
   if (chat.archived && !around) chat.archived = false;
-  if (push && innerWidth <= 760 && !history.state?.chat) history.pushState({ chat: id }, '');
+  chat.removed = false;
+  // Opening a chat is one Back step (on every screen size), so Back returns to the list instead of exiting.
+  if (push) whenHistorySettled(() => { if (history.state?.chat !== id) history.pushState({ chat: id }, ''); });
   els.main.classList.add('show-conv');
   if (switching || !els.msgs) buildConv(chat);
   renderList();
@@ -652,10 +672,7 @@ export function closeChat() {
 }
 
 function onPopState(e) {
-  if (closeTop()) {
-    if (S.current && innerWidth <= 760) history.pushState({ chat: S.current }, '');
-    return;
-  }
+  if (handleLayerPop()) return;          // Back closed a sheet / menu / viewer
   if (S.current && !e.state?.chat) closeChat();
 }
 
@@ -861,7 +878,7 @@ async function onNewMessage(m) {
   if (chat) {
     chat.lastMessage = m;
     chat.lastMsgAt = m.createdAt;
-    if (chat.archived && m.kind !== 'system') chat.archived = false;
+    if (m.kind !== 'system') { chat.archived = false; chat.removed = false; }
     const viewing = S.current === m.chatId && !document.hidden && conv.nearBottom;
     if (!mine && m.kind !== 'system' && !viewing && !fresh) chat.unread = (chat.unread || 0) + 1;
     if (m.kind !== 'system' && m.kind !== 'call' && chat.type === 'direct' && S.current === m.chatId) setTimeout(renderUsBar, 300);
@@ -956,7 +973,7 @@ export function renderMessages() {
   else nodes.push(getNode('top-pad', 'top', () => h('div', { class: 'top-pad' })));
   if (!st.hasMore) {
     nodes.push(getNode('intro', chatTitle(chat) + chat.avatarV, () => h('div', { class: 'sys intro' },
-      avatar({ id: chat.type === 'group' ? chat.id : otherMember(chat), name: chatTitle(chat), src: chatAvatar(chat), size: 64, group: chat.type === 'group' }),
+      avatar({ id: chat.type === 'group' ? chat.id : otherMember(chat), name: chatTitle(chat), src: chatAvatar(chat), size: 64, group: chat.type === 'group', zoom: true }),
       h('div', { style: { fontWeight: '600', color: 'var(--text)', marginTop: '8px', fontSize: '17px' } }, chatTitle(chat)),
       h('div', null, chat.type === 'group' ? `${chat.members.length} members` : user(otherMember(chat))?.username ? '@' + user(otherMember(chat)).username : ''),
       h('div', { style: { marginTop: '6px', display: 'inline-flex', gap: '4px', alignItems: 'center' } }, icon('lock'), 'Messages are encrypted at rest'))));
@@ -1000,7 +1017,7 @@ function buildMessage(m, { first, last, status, chat }) {
   const u = user(m.senderId);
   const cls = ['m', mine ? 'me' : '', first ? 'first' : '', last ? 'last' : '', m.reactions?.length ? 'has-react' : '', m.deleted ? 'unsent' : '', m.pending ? 'pending' : ''].join(' ');
   const el = h('div', { class: cls, 'data-id': m.id });
-  if (chat.type === 'group' && !mine) el.append(avatar({ id: m.senderId, name: u.name, src: userAvatar(m.senderId), size: 30 }));
+  if (chat.type === 'group' && !mine) el.append(avatar({ id: m.senderId, name: u.name, src: userAvatar(m.senderId), size: 30, zoom: true }));
   const col = h('div', { class: 'col' });
   el.append(col);
   if (chat.type === 'group' && !mine && first && m.kind !== 'call') col.append(h('div', { class: 'sender' }, u.name));

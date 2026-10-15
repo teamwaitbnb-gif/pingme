@@ -103,7 +103,7 @@ export function mergeUsers(list) {
 
 export function prefs() {
   return {
-    theme: store.get('theme', 'auto'),
+    theme: store.get('theme', 'dark'),
     bubble: store.get('bubble', 'ink'),
     fontSize: store.get('fontSize', 17),
     enterSend: store.get('enterSend', !matchMedia('(pointer: coarse)').matches),
@@ -121,6 +121,8 @@ export function applyPrefs() {
   const p = prefs();
   const root = document.documentElement;
   if (p.theme === 'auto') root.removeAttribute('data-theme'); else root.setAttribute('data-theme', p.theme);
+  const dark = p.theme === 'dark' || (p.theme === 'auto' && matchMedia('(prefers-color-scheme: dark)').matches);
+  document.querySelector('meta[name=theme-color]')?.setAttribute('content', dark ? '#000000' : '#ffffff');
   // "Ink" (default) follows the theme: black bubbles in light mode, white in dark — like the logo.
   const ink = p.bubble === 'ink' || !BUBBLES[p.bubble];
   const b = BUBBLES[p.bubble] || BUBBLES.ink;

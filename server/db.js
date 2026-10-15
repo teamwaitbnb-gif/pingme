@@ -24,6 +24,7 @@ const SCHEMA = [
     token_hash CHAR(64) PRIMARY KEY,
     user_id BIGINT UNSIGNED NOT NULL,
     ua_enc TEXT NULL,
+    device_hash CHAR(64) NULL,
     created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     last_used DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     INDEX (user_id)
@@ -53,6 +54,7 @@ const SCHEMA = [
     muted_until BIGINT NOT NULL DEFAULT 0,
     pinned TINYINT NOT NULL DEFAULT 0,
     archived TINYINT NOT NULL DEFAULT 0,
+    removed TINYINT NOT NULL DEFAULT 0,
     PRIMARY KEY (chat_id, user_id),
     INDEX (user_id)
   )`,
@@ -235,6 +237,16 @@ async function migrate(dbName) {
   const [[kindCol]] = await pool.query("SELECT COLUMN_TYPE t FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='messages' AND COLUMN_NAME='kind'", [dbName]);
   if (!kindCol.t.includes("'letter'")) {
     await pool.query("ALTER TABLE messages MODIFY kind ENUM('text','image','video','audio','file','location','poll','call','system','ping','letter') NOT NULL");
+  }
+  const sessions = await cols('sessions');
+  if (!sessions.has('device_hash')) await pool.query('ALTER TABLE sessions ADD COLUMN device_hash CHAR(64) NULL AFTER ua_enc');
+  const members = await cols('chat_members');
+  if (!members.has('removed')) {
+    // "Deleted" conversations used to be parked in Archived; give them their own hidden state.
+    await pool.query('ALTER TABLE chat_members ADD COLUMN removed TINYINT NOT NULL DEFAULT 0 AFTER archived');
+    await pool.query(`UPDATE chat_members cm SET removed=1, archived=0
+      WHERE cm.archived=1 AND cm.cleared_before_id>0
+        AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.chat_id=cm.chat_id AND m.id>cm.cleared_before_id AND m.kind<>'system')`);
   }
   const chats = await cols('chats');
   if (!chats.has('extra_enc')) await pool.query('ALTER TABLE chats ADD COLUMN extra_enc TEXT NULL AFTER disappear_secs');

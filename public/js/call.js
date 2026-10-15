@@ -108,10 +108,12 @@ export function initCalls(ctx) {
 
   // ───────── local media ─────────
 
-  // Phones held upright capture portrait video; asking for landscape there made the other side look zoomed in.
+  // Never let the browser crop the camera to hit a size — that's what made calls look zoomed in.
+  // resizeMode 'none' = use a real camera mode (full field of view); phones rotate it to portrait themselves.
+  // Phones top out at 1080p: front cameras reach "4K" only via a cropped, zoomed sensor mode.
   function captureSize(p) {
-    const portrait = isMobile() && matchMedia('(orientation: portrait)').matches;
-    return portrait ? { width: { ideal: p.h }, height: { ideal: p.w } } : { width: { ideal: p.w }, height: { ideal: p.h } };
+    const q = isMobile() && p.h > 1080 ? PROFILES.fhd : p;
+    return { width: { ideal: q.w }, height: { ideal: q.h }, resizeMode: { ideal: 'none' } };
   }
 
   async function getMedia({ audio = true, video = false, facing = 'user' }) {
@@ -133,7 +135,7 @@ export function initCalls(ctx) {
   }
 
   function mediaError(e) {
-    if (e?.name === 'NotAllowedError') return 'Allow camera and microphone access in your browser settings to make calls.';
+    if (e?.name === 'NotAllowedError') { store.del('perm:camera'); store.del('perm:microphone'); return 'Allow camera and microphone access in your browser settings to make calls.'; }
     if (e?.name === 'NotFoundError') return 'No microphone or camera found.';
     if (!window.isSecureContext) return 'Calls need HTTPS. Open Ping Me over a secure (https://) link.';
     return 'Could not access camera/microphone.';
@@ -745,9 +747,9 @@ export function initCalls(ctx) {
     el.addEventListener('click', (e) => { e.stopPropagation(); if (!moved && call?.peers.size) { /* swap could go here */ } });
   }
 
-  function placeSelf() {
+  function placeSelf(force = false) {
     const el = call.ui.self;
-    if (el.classList.contains('full') || el.style.left) return;
+    if (el.classList.contains('full') || (el.style.left && !force)) return;
     const pos = store.get('selfPos', { right: true, bottom: false });
     // Measure the final PiP size with transitions off (it may be shrinking from full screen).
     el.classList.add('dragging');
@@ -764,11 +766,15 @@ export function initCalls(ctx) {
 
   function buildTile(peer) {
     const u = ctx.user(peer.userId);
-    const v = h('video', { autoplay: true, playsinline: true });
+    const v = h('video', { class: 'fg', autoplay: true, playsinline: true });
+    // Blurred copy behind the video: fills the screen when the picture's shape differs from it.
+    const bgv = h('video', { class: 'bgv', autoplay: true, playsinline: true, muted: true, 'aria-hidden': 'true' });
+    bgv.muted = true;
     const ph = h('div', { class: 'ph' }, avatar({ id: peer.userId, name: u?.name, src: ctx.userAvatar(peer.userId), size: 110 }), h('div', { class: 'phs' }, 'Connecting…'));
     const nm = h('div', { class: 'nm' });
-    peer.tile = h('div', { class: 'tile' }, v, ph, nm);
+    peer.tile = h('div', { class: 'tile' }, bgv, v, ph, nm);
     peer.videoEl = v;
+    peer.bgEl = bgv;
     peer.tile.addEventListener('dblclick', () => peer.tile.classList.toggle('contain'));
   }
 
@@ -776,9 +782,11 @@ export function initCalls(ctx) {
   function fitVideo(peer) {
     const v = peer.videoEl, t = peer.tile;
     if (!v?.videoWidth || !t) return;
-    const videoPortrait = v.videoHeight > v.videoWidth;
-    const tilePortrait = t.clientHeight > t.clientWidth;
-    t.classList.toggle('contain', !!peer.media.screen || videoPortrait !== tilePortrait);
+    // Fill only when the shapes almost match (crop ≤ ~8%); otherwise show the whole picture over its
+    // blurred copy — nobody's face gets cut off or zoomed.
+    const va = v.videoWidth / v.videoHeight, ta = t.clientWidth / Math.max(1, t.clientHeight);
+    const mismatch = Math.max(va, ta) / Math.min(va, ta);
+    t.classList.toggle('contain', !!peer.media.screen || mismatch > 1.08);
   }
 
   function attachRemote(peer) {
@@ -789,6 +797,8 @@ export function initCalls(ctx) {
       addEventListener('resize', () => fitVideo(peer));
     }
     if (peer.videoEl.srcObject !== peer.stream) peer.videoEl.srcObject = peer.stream;
+    const vt = peer.stream.getVideoTracks()[0];
+    if (vt && peer.bgEl && peer.bgEl.srcObject?.getVideoTracks()[0] !== vt) { peer.bgEl.srcObject = new MediaStream([vt]); peer.bgEl.play().catch(() => {}); }
     peer.videoEl.play().catch(() => {});
     renderTile(peer);
     render();
@@ -872,6 +882,11 @@ export function initCalls(ctx) {
     const selfTrack = call.screen?.getVideoTracks()[0] || call.stream.getVideoTracks()[0];
     const selfStream = selfTrack ? new MediaStream([selfTrack]) : null;
     if (selfTrack && ui.selfVideo.srcObject?.getVideoTracks()[0] !== selfTrack) { ui.selfVideo.srcObject = selfStream; ui.selfVideo.play().catch(() => {}); }
+    // Your preview box takes your camera's real shape (portrait on phones, landscape on laptops).
+    const st = selfTrack?.getSettings?.() || {};
+    const setShape = (w, hh) => { ui.self.style.setProperty('--ar', `${w} / ${hh}`); ui.self.classList.toggle('land', w > hh); };
+    if (st.width && st.height) setShape(st.width, st.height);
+    ui.selfVideo.onloadedmetadata = () => { const v = ui.selfVideo; if (v.videoWidth) { setShape(v.videoWidth, v.videoHeight); placeSelf(true); } };
     if (!selfTrack) ui.selfVideo.srcObject = null;
     ui.selfVideo.classList.toggle('mirror', !call.screen && call.facing === 'user');
     ui.self.hidden = !selfTrack && !connectedPeers.length;

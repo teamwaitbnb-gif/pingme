@@ -1,6 +1,6 @@
 // Sign in / sign up: username + password or Sign in with Google, the "choose your username"
 // step for new Google accounts, and password recovery through trusted friends.
-import { h, icon, toast, isStandalone, store } from './ui.js';
+import { h, icon, toast, isStandalone, store, confirmDialog } from './ui.js';
 import { S, api } from './core.js';
 
 let onSignedIn = () => {};
@@ -34,8 +34,23 @@ async function handleIdToken(provider, idToken, { link = false } = {}) {
   return handleOauthResult(r);
 }
 
+// One account, one device: signing in here means signing out on the other device first.
+export async function askTakeover(conflict) {
+  const ok = await confirmDialog(`You’re already signed in on ${conflict.device}. Ping Me works on one device at a time — log out there and continue on this device?`,
+    { ok: 'Log out there & continue' });
+  if (!ok) return false;
+  try {
+    const { user } = await api('POST', '/api/login/takeover', { ticket: conflict.ticket });
+    S.me = user;
+    toast(`Signed out on ${conflict.device}`);
+    onSignedIn();
+    return true;
+  } catch (e) { toast(e.message, { error: true }); return false; }
+}
+
 export async function handleOauthResult(r) {
   if (r.kind === 'login') { S.me = r.user; onSignedIn(); }
+  else if (r.kind === 'conflict') await askTakeover(r.conflict);
   else if (r.kind === 'linked') {
     toast('Google is now linked to your account');
     const { user } = await api('GET', '/api/me');
@@ -143,8 +158,9 @@ export function showAuth(mode = 'login') {
     try {
       const body = { username: username.value.trim(), password: password.value };
       if (mode === 'register') Object.assign(body, { name: name.value.trim(), birth: birth.input.value, invite: invite?.input.value.trim() });
-      const { user } = await api('POST', mode === 'login' ? '/api/login' : '/api/register', body);
-      S.me = user;
+      const r = await api('POST', mode === 'login' ? '/api/login' : '/api/register', body);
+      if (r.conflict) { btn.disabled = false; return void askTakeover(r.conflict); }
+      S.me = r.user;
       onSignedIn();
     } catch (ex) { err.textContent = ex.message; btn.disabled = false; }
   } },

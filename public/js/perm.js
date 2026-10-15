@@ -1,7 +1,7 @@
 // Ping Me's own permission screen, shown just before the phone's system prompt.
 // The system prompt can't be restyled (it always shows the web address), so we explain first in
 // Ping Me's own words — and only when the permission hasn't been decided yet.
-import { h, icon, isIOS } from './ui.js';
+import { h, icon, isIOS, store, registerLayer } from './ui.js';
 
 const INFO = {
   camera: { icon: 'video', label: 'camera' },
@@ -16,17 +16,26 @@ async function state(name) {
 }
 
 // Resolves true when it's OK to go ahead and call getUserMedia / geolocation.
+// Once you've said yes, Ping Me never shows its own explainer again (some phones — iPhone especially —
+// don't report saved permissions, which made the screen pop up before every call).
+const remember = (names) => names.forEach((n) => store.set('perm:' + n, true));
+const remembered = (n) => store.get('perm:' + n, false);
+
 export async function ensurePermission(names, reason) {
   const states = await Promise.all(names.map(state));
-  if (states.every((s) => s === 'granted')) return true;
-  if (states.some((s) => s === 'denied')) { blockedHelp(names); return false; }
-  return explain(names, reason);
+  if (states.some((s) => s === 'denied')) { names.forEach((n) => store.del('perm:' + n)); blockedHelp(names); return false; }
+  if (states.every((s, i) => s === 'granted' || remembered(names[i]))) { remember(names); return true; }
+  const ok = await explain(names, reason);
+  if (ok) remember(names);
+  return ok;
 }
 
 function explain(names, reason) {
   return new Promise((resolve) => {
     const what = names.map((n) => INFO[n].label).join(' & ');
-    const finish = (ok) => { root.remove(); resolve(ok); };
+    let done = false;
+    const finish = (ok) => { if (done) return; done = true; unregister(); root.remove(); resolve(ok); };
+    const unregister = registerLayer(() => finish(false));
     const root = h('div', { class: 'perm' },
       h('div', { class: 'perm-card', role: 'dialog', 'aria-label': `Allow ${what}` },
         h('img', { class: 'perm-logo', src: '/icons/icon-192.png', alt: '' }),
@@ -45,7 +54,8 @@ function blockedHelp(names) {
   const steps = isIOS()
     ? `On iPhone: open Settings → Apps → Safari (or the Ping Me app) → allow ${what}. Then come back and try again.`
     : `Tap the lock or ⓘ icon next to the address (or long-press the Ping Me app icon → App info → Permissions) and allow ${what}. Then try again.`;
-  const close = () => root.remove();
+  const close = () => { unregister(); root.remove(); };
+  const unregister = registerLayer(close);
   const root = h('div', { class: 'perm', onclick: (e) => { if (e.target === root) close(); } },
     h('div', { class: 'perm-card' },
       h('img', { class: 'perm-logo', src: '/icons/icon-192.png', alt: '' }),

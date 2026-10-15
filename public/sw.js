@@ -1,9 +1,9 @@
 // Ping Me service worker: app-shell caching + app-style notifications.
-const VERSION = 'pm-v7';
+const VERSION = 'pm-v9';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/manifest.webmanifest',
   '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',
-  '/js/onboarding.js', '/js/lock.js', '/js/keys.js', '/js/secure.js', '/js/smart.js', '/js/stories.js', '/js/perm.js',
+  '/js/onboarding.js', '/js/lock.js', '/js/keys.js', '/js/secure.js', '/js/smart.js', '/js/stories.js', '/js/perm.js', '/js/install.js',
   '/icons/icon.svg', '/icons/logo.svg', '/icons/logo-h.svg', '/icons/hand.svg', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png', '/icons/badge-96.png',
   '/sounds/message.wav', '/sounds/tick.wav', '/sounds/sent.wav', '/sounds/ringtone.wav', '/sounds/ringback.wav', '/sounds/join.wav', '/sounds/end.wav', '/sounds/ping.wav',
 ];
@@ -169,6 +169,20 @@ self.addEventListener('notificationclick', (e) => {
     if (e.action === 'reply' && d.chatId) return openApp(`/?chat=${d.chatId}&reply=1`);
     await openApp(d.url || '/');
     await updateBadge();
+  })());
+});
+
+// Browsers occasionally rotate push subscriptions; re-register silently so notifications keep arriving.
+self.addEventListener('pushsubscriptionchange', (e) => {
+  e.waitUntil((async () => {
+    try {
+      const { vapidPublicKey } = await fetch('/api/config').then((r) => r.json());
+      if (!vapidPublicKey) return;
+      const pad = '='.repeat((4 - (vapidPublicKey.length % 4)) % 4);
+      const key = Uint8Array.from(atob((vapidPublicKey + pad).replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+      const sub = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+      await fetch('/api/push/subscribe', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json', 'x-pingme': '1' }, body: JSON.stringify({ subscription: sub.toJSON() }) });
+    } catch {}
   })());
 });
 

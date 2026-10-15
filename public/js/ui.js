@@ -242,8 +242,13 @@ export function initials(name) {
   return chars.join('').toUpperCase();
 }
 
-export function avatar({ id = 0, name = '', src = null, size = 44, online = false, group = false } = {}) {
+export function avatar({ id = 0, name = '', src = null, size = 44, online = false, group = false, zoom = false } = {}) {
   const el = h('div', { class: 'av' + (group ? ' av-group' : ''), style: { '--s': size + 'px' } });
+  // zoom: tapping the photo opens it full screen (like WhatsApp / iMessage).
+  if (zoom && src) {
+    el.classList.add('av-zoom');
+    el.addEventListener('click', (e) => { if (!el.querySelector('img')) return; e.stopPropagation(); e.preventDefault(); viewPhoto(src, name); });
+  }
   if (!src) {
     const g = GRADS[Math.abs(Number(id) || 0) % GRADS.length];
     el.style.background = `linear-gradient(180deg, ${g[0]}, ${g[1]})`;
@@ -256,6 +261,21 @@ export function avatar({ id = 0, name = '', src = null, size = 44, online = fals
   else el.textContent = initials(name);
   if (!online) return el;
   return h('div', { class: 'av-wrap' }, el, h('span', { class: 'dot' }));
+}
+
+// Full-screen profile photo. Back / tap / swipe down closes it.
+export function viewPhoto(src, name = '') {
+  const img = h('img', { src, alt: name });
+  let startY = null;
+  const close = () => { unregister(); root.classList.add('out'); setTimeout(() => root.remove(), 180); };
+  const root = h('div', { class: 'photo-view', role: 'dialog', 'aria-label': name || 'Photo', onclick: close },
+    h('div', { class: 'pv-top' }, h('button', { class: 'pv-x', 'aria-label': 'Close', onclick: (e) => { e.stopPropagation(); close(); } }, icon('x')), h('b', null, name)),
+    img);
+  root.addEventListener('touchstart', (e) => { startY = e.touches[0].clientY; }, { passive: true });
+  root.addEventListener('touchmove', (e) => { if (startY !== null) img.style.transform = `translateY(${Math.max(0, e.touches[0].clientY - startY)}px)`; }, { passive: true });
+  root.addEventListener('touchend', (e) => { const dy = (e.changedTouches[0]?.clientY || 0) - (startY ?? 0); startY = null; if (dy > 90) close(); else img.style.transform = ''; });
+  const unregister = registerLayer(close);
+  document.body.append(root);
 }
 
 // ───── toasts ─────
@@ -272,19 +292,48 @@ export function toast(msg, { error = false, timeout = 3200, onClick, node } = {}
 // ───── layers: sheets, action sheets, dialogs ─────
 
 const layer = () => document.getElementById('layer');
+// Every open sheet / menu / viewer gets its own history entry, so the phone's Back button (or swipe
+// back) closes just that layer — never the whole app.
 const stack = [];
+let popping = false;   // closing because the user pressed Back (entry already gone)
+let skipPops = 0;      // Back steps we triggered ourselves after closing a layer from the UI
+const settled = [];
 
 export function closeTop() {
   const top = stack[stack.length - 1];
-  if (top) { top(); return true; }
+  if (top) { top.closer(); return true; }
   return false;
 }
+
+// Called from the app's popstate handler. Returns true if a layer handled this Back press.
+export function handleLayerPop() {
+  if (skipPops > 0) {
+    skipPops--;
+    if (!skipPops) settled.splice(0).forEach((fn) => fn());
+    return true;
+  }
+  const top = stack[stack.length - 1];
+  if (!top) return false;
+  popping = true;
+  try { top.closer(); } finally { popping = false; }
+  return true;
+}
+
+// Run fn once our own history.back() calls have landed (avoids racing with pushState).
+export function whenHistorySettled(fn) { if (!skipPops) fn(); else settled.push(fn); }
 
 export function registerLayer(closer) { return pushLayer(closer); }
 
 function pushLayer(closer) {
-  stack.push(closer);
-  return () => { const i = stack.indexOf(closer); if (i >= 0) stack.splice(i, 1); };
+  const entry = { closer, pushed: false };
+  stack.push(entry);
+  try { history.pushState({ pmLayer: stack.length }, ''); entry.pushed = true; } catch {}
+  return () => {
+    const i = stack.indexOf(entry);
+    if (i < 0) return;
+    stack.splice(i, 1);
+    if (entry.pushed && !popping) { skipPops++; history.back(); }
+  };
 }
 
 export function openSheet({ title = '', left, right, body, full = false, onClose, className = '' } = {}) {
