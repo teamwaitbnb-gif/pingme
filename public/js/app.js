@@ -21,6 +21,7 @@ import { scanScam, detectPromise, INTENTS } from './smart.js';
 import { verifyPhoto } from './keys.js';
 import { ensurePermission } from './perm.js';
 import { installApp, installed } from './install.js';
+import { openScanner, scanChatImage, addFromCode } from './qr.js';
 
 const app = document.getElementById('app');
 const TAPBACKS = ['❤️', '👍', '👎', '😂', '‼️', '❓'];
@@ -134,6 +135,17 @@ export function showInstallGate({ force = false } = {}) {
   });
 }
 
+// From a scanned / shared Ping Me QR code.
+addEventListener('pm:add-user', async (e) => {
+  if (!S.me) return;
+  try {
+    const { user: u } = await api('GET', '/api/users/lookup?u=' + encodeURIComponent(e.detail));
+    if (u.id === S.me.id) return toast('That’s your own Ping Me code');
+    await startDirect(u);
+    toast(`Say hi to ${u.name.split(' ')[0]}`);
+  } catch (err) { toast(err.message || 'Couldn’t find that person', { error: true }); }
+});
+
 addEventListener('mm:unauthorized', () => { if (S.me) { S.me = null; showAuth(); } });
 addEventListener('mm:me-changed', () => { if (S.me && els.meBtn) refreshMe(S.me); });
 
@@ -163,6 +175,7 @@ function startApp() {
       h('img', { class: 'sb-logo', src: '/icons/logo-h.svg', alt: 'pingme' }),
       h('div', { class: 'spacer' }),
       installed() ? null : h('button', { class: 'get-app', onclick: () => installApp().then((r) => { if (r === 'installed') renderMeBtn(); }) }, icon('download'), 'Get app'),
+      h('button', { class: 'icon-btn', title: 'Scan QR code', 'aria-label': 'Scan QR code', onclick: () => openScanner() }, icon('scan')),
       h('button', { class: 'icon-btn', title: 'New message', 'aria-label': 'New message', onclick: () => openNewMessage() }, icon('compose')),
       els.meBtn),
     els.title,
@@ -1254,7 +1267,14 @@ function mediaBox(m) {
   const ratio = Math.min(1.6, Math.max(0.5, hh / w));
   const box = h('div', { class: 'media-box', style: { width: maxW + 'px', height: Math.round(maxW * ratio) + 'px' } });
   const src = m.localUrl || fileUrl(m.att);
-  if (m.kind === 'image') box.append(h('img', { src, alt: m.att?.name || 'Photo', loading: 'lazy', decoding: 'async' }));
+  if (m.kind === 'image') {
+    const img = h('img', { src, alt: m.att?.name || 'Photo', loading: 'lazy', decoding: 'async' });
+    box.append(img);
+    // A photo of someone's Ping Me QR code gets an "Add" button right on it.
+    if (!m.pending && m.id > 0) {
+      scanChatImage(m.id, img, (username) => box.append(h('button', { class: 'qr-chip', onclick: (e) => { e.stopPropagation(); addFromCode(username); } }, icon('qr'), `Add @${username}`)));
+    }
+  }
   else {
     const v = h('video', { src: src + (src.startsWith('blob:') ? '' : '#t=0.1'), preload: 'metadata', muted: true, playsinline: true });
     v.muted = true;

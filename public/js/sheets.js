@@ -16,6 +16,7 @@ import { storyStrip } from './stories.js';
 import { lockEnabled, hasDuress, setPin, setDuressPin, disableLock, hiddenChats, setHiddenChats, checkPin } from './lock.js';
 import { signPhoto } from './keys.js';
 import { installApp } from './install.js';
+import { openMyCode, openScanner } from './qr.js';
 import { ensurePermission } from './perm.js';
 import { INTENTS } from './smart.js';
 
@@ -50,6 +51,7 @@ export function openSettings() {
       h('div', { class: 'group' },
         cell({ icon: 'user', label: 'Name', value: me.name, chevron: true, onClick: async () => { const v = await promptDialog({ title: 'Your name', value: me.name, maxlength: 60 }); if (v?.trim()) save({ name: v.trim() }); } }),
         cell({ icon: 'text', color: '#8e8e93', label: 'About', value: me.bio ? me.bio.slice(0, 22) + (me.bio.length > 22 ? '…' : '') : 'Add', chevron: true, onClick: async () => { const v = await promptDialog({ title: 'About', value: me.bio, multiline: true, maxlength: 200, placeholder: 'Available' }); if (v !== null) save({ bio: v }); } }),
+        cell({ icon: 'qr', color: '#5856d6', label: 'My QR code', sub: 'Friends scan it to add you', chevron: true, onClick: () => openMyCode() }),
         cell({ icon: 'link', color: '#34c759', label: 'Share my invite link', sub: inviteUrl.replace(/^https?:\/\//, ''), onClick: () => shareLink(inviteUrl, me) })),
 
       h('div', { class: 'group-label' }, 'Account'),
@@ -350,6 +352,8 @@ export function openNewMessage() {
     h('div', { class: 'group' }, h('label', { class: 'cell' }, h('span', { class: 'muted' }, 'To: @'), input, h('button', { class: 'link', onclick: find }, 'Find'))),
     result,
     h('div', { class: 'group' },
+      cell({ icon: 'scan', color: '#5856d6', label: 'Scan QR code', sub: 'Add a friend from their Ping Me code', chevron: true, onClick: () => { s.close(); openScanner(); } }),
+      cell({ icon: 'qr', color: '#8e8e93', label: 'My QR code', chevron: true, onClick: () => { s.close(); openMyCode(); } }),
       cell({ icon: 'users', color: '#34c759', label: 'New Group', chevron: true, onClick: () => { s.close(); openNewGroup(); } }),
       cell({ icon: 'link', color: '#0a84ff', label: 'Invite with a link', sub: 'They can reply without installing anything', onClick: () => { s.close(); openInviteLink(); } })),
     people.length ? h('div', { class: 'group-label' }, 'Contacts') : null,
