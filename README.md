@@ -77,3 +77,16 @@ Calls default to 1080p at 30 fps with the browser's codec preferences. Explicit 
 On phones, **+ → Record video** opens the phone's own camera app in video mode and **+ → Take photo** opens it for photos; the file is sent exactly as the camera saved it. Photos and videos are never re-encoded (photos default to original quality; the "Send photos in original quality" setting can turn on smaller photos). Files up to 2 GB upload in encrypted 8 MiB pieces (past Cloud Run's 32 MiB request limit) and stream with seeking. Set `MEDIA_BUCKET` to store the pieces in Google Cloud Storage; without it they go in the database. On computers, Record video uses the in-app recorder (browser encoder).
 
 Before release, check two physical phones over Wi-Fi and cellular: answer/decline, camera flip, camera off/on, screen share, network changes, recorded video playback on the other device, and Chrome notifications with the app backgrounded. Automated tests do not measure end-to-end latency or sensor image quality.
+
+## Buzz (live news tab)
+
+**Chats | Buzz** tabs sit at the bottom of the main page. Buzz is one combined feed of real stories, mixed for the reader's city (Hyderabad, Bengaluru, Mumbai, Delhi, Chennai, Kolkata, Pune, or all of India): about a third local, then India, tech, business, world, cricket and cinema, interleaved so no publisher dominates.
+
+Architecture: publisher RSS/Atom feeds + Hacker News API → server collectors (`server/buzz/collect.js`, per-source polling, ETag/Last-Modified, timeouts, size limits, redirect checks, Retry-After + exponential backoff) → normalised rows in MySQL (`feed_sources`, `feed_items`, `feed_likes`, `feed_reposts`, `feed_comments`) → per-region ranking (`server/buzz/index.js`) → `GET /api/feed` → the app checks every 5 s while Buzz is on screen (one request at a time), merges new stories at the top without moving the reader, and keeps the last feed in local storage for offline use.
+
+- Sources live in `server/buzz/sources.js` — adding one is a single entry (plus an adapter only for a new API type). The in-app **Sources & status** section shows each source's live status.
+- Collection runs in the background on the server (Cloud Run keeps one instance running with CPU always on), so the feed stays fresh when nobody has it open. Set `BUZZ_COLLECT=off` to disable.
+- Popularity labels use real signals only: Hacker News points/comments, Google News top-story position, and likes/comments/reposts on Ping Me. Nothing is claimed to be "the most viral on the internet".
+- Missing images/summaries are read from the article's Open Graph tags, only on the publisher's own site. Summaries are the publisher's own sentences, never invented.
+- Optional, disabled until credentials are set: YouTube popular videos (`YOUTUBE_API_KEY`) and Reddit (`REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET`). These adapters are stubs until those keys exist.
+- Known source status at launch: 36 feeds working; Moneycontrol returns HTTP 403 to servers (kept, marked unavailable, retried with backoff).

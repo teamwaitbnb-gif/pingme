@@ -96,6 +96,51 @@ const SCHEMA = [
     option_idx INT NOT NULL,
     PRIMARY KEY (message_id, user_id, option_idx)
   )`,
+  `CREATE TABLE IF NOT EXISTS feed_sources (
+    id VARCHAR(40) PRIMARY KEY,
+    etag VARCHAR(255) NULL,
+    last_modified VARCHAR(100) NULL,
+    last_ok DATETIME(3) NULL,
+    last_attempt DATETIME(3) NULL,
+    next_try DATETIME(3) NULL,
+    fails INT NOT NULL DEFAULT 0,
+    status VARCHAR(20) NOT NULL DEFAULT 'pending',
+    error VARCHAR(300) NULL,
+    items INT NOT NULL DEFAULT 0
+  )`,
+  `CREATE TABLE IF NOT EXISTS feed_items (
+    id CHAR(24) PRIMARY KEY,
+    source_id VARCHAR(40) NOT NULL,
+    region VARCHAR(20) NOT NULL,
+    topic VARCHAR(20) NOT NULL,
+    url VARCHAR(1024) NOT NULL,
+    title VARCHAR(600) NOT NULL,
+    summary TEXT NULL,
+    image_url VARCHAR(1024) NULL,
+    video_url VARCHAR(1024) NULL,
+    via VARCHAR(160) NULL,
+    discuss_url VARCHAR(300) NULL,
+    engagement TEXT NULL,
+    src_rank INT NULL,
+    published_at DATETIME(3) NULL,
+    fetched_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    enriched TINYINT NOT NULL DEFAULT 0,
+    INDEX (region, fetched_at),
+    INDEX (published_at)
+  )`,
+  `CREATE TABLE IF NOT EXISTS feed_likes (
+    item_id CHAR(24) NOT NULL, user_id BIGINT UNSIGNED NOT NULL, created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (item_id, user_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS feed_reposts (
+    item_id CHAR(24) NOT NULL, user_id BIGINT UNSIGNED NOT NULL, created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (item_id, user_id), INDEX (user_id)
+  )`,
+  `CREATE TABLE IF NOT EXISTS feed_comments (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, item_id CHAR(24) NOT NULL, user_id BIGINT UNSIGNED NOT NULL,
+    body_enc TEXT NOT NULL, created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX (item_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS chat_pets (
     chat_id BIGINT UNSIGNED PRIMARY KEY,
     caged TINYINT NOT NULL DEFAULT 0,

@@ -1,8 +1,8 @@
 // Ping Me service worker: app-shell caching + app-style notifications.
-const VERSION = 'pm-v25';
+const VERSION = 'pm-v26';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/manifest.webmanifest',
-  '/js/video-recorder.js', '/js/camera.js', '/js/editor.js', '/js/pet.js', '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',
+  '/js/video-recorder.js', '/js/camera.js', '/js/editor.js', '/js/pet.js', '/js/buzz.js', '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',
   '/js/onboarding.js', '/js/lock.js', '/js/keys.js', '/js/secure.js', '/js/smart.js', '/js/stories.js', '/js/perm.js', '/js/install.js', '/js/qr.js',
   '/icons/icon.svg', '/icons/logo.svg', '/icons/logo-h.svg', '/icons/hand.svg', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png', '/icons/badge-96.png',
   '/sounds/message.mp3', '/sounds/tick.wav', '/sounds/sent.wav', '/sounds/ringtone.wav', '/sounds/ringback.wav', '/sounds/join.wav', '/sounds/end.wav', '/sounds/ping.wav',

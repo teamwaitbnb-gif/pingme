@@ -1,5 +1,6 @@
 import { openCamera } from './camera.js';
 import { mountPet, petHidden } from './pet.js';
+import { initBuzz } from './buzz.js';
 import {
   h, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, handleLayerPop, whenHistorySettled, longPress, richText, emojiCount,
   fmtTime, fmtListTime, fmtDay, fmtDur, fmtSize, lastSeenText, isIOS, isMobile, isStandalone, store,
@@ -225,10 +226,21 @@ function startApp() {
     els.title,
     els.safetyBar,
     h('div', { class: 'sb-search' }, icon('search'), search, clearBtn),
-    els.list);
+    els.list,
+    // Bottom tabs: Chats | Buzz
+    els.tabs = h('nav', { class: 'sb-tabs', 'aria-label': 'Sections' },
+      h('button', { class: 'on', 'data-tab': 'chats', onclick: () => setTab('chats') }, icon('msg'), h('span', null, 'Chats')),
+      h('button', { 'data-tab': 'buzz', onclick: () => setTab('buzz') }, icon('fire'), h('span', null, 'Buzz'))));
   els.conv = h('section', { class: 'conv' });
-  els.main = h('div', { class: 'main' }, els.sidebar, els.conv);
+  els.buzz = h('div', { class: 'buzz-pane', hidden: true });
+  els.main = h('div', { class: 'main' }, els.sidebar, els.conv, els.buzz);
   app.append(els.main);
+  S.buzz = initBuzz({
+    api, me: () => S.me, userAvatar, chats: () => sortedChats(), chatTitle, chatAvatar,
+    sendToChat: (chatId, text) => sendPayload(chatId, { kind: 'text', text }),
+    saveRegion: (r) => api('PATCH', '/api/me', { settings: { buzzRegion: r } }).then(({ user: u }) => { S.me = u; }).catch(() => {}),
+  });
+  if (sessionStorage.getItem('pm:tab') === 'buzz') setTimeout(() => setTab('buzz'), 0);
   let st;
   search.addEventListener('input', () => { clearBtn.hidden = !search.value; clearTimeout(st); st = setTimeout(() => onSearch(search.value), 150); });
   search.addEventListener('focus', () => { S.searchFocus = true; renderList(); });
@@ -719,6 +731,7 @@ export function openChat(id, { around = null, push = true } = {}) {
   // Opening a chat is one Back step (on every screen size), so Back returns to the list instead of exiting.
   if (push) whenHistorySettled(() => { if (history.state?.chat !== id) history.pushState({ chat: id }, ''); });
   els.main.classList.add('show-conv');
+  if (S.tab === 'buzz' && innerWidth > 760) setTab('chats'); // on computers the chat replaces Buzz
   if (switching || !els.msgs) buildConv(chat);
   renderList();
   const st = S.msgs.get(id);
@@ -743,6 +756,16 @@ export function closeChat() {
 function onPopState(e) {
   if (handleLayerPop()) return;          // Back closed a sheet / menu / viewer
   if (S.current && !e.state?.chat) closeChat();
+}
+
+// Chats | Buzz tabs at the bottom of the main page.
+function setTab(t) {
+  S.tab = t;
+  try { sessionStorage.setItem('pm:tab', t); } catch {}
+  els.tabs?.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
+  els.main?.classList.toggle('buzz-mode', t === 'buzz');
+  if (els.buzz) els.buzz.hidden = t !== 'buzz';
+  if (t === 'buzz') S.buzz?.show(els.buzz); else S.buzz?.hide();
 }
 
 // The group pet lives in the open group chat.

@@ -19,6 +19,7 @@
     "compression": "^1.8.2",
     "dotenv": "^16.6.1",
     "express": "^4.22.3",
+    "fast-xml-parser": "^4.5.3",
     "mysql2": "^3.24.6",
     "socket.io": "^4.8.4",
     "web-push": "^3.6.7"

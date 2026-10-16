@@ -1018,6 +1018,7 @@ app.patch('/api/me', auth, wrap(async (req, res) => {
     }
     // SMS backup: your number, shared only with people you chat with one-to-one, and only if you allow it.
     if (typeof inSet.smsBackup === 'boolean') s.smsBackup = inSet.smsBackup;
+    if (typeof inSet.buzzRegion === 'string' && /^(india|hyderabad|bengaluru|mumbai|delhi|chennai|kolkata|pune)$/.test(inSet.buzzRegion)) s.buzzRegion = inSet.buzzRegion;
     if (typeof inSet.smsPhone === 'string') {
       const digits = inSet.smsPhone.replace(/[\s()-]/g, '');
       if (digits && !/^\+?[0-9]{7,15}$/.test(digits)) throw bad('Enter a valid phone number, like +91 98765 43210');
@@ -1689,6 +1690,9 @@ const advanced = require('./features')({
   serializeMessagesFor: serializeMessages,
 });
 
+// Buzz: the live news feed tab.
+const buzz = require('./buzz')({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, rateLimit, publicUser, ms });
+
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
 // ─────────────────────────── static app ───────────────────────────
@@ -2204,6 +2208,7 @@ db.init().then(async () => {
     }
     throw e;
   });
+  buzz.start(); // background news collection (needs the database)
   server.listen(PORT, () => console.log(`Ping Me running on http://localhost:${PORT}`));
   // On redeploy Cloud Run stops the old copy: disconnect everyone cleanly so phones reconnect to the new one.
   process.on('SIGTERM', () => { io.disconnectSockets(true); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); });
