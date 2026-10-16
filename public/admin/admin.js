@@ -24,12 +24,12 @@ let range = Number(localStorage.getItem('pmAdminRange') || 30), liveTimer = null
 // ───── login ─────
 async function boot() {
   const me = await api('/api/admin/me').catch(() => ({ admin: false, configured: false }));
-  if (me.admin) return dashboard();
+  if (me.admin) return route();
   const input = el('input', { type: 'password', placeholder: 'Admin key', autocomplete: 'current-password', autofocus: 'true' });
   const err = el('div', { class: 'err' }, me.configured ? '' : 'The admin key isn’t set up on the server yet (ADMIN_KEY in .env).');
   const form = el('form', { onsubmit: async (e) => {
     e.preventDefault(); err.textContent = '';
-    try { await api('/api/admin/login', { method: 'POST', body: JSON.stringify({ key: input.value.trim() }) }); dashboard(); }
+    try { await api('/api/admin/login', { method: 'POST', body: JSON.stringify({ key: input.value.trim() }) }); route(); }
     catch (ex) { err.textContent = ex.message; input.select(); }
   } }, el('img', { src: '/icons/icon-192.png', alt: '' }), el('h1', null, 'Ping Me Admin'), el('p', null, 'Owner access only'), input, el('button', { type: 'submit' }, 'Open dashboard'), err);
   root.replaceChildren(el('div', { class: 'login' }, form));
@@ -67,6 +67,27 @@ const heat = (v) => {
 };
 
 // ───── dashboard ─────
+// /admin → full dashboard · /admin#algorithm → the Buzz suggestion algorithm on its own page.
+const route = () => (location.hash === '#algorithm' ? algorithmPage() : dashboard());
+addEventListener('hashchange', () => route());
+
+async function algorithmPage() {
+  clearInterval(liveTimer);
+  root.replaceChildren(el('div', { class: 'loading' }, 'Loading algorithm performance…'));
+  let algo;
+  try { algo = await api(`/api/admin/algo?days=${range}`); } catch (e) { if (e.status === 401) return boot(); root.replaceChildren(el('div', { class: 'loading' }, e.message)); return; }
+  const seg = el('div', { class: 'seg' }, [7, 30, 90].map((d) => el('button', { class: d === range ? 'on' : '', onclick: () => { range = d; localStorage.setItem('pmAdminRange', d); algorithmPage(); } }, `${d} days`)));
+  const kpi = (l, v, s2, cls) => el('div', { class: 'kpi ' + (cls || '') }, el('div', { class: 'l' }, l), el('div', { class: 'v' }, v), s2 ? el('div', { class: 's' }, s2) : null);
+  root.replaceChildren(el('div', { class: 'wrap' },
+    el('header', { class: 'top' }, el('img', { src: '/icons/icon-192.png', alt: '' }),
+      el('div', null, el('h1', null, 'Buzz algorithm'), el('div', { class: 'sub' }, `How well For You suggestions work · updated ${new Date().toLocaleTimeString()}`)),
+      el('div', { class: 'spacer' }), seg,
+      el('button', { class: 'btn-ghost', onclick: algorithmPage }, 'Refresh'),
+      el('a', { class: 'btn-ghost', href: '#' }, 'Full dashboard')),
+    ...algoSection(algo, kpi),
+    el('p', { class: 'foot' }, '“Engaged” = opened, liked, commented, reposted, or read at least 60% of the story. Lift = how much more often people engage with stories picked for them than with trending stories (above 1× means personalisation works). Learning curve = engagement as people see more stories — rising means suggestions get better with use.')));
+}
+
 async function dashboard() {
   root.replaceChildren(el('div', { class: 'loading' }, 'Loading dashboard…'));
   const [ov, ts, ret, scr, bz, live, users, algo, errs] = await Promise.all([
@@ -81,7 +102,7 @@ async function dashboard() {
   const liveBox = el('div');
   const page = el('div', { class: 'wrap' },
     el('header', { class: 'top' }, el('img', { src: '/icons/icon-192.png', alt: '' }), el('div', null, el('h1', null, 'Ping Me Admin'), el('div', { class: 'sub' }, `Updated ${new Date().toLocaleTimeString()} · India time`)),
-      el('div', { class: 'spacer' }), seg, el('button', { class: 'btn-ghost', onclick: dashboard }, 'Refresh'),
+      el('div', { class: 'spacer' }), seg, el('a', { class: 'btn-ghost', href: '#algorithm' }, 'Algorithm'), el('button', { class: 'btn-ghost', onclick: dashboard }, 'Refresh'),
       el('button', { class: 'btn-ghost', onclick: async () => { await api('/api/admin/logout', { method: 'POST' }); boot(); } }, 'Lock')),
     el('div', { class: 'kpis' },
       kpi('Total users', fmt(ov.totalUsers), `+${fmt(ov.new7d)} in 7 days`),

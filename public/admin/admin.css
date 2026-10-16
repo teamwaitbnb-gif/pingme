@@ -85,3 +85,4 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 .kpi.good .v { color: var(--accent); }
 .kpi.bad .v { color: var(--pink); }
 b.up { color: var(--accent); } b.down { color: var(--pink); }
+.btn-ghost { text-decoration: none; display: inline-block; }
