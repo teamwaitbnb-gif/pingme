@@ -1,3 +1,4 @@
+import { createEditDiagnostics } from './edit-diagnostics.js';
 import { openCamera } from './camera.js';
 import { mountPet, petHidden } from './pet.js';
 import { initBuzz } from './buzz.js';
@@ -386,6 +387,7 @@ function connectSocket() {
       box.scrollTop = atBottom ? box.scrollHeight : top;
       probeVisible('update');
     }
+    editDiagnostics.updated(m);
   });
   socket.on('msg:remove', ({ chatId, id }) => {
     const st = S.msgs.get(chatId);
@@ -1209,6 +1211,25 @@ export function renderMessages() {
   }
 }
 
+// Capture both successful and broken edits so a phone reproduction is observable.
+const editDiagnostics = createEditDiagnostics((chatId) => {
+  if (S.current !== chatId) return { changedChat: true };
+  const box = els.msgs;
+  if (!box) return { missing: true };
+  const r = box.getBoundingClientRect(), css = getComputedStyle(box);
+  const vh = window.visualViewport?.height || innerHeight;
+  const nodes = [...box.querySelectorAll('.m, .sys:not(.intro), .ping-row')];
+  const visible = nodes.filter((node) => { const b = node.getBoundingClientRect(); return b.height > 0 && b.bottom > Math.max(0, r.top) && b.top < Math.min(vh, r.bottom); }).length;
+  return {
+    n: [S.msgs.get(chatId)?.list.length || 0, nodes.length, visible],
+    box: [r.top, r.height, box.scrollTop, box.scrollHeight, box.clientHeight].map(Math.round),
+    vp: [vh, window.visualViewport?.offsetTop || 0, scrollY].map(Math.round),
+    flags: [box.isConnected, document.hidden, !!document.querySelector('.ctx, .sheet, .viewer, .call'), document.documentElement.classList.contains('kb-open')].map(Number),
+    css: [css.display, css.visibility, css.opacity],
+  };
+});
+addEventListener('pagehide', () => editDiagnostics.flush());
+
 // Visibility probe: messages exist but none are on screen (iPhone layout/paint glitch) → record the
 // exact layout (no message text) and repair it: reset page scroll/offsets, force a redraw, go to bottom.
 const probeTimers = new Set();
@@ -1972,7 +1993,10 @@ export async function send(opts = {}) {
     conv.editing = null;
     els.ta.value = '';
     autosize(); renderCtxBar(); updateSendBtn();
-    if (text !== (m.text || '')) emit('msg:edit', { id: m.id, text }).catch((e) => toast(e.message, { error: true }));
+    if (text !== (m.text || '')) {
+      const done = editDiagnostics.begin(m);
+      emit('msg:edit', { id: m.id, text }).then(() => done?.(true)).catch((e) => { done?.(false); toast(e.message, { error: true }); });
+    }
     probeVisible('edit', [800, 2500, 5000]);
     return;
   }
