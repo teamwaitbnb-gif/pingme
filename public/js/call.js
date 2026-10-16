@@ -1226,8 +1226,8 @@ export function initCalls(ctx) {
 
   return {
     start,
-    checkRinging,
     active: () => call,
+    checkRinging,
     restore,
     hangup,
   };
