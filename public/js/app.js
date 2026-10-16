@@ -3,7 +3,7 @@ import { mountPet, petHidden } from './pet.js';
 import { initBuzz } from './buzz.js';
 import { initAnalytics, setSocket, setScreen, pushScreen, popScreen, reportError } from './analytics.js';
 import {
-  h, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, handleLayerPop, whenHistorySettled, longPress, richText, emojiCount,
+  h, reconcileChildren, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, handleLayerPop, whenHistorySettled, longPress, richText, emojiCount,
   fmtTime, fmtListTime, fmtDay, fmtDur, fmtSize, lastSeenText, isIOS, isMobile, isStandalone, store,
 } from './ui.js';
 import { compressImage, videoMeta, VoiceRecorder, player, playScreenEffect, sounds, SCREEN_EFFECTS, BUBBLE_EFFECTS, makeThumb, lazyThumb } from './media.js';
@@ -376,7 +376,17 @@ function connectSocket() {
     if (ev.callId) S.groupCalls.set(ev.chatId, ev); else S.groupCalls.delete(ev.chatId);
     if (S.current === ev.chatId) renderHeader();
   });
-  socket.on('msg:update', (m) => { upsertMessage(m); updateChatPreview(m.chatId, m); if (m.chatId === S.current) probeVisible('update'); });
+  socket.on('msg:update', (m) => {
+    const box = m.chatId === S.current ? els.msgs : null;
+    const atBottom = box && box.scrollHeight - box.scrollTop - box.clientHeight < 120;
+    const top = box?.scrollTop;
+    upsertMessage(m);
+    updateChatPreview(m.chatId, m);
+    if (box && box === els.msgs) {
+      box.scrollTop = atBottom ? box.scrollHeight : top;
+      probeVisible('update');
+    }
+  });
   socket.on('msg:remove', ({ chatId, id }) => {
     const st = S.msgs.get(chatId);
     if (st) { st.list = st.list.filter((m) => m.id !== id); if (S.current === chatId) renderMessages(); }
@@ -1261,7 +1271,7 @@ function drawMessages(chat, st) {
     const first = !sameGroup(prev, m) || (prev && m.createdAt - prev.createdAt > 3600000);
     const last = !sameGroup(m, next) || (next && next.createdAt - m.createdAt > 3600000);
     const status = i === lastMineIdx ? receiptStatus(m, chat) : '';
-    const key = [m.id, m.editedAt, m.deleted, m.pinned, first, last, status, m.progress, m.failed, JSON.stringify(m.reactions || []), JSON.stringify(m.poll?.votes || {}), user(m.senderId).avatarV, user(m.senderId).name, m.replyTo?.preview, m.att?.id, m.thumbUrl, m.att?.thumbId, m.expiresAt, m.readTtl, m.vr?.sig, scamV, m.intent].join('|');
+    const key = [m.id, JSON.stringify(m.text), m.editedAt, m.deleted, m.pinned, first, last, status, m.progress, m.failed, JSON.stringify(m.reactions || []), JSON.stringify(m.poll?.votes || {}), user(m.senderId).avatarV, user(m.senderId).name, m.replyTo?.preview, m.att?.id, m.thumbUrl, m.att?.thumbId, m.expiresAt, m.readTtl, m.vr?.sig, scamV, m.intent].join('|');
     nodes.push(getNode('m' + (m.clientId || m.id), key, () => {
       // One message that can't be drawn must never blank the whole chat.
       try { return buildMessage(m, { first, last, status, chat }); } catch (e) {
@@ -1271,14 +1281,8 @@ function drawMessages(chat, st) {
       }
     }));
   }
-  // Reconcile children with minimal DOM moves.
-  const container = els.msgs;
-  let cur = container.firstChild;
-  for (const n of nodes) {
-    if (n === cur) cur = cur.nextSibling;
-    else container.insertBefore(n, cur);
-  }
-  while (cur) { const nx = cur.nextSibling; cur.remove(); cur = nx; }
+  // Keep unchanged bubbles mounted (media, scroll anchors and mobile paint layers).
+  reconcileChildren(els.msgs, nodes);
   const live = new Set(nodes);
   for (const [k, v] of conv.nodes) if (!live.has(v.el)) conv.nodes.delete(k);
   renderPinnedBar();

@@ -27,6 +27,24 @@ export function h(tag, attrs, ...kids) {
   return el;
 }
 
+// Replace obsolete children in place before ordering the retained nodes. Inserting all
+// later siblings ahead of an obsolete bubble detaches the entire tail of a chat.
+export function reconcileChildren(container, nodes) {
+  const live = new Set(nodes);
+  let cur = container.firstChild;
+  for (const node of nodes) {
+    if (node === cur) {
+      cur = cur.nextSibling;
+    } else if (cur && !live.has(cur)) {
+      container.replaceChild(node, cur);
+      cur = node.nextSibling;
+    } else {
+      container.insertBefore(node, cur);
+    }
+  }
+  while (cur) { const next = cur.nextSibling; cur.remove(); cur = next; }
+}
+
 function append(el, kids) {
   for (const k of kids) {
     if (k === null || k === undefined || k === false) continue;
