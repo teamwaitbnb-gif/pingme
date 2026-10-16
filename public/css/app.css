@@ -138,7 +138,9 @@ textarea.field { height: auto; min-height: 80px; padding: 12px 16px; resize: ver
 @media (max-width: 760px) {
   .sidebar { width: 100%; border-right: 0; }
   .conv { position: absolute; inset: 0; transform: translateX(100%); transition: transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1); z-index: 5; box-shadow: -10px 0 30px rgba(0,0,0,0.08); }
-  .main.show-conv .conv { transform: translateX(0); }
+  /* No transform once open: a scroll area inside a transformed layer can stop painting on iOS
+     Safari after its contents change (the chat looks blank although the messages are there). */
+  .main.show-conv .conv { transform: none; }
   .main.show-conv .sidebar { transform: translateX(-25%); transition: transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1); }
   .main .sidebar { transition: transform 0.32s cubic-bezier(0.2, 0.8, 0.2, 1); }
   .empty-conv { display: none; }
@@ -203,7 +205,7 @@ textarea.field { height: auto; min-height: 80px; padding: 12px 16px; resize: ver
 .pinned-bar .t b { display: block; font-size: 12px; color: var(--accent); }
 
 /* Messages */
-.msgs { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 10px calc(12px + var(--sar)) 8px calc(12px + var(--sal)); overscroll-behavior: contain; -webkit-overflow-scrolling: touch; display: flex; flex-direction: column; }
+.msgs { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 10px calc(12px + var(--sar)) 8px calc(12px + var(--sal)); overscroll-behavior: contain; display: flex; flex-direction: column; }
 .msgs .loader { display: grid; place-items: center; padding: 12px; }
 .msgs .top-pad { flex: 1; }
 .day { text-align: center; font-size: 12px; color: var(--text2); margin: 16px 0 8px; font-weight: 500; }

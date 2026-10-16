@@ -386,6 +386,7 @@ function connectSocket() {
     if (box && box === els.msgs) {
       box.scrollTop = atBottom ? box.scrollHeight : top;
       probeVisible('update');
+      forceRedraw(120);
     }
     editDiagnostics.updated(m);
   });
@@ -764,7 +765,7 @@ export function openChat(id, { around = null, push = true } = {}) {
     if (st?.list.some((m) => m.id === around)) { renderMessages(); flashMessage(around); }
     else loadMessages(id, { around });
   } else if (!st || !st.loaded) loadMessages(id, { reset: true });
-  else { renderMessages(); scrollToBottom(); markRead(); }
+  else { renderMessages(); scrollToBottom(); markRead(); forceRedraw(250); }
   loadScheduled(id);
   clearChatNotifications(id);
   probeVisible('open', [1500, 4000]);
@@ -992,6 +993,7 @@ async function loadMessages(chatId, { reset = false, around = null, older = fals
     renderMessages();
     if (around) flashMessage(around); else scrollToBottom();
     markRead();
+    forceRedraw(250);
   }
   renderPinnedBar();
 }
@@ -1269,6 +1271,36 @@ function checkVisible(reason) {
   } catch {}
 }
 
+// iOS Safari sometimes doesn't repaint the message list after it changes; a one-frame layer flip
+// forces a fresh paint (invisible to the eye).
+function nudgePaint() {
+  const box = els.msgs;
+  if (!box || !isIOS()) return;
+  box.style.transform = 'translateZ(0)';
+  requestAnimationFrame(() => requestAnimationFrame(() => { if (box.isConnected) box.style.transform = ''; }));
+}
+
+// iPhone: rebuild the whole message list from scratch (fresh DOM = Safari must paint it). Used after
+// opening a chat and after edits/updates, where Safari has been seen leaving the chat blank.
+let redrawTimer = null;
+function forceRedraw(delay = 0) {
+  if (!isIOS()) return;
+  clearTimeout(redrawTimer);
+  redrawTimer = setTimeout(() => {
+    const chat = S.chats.get(S.current), st = chat && S.msgs.get(chat.id);
+    if (!chat || !st?.loaded || !els.msgs?.isConnected || document.querySelector('.ctx')) return;
+    const box = els.msgs;
+    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 160;
+    const top = box.scrollTop;
+    try {
+      conv.nodes.clear();
+      box.replaceChildren();
+      drawMessages(chat, st);
+      box.scrollTop = atBottom ? box.scrollHeight : top;
+    } catch (e) { reportError(e, 'force-redraw'); }
+  }, delay);
+}
+
 function drawMessages(chat, st) {
   const list = st.list;
   const lastMineIdx = (() => { for (let i = list.length - 1; i >= 0; i--) if (list[i].senderId === S.me.id && !['system', 'call'].includes(list[i].kind)) return i; return -1; })();
@@ -1304,6 +1336,7 @@ function drawMessages(chat, st) {
   }
   // Keep unchanged bubbles mounted (media, scroll anchors and mobile paint layers).
   reconcileChildren(els.msgs, nodes);
+  nudgePaint();
   const live = new Set(nodes);
   for (const [k, v] of conv.nodes) if (!live.has(v.el)) conv.nodes.delete(k);
   renderPinnedBar();
@@ -1995,7 +2028,7 @@ export async function send(opts = {}) {
     autosize(); renderCtxBar(); updateSendBtn();
     if (text !== (m.text || '')) {
       const done = editDiagnostics.begin(m);
-      emit('msg:edit', { id: m.id, text }).then(() => done?.(true)).catch((e) => { done?.(false); toast(e.message, { error: true }); });
+      emit('msg:edit', { id: m.id, text }).then(() => { done?.(true); forceRedraw(150); }).catch((e) => { done?.(false); toast(e.message, { error: true }); });
     }
     probeVisible('edit', [800, 2500, 5000]);
     return;
