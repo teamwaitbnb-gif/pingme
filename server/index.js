@@ -385,6 +385,7 @@ async function serializeMessages(rows, viewerId, { light = false } = {}) {
       ping: b.ping || null,
       letter: b.letter ? letterView(b.letter, Number(r.sender_id) === viewerId) : null,
       intent: b.intent || null,
+      viaSms: b.viaSms ? true : undefined,
       secure: !!b.secure,
       eyes: !!b.eyes,
       vr: b.vr || null,
@@ -472,6 +473,7 @@ async function buildBody(chatId, senderId, input) {
     throw bad('Message is empty');
   }
   if (INTENTS.has(input.intent)) body.intent = input.intent;
+  if (input.viaSms === true && kind === 'text') body.viaSms = true; // already delivered by SMS while offline
   if (kind === 'ping' || kind === 'letter') return { kind, body, attachmentId: null, vanish: false };
   if (input.secure && (kind === 'text' || kind === 'image')) body.secure = true;
   if (input.eyes && ['text', 'image', 'video'].includes(kind)) body.eyes = true;
@@ -543,7 +545,7 @@ async function insertMessage({ chatId, senderId, kind, body, replyTo = null, att
 }
 
 async function notifyMembers(chatId, senderId, msg, members) {
-  if (!push.enabled || msg.silent) return;
+  if (!push.enabled || msg.silent || msg.viaSms) return; // SMS copies were already received as texts
   const sender = await publicUser(senderId);
   const chat = await db.one('SELECT type, title_enc FROM chats WHERE id=?', [chatId]);
   const mutes = await db.q('SELECT user_id, muted_until FROM chat_members WHERE chat_id=? AND active=1', [chatId]);
@@ -1014,6 +1016,13 @@ app.patch('/api/me', auth, wrap(async (req, res) => {
       }
       s.trusted = ids;
     }
+    // SMS backup: your number, shared only with people you chat with one-to-one, and only if you allow it.
+    if (typeof inSet.smsBackup === 'boolean') s.smsBackup = inSet.smsBackup;
+    if (typeof inSet.smsPhone === 'string') {
+      const digits = inSet.smsPhone.replace(/[\s()-]/g, '');
+      if (digits && !/^\+?[0-9]{7,15}$/.test(digits)) throw bad('Enter a valid phone number, like +91 98765 43210');
+      s.smsPhone = digits || null;
+    }
     sets.push('settings_enc=?'); vals.push(C.enc(s));
   }
   if (req.body.birth !== undefined) { sets.push('birth_enc=?'); vals.push(C.enc(parseBirth(req.body.birth))); }
@@ -1245,6 +1254,19 @@ app.get('/api/chats', auth, wrap(async (req, res) => {
   const users = await Promise.all([...userIds].map((id) => publicUser(id)));
   const blocks = await db.q('SELECT blocked_id FROM blocks WHERE user_id=?', [req.uid]);
   res.json({ chats, users, blocked: blocks.map((b) => Number(b.blocked_id)) });
+}));
+
+// The other person's SMS backup number (one-to-one chats, only if they turned it on). The app keeps
+// it on the phone so "Send as SMS" still works with no internet.
+app.get('/api/chats/:id/sms-contact', auth, wrap(async (req, res) => {
+  const id = toInt(req.params.id);
+  await requireMember(id, req.uid);
+  const chat = await db.one('SELECT type FROM chats WHERE id=?', [id]);
+  if (chat?.type !== 'direct') return res.json({ phone: null });
+  const other = await db.one('SELECT user_id FROM chat_members WHERE chat_id=? AND user_id<>? LIMIT 1', [id, req.uid]);
+  const u = other && (await getUser(Number(other.user_id)));
+  const blocked = u && (await isBlockedBetween(req.uid, u.id));
+  res.json({ phone: u && !blocked && u.settings.smsBackup && u.settings.smsPhone ? u.settings.smsPhone : null });
 }));
 
 app.get('/api/chats/:id', auth, wrap(async (req, res) => {

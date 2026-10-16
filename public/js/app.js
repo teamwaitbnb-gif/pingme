@@ -315,7 +315,10 @@ function connectSocket() {
   socket.on('connect', () => {
     if (wasConnected) resync();
     wasConnected = true;
+    updateSmsBar();
+    flushSmsOutbox();
   });
+  socket.on('disconnect', () => setTimeout(updateSmsBar, 4000));
   socket.on('connect_error', (e) => { if (e.message === 'unauthorized') { S.me = null; showAuth(); } });
   // Someone signed in to this account on another device (one device at a time).
   socket.on('session:ended', () => {
@@ -732,6 +735,77 @@ function onPopState(e) {
 }
 
 // The group pet lives in the open group chat.
+// ─────── SMS backup (no internet → hand the message to the phone's Messages app) ───────
+// A web app can't send texts by itself, so Ping Me opens Messages with the number and text filled in
+// (one tap on Send). Those messages are added to the Ping Me chat — marked "SMS" — once you're back online.
+const smsKey = (chatId) => 'smsNum:' + chatId;
+async function loadSmsContact(chat) {
+  if (chat.type !== 'direct' || !navigator.onLine) return;
+  try { const { phone } = await api('GET', `/api/chats/${chat.id}/sms-contact`); if (phone) store.set(smsKey(chat.id), phone); else store.del(smsKey(chat.id)); } catch {}
+  updateSmsBar();
+}
+const isOffline = () => !navigator.onLine || (S.socket && !S.socket.connected);
+
+function updateSmsBar() {
+  const bar = els.smsBar;
+  if (!bar) return;
+  const chat = S.chats.get(S.current);
+  const num = chat?.type === 'direct' ? store.get(smsKey(chat.id)) : null;
+  const failed = (S.msgs.get(S.current)?.list || []).some((m) => m.pending && m.failed && m.kind === 'text' && !m.sms);
+  const show = !!num && (isOffline() || failed);
+  bar.hidden = !show;
+  if (!show) return;
+  const first = user(otherMember(chat)).name.split(' ')[0];
+  bar.replaceChildren(
+    icon('wifioff'),
+    h('div', { class: 'sms-txt' }, h('b', null, 'No internet'), h('span', null, `Text ${first} by SMS instead`)),
+    h('button', { class: 'sms-btn', onclick: () => sendAsSms(chat, num) }, 'Send as SMS'));
+}
+
+function sendAsSms(chat, num) {
+  const st = S.msgs.get(chat.id);
+  const unsent = (st?.list || []).filter((m) => m.pending && m.failed && m.kind === 'text' && !m.sms);
+  const typed = els.ta.value.trim();
+  const texts = [...unsent.map((m) => m.text), ...(typed ? [typed] : [])];
+  if (!texts.length) return toast('Type your message first, then tap Send as SMS');
+  const body = texts.join('\n');
+  location.href = `sms:${num}${isIOS() ? '&' : '?'}body=${encodeURIComponent(body)}`;
+  // Keep them in the Ping Me chat (marked SMS) and add them for real once the internet is back.
+  const outbox = store.get('smsOutbox', []);
+  for (const m of unsent) { m.sms = true; m.failed = false; outbox.push({ chatId: chat.id, text: m.text, clientId: m.clientId }); }
+  if (typed) {
+    const p = pendingMessage(chat.id, { kind: 'text', text: typed, sms: true });
+    st?.list.push(p);
+    outbox.push({ chatId: chat.id, text: typed, clientId: p.clientId });
+    els.ta.value = ''; autosize(); updateSendBtn(); store.del('draft:' + chat.id);
+  }
+  store.set('smsOutbox', outbox);
+  renderMessages(); scrollToBottom(true); updateSmsBar();
+}
+
+let flushing = false;
+async function flushSmsOutbox() {
+  const outbox = store.get('smsOutbox', []);
+  if (flushing || !outbox.length || !S.socket?.connected) return;
+  flushing = true;
+  const left = [];
+  for (const o of outbox) {
+    try {
+      const res = await emit('msg:send', { chatId: o.chatId, kind: 'text', text: o.text, viaSms: true, clientId: o.clientId });
+      if (res.message) upsertMessage({ ...res.message, clientId: o.clientId });
+    } catch { left.push(o); }
+  }
+  store.set('smsOutbox', left);
+  flushing = false;
+}
+// Back online: sync SMS copies (retry until the connection is really back).
+addEventListener('online', () => {
+  setTimeout(updateSmsBar, 1500);
+  let tries = 0;
+  const t = setInterval(() => { if (S.socket?.connected || ++tries > 20) { clearInterval(t); flushSmsOutbox(); updateSmsBar(); } }, 1000);
+});
+addEventListener('offline', updateSmsBar);
+
 function startPet(chat) {
   S.pet?.destroy(); S.pet = null;
   if (chat.type !== 'group' || !feature('groupPets') || petHidden(chat.id)) return;
@@ -766,6 +840,7 @@ function buildConv(chat) {
   renderComposer();
   renderTyping();
   startPet(chat);
+  loadSmsContact(chat);
 }
 
 export function renderHeader() {
@@ -1018,7 +1093,7 @@ function sameGroup(a, b) {
 }
 
 function receiptStatus(m, chat) {
-  if (m.pending) return m.failed ? 'failed' : 'Sending…';
+  if (m.pending) return m.sms ? '' : m.failed ? 'failed' : 'Sending…';
   const others = chat.members.filter((x) => x.id !== S.me.id);
   if (!others.length) return 'Sent';
   const read = others.filter((x) => x.lastRead >= m.id);
@@ -1122,6 +1197,7 @@ function buildMessage(m, { first, last, status, chat }) {
     if (m.expiresAt && !m.readTtl) info.push(icon('timer'));
     if (m.silent && mine) info.push(icon('belloff'));
   }
+  if (m.viaSms || m.sms) info.push(h('span', { class: 'via-sms' }, icon('msg'), m.sms ? 'Sent as SMS · syncs when online' : 'Sent by SMS while offline'));
   if (info.length) col.append(h('div', { class: 'info' }, info));
   if (status) {
     col.append(status === 'failed'
@@ -1502,7 +1578,9 @@ function renderComposer() {
   els.fileInput = h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => { addFiles([...e.target.files]); e.target.value = ''; } });
   els.composer = h('div', { class: 'composer' }, els.plus, h('div', { class: 'inputbox' }, els.intentBtn, els.ta, els.sendBtn, els.camBtn, els.micBtn), els.fileInput);
   els.blockedNote = h('div', { class: 'blocked-note', hidden: true });
-  els.composerWrap.append(els.sched, els.ctxBar, els.optsBar, els.tray, els.composer, els.blockedNote);
+  els.smsBar = h('div', { class: 'sms-bar', hidden: true });
+  els.composerWrap.append(els.smsBar, els.sched, els.ctxBar, els.optsBar, els.tray, els.composer, els.blockedNote);
+  updateSmsBar();
 
   els.ta.addEventListener('input', () => { autosize(); updateSendBtn(); typingPing(); });
   els.ta.addEventListener('keydown', (e) => {
@@ -1798,7 +1876,7 @@ async function dispatch(chatId, payload, pending) {
     if (res.scheduled) { toast(`Scheduled for ${new Date(payload.sendAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}`); loadScheduled(chatId); return; }
     if (res.message) upsertMessage({ ...res.message, clientId: pending?.clientId });
   } catch (e) {
-    if (pending) { pending.failed = true; pending._payload = payload; if (S.current === chatId) renderMessages(); }
+    if (pending) { pending.failed = true; pending._payload = payload; if (S.current === chatId) { renderMessages(); updateSmsBar(); } }
     toast(e.message, { error: true });
   }
 }

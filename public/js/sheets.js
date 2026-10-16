@@ -81,6 +81,7 @@ export function openSettings() {
         'Notification' in window && Notification.permission === 'granted' ? cell({ icon: 'send', label: 'Send test notification', sub: 'Close Ping Me after tapping to see it like a real notification', onClick: async () => {
           try { await setupPush(false); await api('POST', '/api/push/test'); toast('Test sent — it should appear in a moment'); } catch (e) { err(e); }
         } }) : null,
+        cell({ icon: 'msg', color: '#30b0c7', label: 'SMS backup', sub: me.settings.smsBackup && me.settings.smsPhone ? 'On · ' + me.settings.smsPhone : 'Text when the internet is down', chevron: true, onClick: () => openSmsBackup(draw) }),
         isMobile() ? cell({ icon: 'phone', color: '#34c759', label: 'Never miss a call', sub: 'Ring loud even when Ping Me is closed', chevron: true, onClick: openRingHelp }) : null,
         cell({ icon: 'eye', color: '#ff9500', label: 'Show previews', right: toggle(me.settings.previews, (v) => setPriv('previews', v)) }),
         cell({ icon: 'vol', color: '#ff2d55', label: 'In-app sounds', right: toggle(p.sounds, (v) => store.set('sounds', v)) })),
@@ -190,6 +191,27 @@ async function notifHelpOrEnable() {
       : 'Tap the lock / ⓘ icon next to the address (or long-press the Ping Me icon → App info → Notifications) and allow notifications. Then come back here.')) });
   }
   return setupPush(true);
+}
+
+// SMS backup: your number, for friends to text you through Ping Me when either side has no internet.
+function openSmsBackup(after) {
+  const me = S.me;
+  const input = h('input', { class: 'field', type: 'tel', inputmode: 'tel', autocomplete: 'tel', placeholder: '+91 98765 43210', value: me.settings.smsPhone || '' });
+  let on = me.settings.smsBackup ?? !!me.settings.smsPhone;
+  openSheet({
+    title: 'SMS backup', left: { label: 'Cancel' },
+    right: { label: 'Save', onClick: async (close) => {
+      try {
+        const { user: u } = await api('PATCH', '/api/me', { settings: { smsPhone: input.value.trim(), smsBackup: on && !!input.value.trim() } });
+        S.me = u; toast(on && input.value.trim() ? 'SMS backup is on' : 'SMS backup is off'); close(); after?.();
+      } catch (e) { err(e); }
+    } },
+    body: h('div', null,
+      h('p', { class: 'muted' }, 'When there’s no internet, people you chat with one-to-one can send you their message as a normal SMS straight from Ping Me — and you can text them the same way. The messages are added to your Ping Me chat once you’re back online.'),
+      h('div', { class: 'group' }, h('label', { class: 'cell' }, h('span', { class: 'lb' }, 'Your number'), input)),
+      h('div', { class: 'group' }, cell({ icon: 'msg', color: '#30b0c7', label: 'Let my chats text me', right: toggle(on, (v) => { on = v; }) })),
+      h('div', { class: 'group-foot' }, 'Only people you have a one-to-one chat with can see this number, and only when you turn it on. SMS charges from your mobile plan may apply.')),
+  });
 }
 
 // Phones decide how loud a closed app may ring. These are the switches that matter.
