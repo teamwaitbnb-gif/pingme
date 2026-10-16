@@ -3,7 +3,7 @@
 // where the browser offers it (full sensor resolution), videos are recorded at a high bitrate and
 // sent exactly as recorded — nothing is compressed afterwards.
 import { h, icon, toast, registerLayer, fmtDur, store } from './ui.js';
-import { editPhoto, editVideo } from './editor.js';
+import { editPhoto, editVideo, clipPlayer } from './editor.js';
 import { ensurePermission } from './perm.js';
 import { VideoRecorder } from './video-recorder.js';
 
@@ -192,28 +192,39 @@ export async function openCamera({ maxBytes, onSend, onGallery }) {
     resetRecording();
     stream?.getTracks().forEach((t) => t.stop());
     const isVideo = captured.type.startsWith('video/');
-    const st = { file: captured, viewOnce: false, hd, trim: null, muted: false };
+    // original + editState: edits are never baked in until Send, so they can always be undone/changed.
+    const st = { file: captured, original: captured, editState: null, viewOnce: false, hd, trim: null, muted: false };
     let url = null;
     const holder = h('div', { class: 'cam-review-wrap' });
     const info = h('div', { class: 'cam-res' });
     const show = () => {
       if (url) URL.revokeObjectURL(url);
       url = URL.createObjectURL(st.file);
-      const media = isVideo
-        ? h('video', { class: 'cam-review', src: url, autoplay: true, playsinline: true, loop: true, onclick: (e) => { const v = e.currentTarget; if (v.paused) v.play(); else v.pause(); } })
-        : h('img', { class: 'cam-review', src: url, alt: '' });
       if (isVideo) {
-        media.muted = st.muted;
-        media.addEventListener('loadedmetadata', () => { info.textContent = `${media.videoWidth}×${media.videoHeight} · ${(st.file.size / 1048576).toFixed(1)} MB`; if (st.trim) media.currentTime = st.trim[0]; });
-        media.addEventListener('timeupdate', () => { if (st.trim && media.currentTime >= st.trim[1]) media.currentTime = st.trim[0]; });
-      } else media.addEventListener('load', () => { info.textContent = `${media.naturalWidth}×${media.naturalHeight} · ${(st.file.size / 1048576).toFixed(1)} MB`; });
-      holder.replaceChildren(media);
+        // Plays exactly the clip you'll send (trimmed part only, with its own timeline).
+        const player = clipPlayer(url, { trim: st.trim, muted: st.muted });
+        player.classList.add('cam-review');
+        const v = player.video;
+        v.addEventListener('loadedmetadata', () => { info.textContent = `${v.videoWidth}×${v.videoHeight}${st.trim ? ' · trimmed' : ''}`; });
+        holder.replaceChildren(player);
+      } else {
+        const media = h('img', { class: 'cam-review', src: url, alt: '' });
+        media.addEventListener('load', () => { info.textContent = `${media.naturalWidth}×${media.naturalHeight}${st.editState ? ' · edited' : ''}`; });
+        holder.replaceChildren(media);
+      }
     };
-    const tool = (ic, label, fn) => h('button', { class: 'cam-tool', onclick: fn }, icon(ic), h('span', null, label));
-    const photoEdit = async (t) => { const f = await editPhoto(st.file, t); if (f && f !== st.file) { st.file = f; show(); } };
-    const muteBtn = tool('vol', 'Sound', () => { st.muted = !st.muted; muteBtn.replaceChildren(icon(st.muted ? 'mute' : 'vol'), h('span', null, st.muted ? 'Muted' : 'Sound')); muteBtn.classList.toggle('on', st.muted); const v = holder.querySelector('video'); if (v) v.muted = st.muted; });
+    // Minimal icon tools.
+    const tool = (ic, label, fn) => h('button', { class: 'cam-tool', 'aria-label': label, title: label, onclick: fn }, icon(ic));
+    const photoEdit = async (t) => {
+      const r = await editPhoto(st.original, t, st.editState);
+      if (!r) return;
+      st.editState = r.edited ? r.state : null;
+      st.file = r.edited ? r.file : st.original;
+      show();
+    };
+    const muteBtn = tool('vol', 'Sound', () => { st.muted = !st.muted; muteBtn.replaceChildren(icon(st.muted ? 'mute' : 'vol')); muteBtn.classList.toggle('on', st.muted); const v = holder.querySelector('video'); if (v) v.muted = st.muted; });
     const tools = isVideo
-      ? [tool('crop', 'Trim', async () => { const r = await editVideo(st.file, st); if (r) { st.trim = r.trim; st.muted = r.muted; show(); muteBtn.classList.toggle('on', st.muted); } }), muteBtn]
+      ? [tool('scissors', 'Trim', async () => { const r = await editVideo(st.file, st); if (r) { st.trim = r.trim; st.muted = r.muted; show(); muteBtn.replaceChildren(icon(st.muted ? 'mute' : 'vol')); muteBtn.classList.toggle('on', st.muted); } }), muteBtn]
       : [tool('crop', 'Crop', () => photoEdit('crop')), tool('edit', 'Draw', () => photoEdit('draw')), tool('text', 'Text', () => photoEdit('text')), tool('sparkle', 'Filters', () => photoEdit('filter'))];
     const hdChip = h('button', { class: 'cam-hd' + (st.hd ? ' on' : ''), 'aria-label': 'HD', disabled: isVideo, title: isVideo ? 'Recorded in ' + (st.hd ? 'HD' : 'standard quality') : 'Send in HD (original quality)', onclick: () => { st.hd = !st.hd; hdChip.classList.toggle('on', st.hd); toast(st.hd ? 'Sending in HD — original quality' : 'Sending a smaller photo', { timeout: 1600 }); } }, 'HD');
     const onceBtn = h('button', { class: 'cam-once', 'aria-label': 'View once', title: 'View once', onclick: () => { st.viewOnce = !st.viewOnce; onceBtn.classList.toggle('on', st.viewOnce); toast(st.viewOnce ? 'View once: they can open it one time' : 'View once off', { timeout: 1600 }); } }, '1');

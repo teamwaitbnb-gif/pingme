@@ -75,11 +75,13 @@ function paint(out, src, st) {
   }
 }
 
-export async function editPhoto(file, startTool = 'crop') {
+// Always edits the ORIGINAL photo with the previous edit state, so a crop can be widened back out
+// and drawings / text / filters can be changed later. Resolves { file, state } (or null = cancelled).
+export async function editPhoto(file, startTool = 'crop', prev = null) {
   const full = await createImageBitmap(file);
   return new Promise((resolve) => {
-    const st = { rot: 0, crop: { x: 0, y: 0, w: 1, h: 1 }, filter: 'Original', strokes: [], texts: [], color: '#ff3b30', aspect: null };
-    let tool = 'crop', disp = rotated(full, 0, 1600), drawing = null, dragText = null, cropDrag = null;
+    const st = prev ? JSON.parse(JSON.stringify(prev)) : { rot: 0, crop: { x: 0, y: 0, w: 1, h: 1 }, filter: 'Original', strokes: [], texts: [], color: '#ff3b30', aspect: null };
+    let tool = 'crop', disp = rotated(full, st.rot, 1600), drawing = null, dragText = null, cropDrag = null;
     const view = h('canvas', { class: 'ed-canvas' });
     const stage = h('div', { class: 'ed-stage' }, view);
     const cropBox = h('div', { class: 'ed-crop', hidden: true }, ...['tl', 'tr', 'bl', 'br'].map((k) => h('i', { 'data-h': k })));
@@ -88,9 +90,9 @@ export async function editPhoto(file, startTool = 'crop') {
     const options = h('div', { class: 'ed-options' });
     const root = h('div', { class: 'ed', role: 'dialog', 'aria-label': 'Edit photo' },
       h('div', { class: 'ed-top' },
-        h('button', { class: 'ed-txt', onclick: () => finish(null) }, 'Cancel'),
-        h('b', null, 'Edit'),
-        h('button', { class: 'ed-txt strong', onclick: () => finish(true) }, 'Done')),
+        h('button', { class: 'ed-ic', 'aria-label': 'Cancel', onclick: () => finish(null) }, icon('x')),
+        h('button', { class: 'ed-ic', 'aria-label': 'Reset all edits', onclick: () => { Object.assign(st, { rot: 0, crop: { x: 0, y: 0, w: 1, h: 1 }, filter: 'Original', strokes: [], texts: [], aspect: null }); disp = rotated(full, 0, 1600); setTool(tool); } }, icon('undo')),
+        h('button', { class: 'ed-ic ok', 'aria-label': 'Done', onclick: () => finish(true) }, icon('check'))),
       stage, options, toolBar);
     const unregister = registerLayer(() => finish(null));
     document.body.append(root);
@@ -226,14 +228,15 @@ export async function editPhoto(file, startTool = 'crop') {
     cropBox.addEventListener('pointerup', () => { cropDrag = null; });
 
     toolBar.append(...[['crop', 'crop', 'Crop'], ['draw', 'edit', 'Draw'], ['text', 'text', 'Text'], ['filter', 'sparkle', 'Filters']].map(([t, ic, label]) =>
-      h('button', { 'data-t': t, onclick: () => setTool(t) }, icon(ic), h('span', null, label))));
+      h('button', { 'data-t': t, 'aria-label': label, title: label, onclick: () => setTool(t) }, icon(ic))));
     addEventListener('resize', layout);
 
     async function finish(apply) {
       unregister();
       removeEventListener('resize', layout);
       const edited = st.rot || st.filter !== 'Original' || st.strokes.length || st.texts.length || st.crop.w < 0.999 || st.crop.h < 0.999;
-      if (!apply || !edited) { root.remove(); full.close?.(); return resolve(apply ? file : null); }
+      if (!apply) { root.remove(); full.close?.(); return resolve(null); }
+      if (!edited) { root.remove(); full.close?.(); return resolve({ file, state: st, edited: false }); }
       // Full-resolution render.
       const src = rotated(full, st.rot);
       const out = document.createElement('canvas');
@@ -241,7 +244,7 @@ export async function editPhoto(file, startTool = 'crop') {
       paint(out, src, st);
       const blob = await new Promise((r) => out.toBlob(r, 'image/jpeg', 0.95));
       root.remove(); full.close?.();
-      resolve(blob ? new File([blob], file.name.replace(/\.\w+$/, '') + '-edit.jpg', { type: 'image/jpeg' }) : file);
+      resolve({ file: blob ? new File([blob], file.name.replace(/\.\w+$/, '') + '-edit.jpg', { type: 'image/jpeg' }) : file, state: st, edited: true });
     }
     setTool(startTool);
   });
@@ -262,9 +265,9 @@ export function editVideo(file, current = {}) {
     const muteBtn = h('button', { class: 'ed-chip' + (muted ? ' on' : ''), onclick: () => { muted = !muted; v.muted = muted; muteBtn.classList.toggle('on', muted); muteBtn.replaceChildren(icon(muted ? 'mute' : 'vol'), muted ? 'Muted' : 'Sound on'); } }, icon(muted ? 'mute' : 'vol'), muted ? 'Muted' : 'Sound on');
     const root = h('div', { class: 'ed', role: 'dialog', 'aria-label': 'Trim video' },
       h('div', { class: 'ed-top' },
-        h('button', { class: 'ed-txt', onclick: () => finish(false) }, 'Cancel'),
-        h('b', null, 'Trim'),
-        h('button', { class: 'ed-txt strong', onclick: () => finish(true) }, 'Done')),
+        h('button', { class: 'ed-ic', 'aria-label': 'Cancel', onclick: () => finish(false) }, icon('x')),
+        h('button', { class: 'ed-ic', 'aria-label': 'Use the whole video', onclick: () => { s = 0; e = dur; v.currentTime = 0; draw(); } }, icon('undo')),
+        h('button', { class: 'ed-ic ok', 'aria-label': 'Done', onclick: () => finish(true) }, icon('check'))),
       h('div', { class: 'ed-stage' }, v),
       h('div', { class: 'ed-options column' }, label, bar, h('div', { class: 'ed-row' }, muteBtn)));
     const unregister = registerLayer(() => finish(false));
@@ -324,4 +327,39 @@ export function applyVideoEdits(v, att) {
   v.addEventListener('play', clamp);
   v.addEventListener('seeking', () => { if (v.currentTime < s - 0.05) v.currentTime = s; if (v.currentTime > e) v.currentTime = e - 0.1; });
   v.addEventListener('timeupdate', () => { if (v.currentTime >= e) { v.pause(); v.currentTime = s; } });
+}
+
+// A trimmed video plays as a real clip: its own length, progress bar and seeking limited to the clip.
+export function clipPlayer(src, att, { autoplay = true } = {}) {
+  const [s, e] = Array.isArray(att?.trim) ? att.trim : [0, null];
+  const v = h('video', { src: src + (src.startsWith('blob:') ? '' : `#t=${s}`), playsinline: true, autoplay, preload: 'metadata' });
+  if (att?.muted) { v.muted = true; v.defaultMuted = true; }
+  const fill = h('i'), knob = h('b');
+  const bar = h('div', { class: 'clip-bar' }, h('div', { class: 'clip-track' }, fill), knob);
+  const time = h('span', { class: 'clip-time' }, '0:00');
+  const playBtn = h('button', { class: 'clip-play', 'aria-label': 'Play' }, icon('play', 'fill'));
+  const root = h('div', { class: 'clip' }, v, h('div', { class: 'clip-ui' }, playBtn, bar, time));
+  const end = () => e ?? v.duration ?? 0;
+  const len = () => Math.max(0.1, end() - s);
+  const fmt = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+  const draw = () => {
+    const p = Math.max(0, Math.min(1, (v.currentTime - s) / len()));
+    fill.style.width = p * 100 + '%'; knob.style.left = p * 100 + '%';
+    time.textContent = `${fmt(Math.max(0, v.currentTime - s))} / ${fmt(len())}`;
+    playBtn.replaceChildren(icon(v.paused ? 'play' : 'pause', 'fill'));
+  };
+  v.addEventListener('loadedmetadata', () => { if (v.currentTime < s) v.currentTime = s; draw(); });
+  v.addEventListener('timeupdate', () => { if (v.currentTime >= end() - 0.03) { v.pause(); v.currentTime = s; } draw(); });
+  v.addEventListener('play', () => { if (v.currentTime < s || v.currentTime >= end()) v.currentTime = s; draw(); });
+  v.addEventListener('pause', draw);
+  const toggle = () => (v.paused ? v.play().catch(() => {}) : v.pause());
+  playBtn.addEventListener('click', (ev) => { ev.stopPropagation(); toggle(); });
+  v.addEventListener('click', (ev) => { ev.stopPropagation(); toggle(); });
+  const seek = (ev) => { const r = bar.getBoundingClientRect(); v.currentTime = s + Math.max(0, Math.min(1, (ev.clientX - r.left) / r.width)) * len(); draw(); };
+  let dragging = false;
+  bar.addEventListener('pointerdown', (ev) => { ev.stopPropagation(); dragging = true; try { bar.setPointerCapture(ev.pointerId); } catch {} seek(ev); });
+  bar.addEventListener('pointermove', (ev) => { if (dragging) seek(ev); });
+  bar.addEventListener('pointerup', () => { dragging = false; });
+  root.video = v;
+  return root;
 }

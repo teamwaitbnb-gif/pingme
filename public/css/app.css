@@ -1447,3 +1447,33 @@ html, body { touch-action: manipulation; overscroll-behavior: none; -webkit-text
 .sms-btn { flex-shrink: 0; padding: 9px 14px; border-radius: 999px; background: #30b0c7; color: #fff; font-weight: 700; font-size: 14px; }
 .via-sms { display: inline-flex; align-items: center; gap: 4px; color: #30b0c7; font-weight: 600; }
 .via-sms svg { width: 12px; height: 12px; }
+.load-fail { margin: auto; display: flex; flex-direction: column; align-items: center; gap: 8px; text-align: center; color: var(--text2); padding: 40px 20px; }
+.load-fail b { color: var(--text); font-size: 17px; }
+
+/* Simpler, icon-only camera review + editor (overrides) */
+.cam-tools { position: absolute; left: 0; right: 0; top: auto; bottom: calc(env(safe-area-inset-bottom) + 112px); flex-direction: row; justify-content: center; gap: 14px; }
+.cam-tool { width: 52px; height: 52px; padding: 0; border-radius: 50%; justify-content: center; background: rgba(0,0,0,.45); }
+.cam-tool svg { width: 24px; height: 24px; }
+.cam-tool.on { background: #fff; color: #000; }
+.ed-top { padding: calc(env(safe-area-inset-top) + 8px) 12px 6px; }
+.ed-ic { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; color: #fff; background: rgba(255,255,255,.12); }
+.ed-ic svg { width: 22px; height: 22px; }
+.ed-ic.ok { background: #fff; color: #000; }
+.ed-tools { justify-content: center; gap: 18px; }
+.ed-tools button { width: 52px; height: 52px; padding: 0; border-radius: 50%; justify-content: center; background: rgba(255,255,255,.08); }
+.ed-tools button.on { background: #fff; color: #000; }
+
+/* Clip player (trimmed videos) */
+.clip { position: relative; display: flex; align-items: center; justify-content: center; max-width: 100%; max-height: 100%; }
+.clip video { max-width: 100%; max-height: 100%; display: block; }
+.cam-review.clip { position: absolute; inset: 0; }
+.cam-review.clip video { width: 100%; height: 100%; object-fit: contain; }
+.clip-ui { position: absolute; left: 12px; right: 12px; bottom: 12px; display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-radius: 999px; background: rgba(0,0,0,.5); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); color: #fff; }
+.cam-review.clip .clip-ui { bottom: calc(env(safe-area-inset-bottom) + 180px); left: 20px; right: 20px; }
+.clip-play { width: 32px; height: 32px; display: grid; place-items: center; color: #fff; flex-shrink: 0; }
+.clip-play svg { width: 18px; height: 18px; }
+.clip-bar { position: relative; flex: 1; height: 24px; display: flex; align-items: center; touch-action: none; cursor: pointer; }
+.clip-track { width: 100%; height: 4px; border-radius: 2px; background: rgba(255,255,255,.3); overflow: hidden; }
+.clip-track i { display: block; height: 100%; width: 0; background: #fff; }
+.clip-bar b { position: absolute; width: 14px; height: 14px; margin-left: -7px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
+.clip-time { font-size: 12.5px; font-variant-numeric: tabular-nums; flex-shrink: 0; }

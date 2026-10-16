@@ -56,7 +56,18 @@ document.addEventListener('touchmove', (e) => {
 
 async function boot() {
   applyPrefs();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    // A new release took over: reload onto it when it won't interrupt anything (never mid-call or
+    // mid-typing) so old and new app files are never mixed.
+    let hadController = !!navigator.serviceWorker.controller;
+    navigator.serviceWorker.addEventListener('controllerchange', () => {
+      if (!hadController) { hadController = true; return; }
+      const safe = () => !S.calls?.active() && !(els.ta && els.ta.value.trim()) && !document.querySelector('.cam, .ed, .sheet');
+      const go = () => { if (safe()) location.reload(); else setTimeout(go, 4000); };
+      if (document.hidden) go(); else { document.addEventListener('visibilitychange', function v() { if (document.hidden) { document.removeEventListener('visibilitychange', v); go(); } }); setTimeout(go, 20000); }
+    });
+  }
   // The app is running: tell the start-up watchdog in index.html (and forget an earlier retry).
   window.__pmBooted = true;
   try { sessionStorage.removeItem('pm:boot-retry'); } catch {}
@@ -894,14 +905,26 @@ async function loadMessages(chatId, { reset = false, around = null, older = fals
     if (around) url += `&around=${around}`;
     else if (older) { const first = st.list.find((m) => typeof m.id === 'number'); if (first) url += `&before=${first.id}`; }
     const { messages, hasMore } = await api('GET', url);
+    // A newer load for this chat replaced us (chat re-opened meanwhile): drop this result quietly —
+    // it used to clear the spinner and draw an empty chat until the newer load finished.
+    if (S.msgs.get(chatId) !== st) return;
     if (around) { st.list = messages; st.hasMore = true; st.gapAfter = true; conv.nodes.clear(); }
     else if (older) { st.list = [...messages, ...st.list]; st.hasMore = hasMore; }
     else { st.list = [...messages, ...st.list.filter((m) => m.pending)]; st.hasMore = hasMore; st.gapAfter = false; conv.nodes.clear(); }
     st.loaded = true;
     if (around && messages.length && messages[messages.length - 1].id === S.chats.get(chatId)?.lastMessage?.id) st.gapAfter = false;
-  } catch (e) { toast(e.message, { error: true }); }
+  } catch (e) {
+    st.loading = false;
+    if (S.msgs.get(chatId) !== st || S.current !== chatId) return;
+    // Never leave a blank chat: say what happened and offer a retry.
+    if (!st.list.length && els.msgs) {
+      els.msgs.replaceChildren(h('div', { class: 'load-fail' }, h('b', null, 'Couldn’t load messages'), h('span', null, e.message || 'Check your connection'),
+        h('button', { class: 'btn small', onclick: () => loadMessages(chatId, { reset: true }) }, 'Try again')));
+    } else toast(e.message, { error: true });
+    return;
+  }
   st.loading = false;
-  if (S.current !== chatId) return;
+  if (S.current !== chatId || S.msgs.get(chatId) !== st) return;
   if (older) {
     const prevH = els.msgs.scrollHeight, prevTop = els.msgs.scrollTop;
     renderMessages();
@@ -1132,7 +1155,13 @@ export function renderMessages() {
     const last = !sameGroup(m, next) || (next && next.createdAt - m.createdAt > 3600000);
     const status = i === lastMineIdx ? receiptStatus(m, chat) : '';
     const key = [m.id, m.editedAt, m.deleted, m.pinned, first, last, status, m.progress, m.failed, JSON.stringify(m.reactions || []), JSON.stringify(m.poll?.votes || {}), user(m.senderId).avatarV, user(m.senderId).name, m.replyTo?.preview, m.att?.id, m.expiresAt, m.readTtl, m.vr?.sig, scamV, m.intent].join('|');
-    nodes.push(getNode('m' + (m.clientId || m.id), key, () => buildMessage(m, { first, last, status, chat })));
+    nodes.push(getNode('m' + (m.clientId || m.id), key, () => {
+      // One message that can't be drawn must never blank the whole chat.
+      try { return buildMessage(m, { first, last, status, chat }); } catch (e) {
+        console.warn('message render failed', m.id, e);
+        return h('div', { class: 'sys' }, 'This message can’t be shown — update Ping Me to see it');
+      }
+    }));
   }
   // Reconcile children with minimal DOM moves.
   const container = els.msgs;

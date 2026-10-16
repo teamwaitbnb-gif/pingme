@@ -1,5 +1,5 @@
 // Ping Me service worker: app-shell caching + app-style notifications.
-const VERSION = 'pm-v23';
+const VERSION = 'pm-v25';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/manifest.webmanifest',
   '/js/video-recorder.js', '/js/camera.js', '/js/editor.js', '/js/pet.js', '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',
@@ -9,7 +9,8 @@ const SHELL = [
 ];
 
 self.addEventListener('install', (e) => {
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));
+  // Fetch every file fresh (bypassing the browser's HTTP cache) so the saved set is one release.
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
 });
 
 self.addEventListener('activate', (e) => {
@@ -25,24 +26,26 @@ self.addEventListener('fetch', (e) => {
   // Never cache API / realtime traffic (private, and must be fresh).
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io/')) return;
 
-  // Fresh from the network when it answers quickly; otherwise the saved copy right away. A slow or
-  // stalled mobile connection used to leave the app on a blank white screen until it timed out.
+  // App files come from this version's complete saved set (installed all at once), so the page never
+  // mixes old and new files — mixing caused missing icons and blank screens. A new release installs a
+  // new set; the app then reloads itself onto it at a safe moment (see app.js).
   const navigate = e.request.mode === 'navigate';
   e.respondWith((async () => {
     const cache = await caches.open(VERSION);
-    const cacheKey = navigate ? '/index.html' : e.request;
-    const network = fetch(e.request).then((r) => {
-      if (r.ok && (!navigate || url.pathname === '/')) cache.put(cacheKey, r.clone()).catch(() => {});
-      return r;
-    });
-    const saved = await cache.match(cacheKey);
+    if (!navigate) {
+      const hit = await cache.match(e.request, { ignoreSearch: true });
+      if (hit) return hit;
+      try { const r = await fetch(e.request); if (r.ok) cache.put(e.request, r.clone()).catch(() => {}); return r; } catch { return Response.error(); }
+    }
+    // The page itself: fresh if the network answers within 3s, otherwise the saved copy.
+    const network = fetch(e.request).then((r) => { if (r.ok && url.pathname === '/') cache.put('/index.html', r.clone()).catch(() => {}); return r; });
+    const saved = await cache.match('/index.html');
     if (!saved) return network.catch(() => Response.error());
-    const slow = new Promise((res) => setTimeout(() => res(null), navigate ? 3000 : 2500));
     try {
-      const r = await Promise.race([network, slow]);
+      const r = await Promise.race([network, new Promise((res) => setTimeout(() => res(null), 3000))]);
       if (r && r.ok) return r;
     } catch {}
-    e.waitUntil(network.catch(() => {})); // keep updating the saved copy in the background
+    e.waitUntil(network.catch(() => {}));
     return saved;
   })());
 });

@@ -17,7 +17,7 @@ import { lockEnabled, hasDuress, setPin, setDuressPin, disableLock, hiddenChats,
 import { signPhoto } from './keys.js';
 import { installApp } from './install.js';
 import { openMyCode, openScanner } from './qr.js';
-import { applyVideoEdits } from './editor.js';
+import { applyVideoEdits, clipPlayer } from './editor.js';
 import { petHidden, showPetAgain } from './pet.js';
 import { ensurePermission } from './perm.js';
 import { INTENTS } from './smart.js';
@@ -633,8 +633,10 @@ export function openViewer(m, list = null) {
     const it = items[idx] || m;
     scale = 1; tx = 0; ty = 0;
     const src = fileUrl(it.att);
-    const el = it.kind === 'video' ? h('video', { src, controls: true, autoplay: true, playsinline: true }) : h('img', { src, alt: it.att?.name || '' });
-    if (it.kind === 'video') applyVideoEdits(el, it.att); // camera trim / mute
+    // Trimmed videos play as a real clip (own length + timeline); others use the normal player.
+    const trimmed = it.kind === 'video' && Array.isArray(it.att?.trim);
+    const el = trimmed ? clipPlayer(src, it.att) : it.kind === 'video' ? h('video', { src, controls: true, autoplay: true, playsinline: true }) : h('img', { src, alt: it.att?.name || '' });
+    if (it.kind === 'video' && !trimmed) applyVideoEdits(el, it.att); // mute
     body.replaceChildren(el);
     title.replaceChildren(it.senderId === S.me.id ? 'You' : user(it.senderId).name, h('small', null, new Date(it.createdAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })));
     cap.hidden = !it.text; cap.textContent = it.text || '';
