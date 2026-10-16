@@ -1,5 +1,5 @@
 // Ping Me service worker: app-shell caching + app-style notifications.
-const VERSION = 'pm-v29';
+const VERSION = 'pm-v32';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/manifest.webmanifest',
   '/js/video-recorder.js', '/js/camera.js', '/js/editor.js', '/js/pet.js', '/js/buzz.js', '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',
@@ -220,7 +220,8 @@ self.addEventListener('push', (e) => {
     if (d.type === 'call') {
       // The call is re-sent every few seconds while ringing, so the phone keeps sounding like a real call.
       // Stay quiet only when Ping Me is open on screen AND able to play its own ringtone.
-      if ((await hasFocusedClient()) && Date.now() - audioReadyAt < 10 * 60000) return;
+      // Skip the system call notification only if the open app confirmed (within 30s) it can ring itself.
+      if ((await hasFocusedClient()) && Date.now() - audioReadyAt < 30000) return;
       return showCall(d);
     }
     if (d.type === 'call-ended') {

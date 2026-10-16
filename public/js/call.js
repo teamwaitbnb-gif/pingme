@@ -268,6 +268,28 @@ export function initCalls(ctx) {
     join();
   }
 
+  // Join a group call that's already going on (missed it, declined, or left and came back).
+  async function joinOngoing({ callId, chatId, video }) {
+    dropStaleCall();
+    if (call) { if (call.id === callId) return restore(); return toast('You are already in a call'); }
+    if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) return toast('Calls are not supported in this browser', { error: true });
+    const iceReady = freshIce();
+    if (!(await ensurePermission(video ? ['camera', 'microphone'] : ['microphone'], video ? 'So everyone can see and hear you.' : 'So everyone can hear you.'))) return;
+    let stream = null, err = null;
+    try { stream = await getMedia({ video }); } catch (e) {
+      err = e;
+      if (video) { try { stream = await getMedia({ video: false }); toast('Joining with audio — camera unavailable'); } catch (e2) { err = e2; } }
+    }
+    if (!stream) return toast(mediaError(err), { error: true, timeout: 6000 });
+    call = newSession({ chatId, video, stream, outgoing: false });
+    call.id = callId;
+    const session = call;
+    await iceReady;
+    if (call !== session) return;
+    buildUI();
+    join();
+  }
+
   function hangup() {
     if (!call) return;
     if (call.id) socket.emit('call:leave', { callId: call.id });
@@ -283,6 +305,7 @@ export function initCalls(ctx) {
     clearInterval(c.timer); clearInterval(c.statsTimer); clearTimeout(c.hideTimer);
     for (const p of c.peers.values()) { clearTimeout(p.failTimer); try { p.pc.close(); } catch {} }
     c.stream?.getTracks().forEach((t) => t.stop());
+    sounds.afterCall();
     c.whisper?.track?.stop();
     try { c.rewind?.stop(); } catch {}
     c.actx?.close().catch(() => {});
@@ -1228,6 +1251,7 @@ export function initCalls(ctx) {
     start,
     active: () => call,
     checkRinging,
+    joinOngoing,
     restore,
     hangup,
   };

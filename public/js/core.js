@@ -5,6 +5,7 @@ export const S = {
   me: null,
   config: { iceServers: [], vapidPublicKey: null, maxUpload: 2 * 1024 * 1024 * 1024 },
   users: new Map(),
+  groupCalls: new Map(), // chatId → group call going on now
   chats: new Map(),
   blocked: new Set(),
   current: null,

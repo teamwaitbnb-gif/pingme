@@ -112,6 +112,8 @@ export function initBuzz(ctx) {
     } else if (it.imageUrl) {
       const img = h('img', { src: it.imageUrl, alt: '', loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer' });
       media = link('bz-media', img);
+      // Never stretch a small picture into a blurry hero: show it as a neat thumbnail instead.
+      img.addEventListener('load', () => { if (img.naturalWidth && img.naturalWidth < 600) media.closest('.bz-card')?.classList.add('bz-small'); });
       img.addEventListener('error', () => media.replaceWith(placeholder(it))); // broken image → branded placeholder
     } else media = null; // no photo: a small source badge in the info line instead of a big empty box
     const likeBtn = h('button', { class: 'bz-act like' + (it.liked ? ' on' : ''), 'aria-label': 'Like', 'aria-pressed': String(!!it.liked), onclick: () => react(it.id, 'like') }, icon('heart', it.liked ? 'fill' : ''), h('span', null, it.likes || ''));

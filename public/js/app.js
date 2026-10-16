@@ -64,7 +64,7 @@ async function boot() {
     let hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if (!hadController) { hadController = true; return; }
-      const safe = () => !S.calls?.active() && !(els.ta && els.ta.value.trim()) && !document.querySelector('.cam, .ed, .sheet');
+      const safe = () => !S.calls?.active() && !window.__pmPicking && !(els.ta && els.ta.value.trim()) && !document.querySelector('.cam, .ed, .sheet');
       const go = () => { if (safe()) location.reload(); else setTimeout(go, 4000); };
       if (document.hidden) go(); else { document.addEventListener('visibilitychange', function v() { if (document.hidden) { document.removeEventListener('visibilitychange', v); go(); } }); setTimeout(go, 20000); }
     });
@@ -364,6 +364,11 @@ function connectSocket() {
   document.addEventListener('visibilitychange', checkInstance);
   socket.on('msg:new', onNewMessage);
   socket.on('pet:event', (ev) => S.pet?.onEvent(ev));
+  // Group calls going on right now (for the "Join" pill in the group header).
+  socket.on('call:active', (ev) => {
+    if (ev.callId) S.groupCalls.set(ev.chatId, ev); else S.groupCalls.delete(ev.chatId);
+    if (S.current === ev.chatId) renderHeader();
+  });
   socket.on('msg:update', (m) => { upsertMessage(m); updateChatPreview(m.chatId, m); });
   socket.on('msg:remove', ({ chatId, id }) => {
     const st = S.msgs.get(chatId);
@@ -874,6 +879,7 @@ function buildConv(chat) {
   renderComposer();
   renderTyping();
   startPet(chat);
+  if (chat.type === 'group') api('GET', `/api/chats/${chat.id}/call`).then(({ call: gc }) => { if (gc) S.groupCalls.set(chat.id, gc); else S.groupCalls.delete(chat.id); if (S.current === chat.id) renderHeader(); }).catch(() => {});
   loadSmsContact(chat);
 }
 
@@ -897,6 +903,12 @@ export function renderHeader() {
         h('div', { class: 'nm' }, chatTitle(chat), isMuted(chat) ? icon('belloff') : null, chat.disappearSecs ? icon('timer') : null, icon('chev')),
         h('div', { class: 'st' + (on && !typers.length ? ' on' : '') }, status))),
     chat.type === 'direct' && feature('ping') && !isBlocked(chat) && !u?.deleted ? h('button', { class: 'icon-btn ping-btn', title: 'Send a Ping — thinking of you', 'aria-label': 'Send a Ping', onclick: () => sendPing(chat) }, h('img', { src: '/icons/hand.svg', alt: '' })) : null,
+    (() => {
+      const gc = chat.type === 'group' ? S.groupCalls.get(chat.id) : null;
+      if (!gc || S.calls?.active()?.id === gc.callId) return null;
+      return h('button', { class: 'join-pill', 'aria-label': 'Join the call', onclick: () => S.calls.joinOngoing({ callId: gc.callId, chatId: chat.id, video: gc.video }) },
+        icon(gc.video ? 'video' : 'phone'), h('span', null, 'Join'), gc.count ? h('small', null, `${gc.count} in call`) : null);
+    })(),
     isBlocked(chat) || u?.deleted ? null : h('button', { class: 'icon-btn', title: 'Audio call', 'aria-label': 'Audio call', onclick: () => S.calls.start(chat.id, false) }, icon('phone')),
     isBlocked(chat) || u?.deleted ? null : h('button', { class: 'icon-btn', title: 'Video call', 'aria-label': 'Video call', onclick: () => S.calls.start(chat.id, true) }, icon('video')));
   renderPinnedBar();
@@ -1630,7 +1642,7 @@ function renderComposer() {
   els.micBtn = h('button', { class: 'mic', 'aria-label': 'Record voice message', onclick: startRecording }, icon('mic'));
   els.camBtn = navigator.mediaDevices?.getUserMedia ? h('button', { class: 'cam-btn', 'aria-label': 'Camera', onclick: () => openChatCamera(chat) }, icon('camera')) : null;
   els.plus = h('button', { class: 'plus', 'aria-label': 'Attach', onclick: plusMenu }, icon('plus'));
-  els.fileInput = h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => { addFiles([...e.target.files]); e.target.value = ''; } });
+  els.fileInput = h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => { window.__pmPicking = false; addFiles([...e.target.files]); e.target.value = ''; }, oncancel: () => { window.__pmPicking = false; }, onclick: () => { window.__pmPicking = true; } });
   els.composer = h('div', { class: 'composer' }, els.plus, h('div', { class: 'inputbox' }, els.intentBtn, els.ta, els.sendBtn, els.camBtn, els.micBtn), els.fileInput);
   els.blockedNote = h('div', { class: 'blocked-note', hidden: true });
   els.smsBar = h('div', { class: 'sms-bar', hidden: true });
@@ -2009,10 +2021,11 @@ async function startRecording() {
   const t = h('span', { class: 't' }, '0:00');
   let rec;
   const finish = () => { els.composerWrap.querySelector('.recorder')?.remove(); els.composer.hidden = false; };
-  const ui = h('div', { class: 'recorder' },
-    h('button', { class: 'icon-btn cancel', 'aria-label': 'Cancel recording', onclick: () => { rec?.cancel(); finish(); } }, icon('trash')),
-    h('span', { class: 'rec-dot' }), t, lvl,
-    h('button', { class: 'inputbox send', style: { width: '36px', height: '36px', borderRadius: '50%', background: 'var(--accent)', color: '#fff', display: 'grid', placeItems: 'center', border: 0 }, 'aria-label': 'Send voice message', onclick: async () => {
+  // Minimal recorder: cancel · live waveform with timer · send.
+  const ui = h('div', { class: 'recorder rec2' },
+    h('button', { class: 'rec-x', 'aria-label': 'Cancel recording', onclick: () => { rec?.cancel(); finish(); } }, icon('x')),
+    h('div', { class: 'rec-mid' }, h('span', { class: 'rec-dot' }), t, lvl),
+    h('button', { class: 'rec-send send', 'aria-label': 'Send voice message', onclick: async () => {
       if (!rec) return;
       const { blob, dur, wave } = await rec.stop();
       finish();
@@ -2029,13 +2042,13 @@ async function startRecording() {
         await dispatch(chatId, { kind: 'audio', attachmentId: up.id, media: { dur, wave }, replyTo: conv.reply?.id || null }, pending);
         conv.reply = null; renderCtxBar();
       } catch (e) { pending.failed = true; renderMessages(); toast(e.message, { error: true }); }
-    } }, icon('send')));
+    } }, icon('up')));
   els.composer.hidden = true;
   els.composerWrap.append(ui);
   rec = new VoiceRecorder((level, secs) => {
     t.textContent = fmtDur(secs);
-    lvl.append(h('i', { style: { height: Math.max(3, level * 30) + 'px' } }));
-    if (lvl.children.length > 120) lvl.firstChild.remove();
+    lvl.append(h('i', { style: { height: Math.max(3, Math.min(26, 3 + level * 40)) + 'px' } }));
+    if (lvl.children.length > 60) lvl.firstChild.remove();
     if (secs > 600) ui.querySelector('.send')?.click();
   });
   try { await rec.start(); }

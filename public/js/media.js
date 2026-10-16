@@ -320,8 +320,12 @@ const buffers = new Map();
 function ac() {
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) return null;
-  if (!actx) actx = new AC();
-  if (actx.state === 'suspended') actx.resume().catch(() => {});
+  if (!actx || actx.state === 'closed') {
+    actx = new AC();
+    actx.onstatechange = () => reportAudio();
+  }
+  // iPhone uses "interrupted" (after calls, other apps' audio, backgrounding) as well as "suspended".
+  if (actx.state !== 'running') actx.resume().then(reportAudio).catch(() => {});
   return actx;
 }
 
@@ -341,24 +345,46 @@ async function loadSounds() {
   }));
 }
 
-['pointerdown', 'keydown', 'touchend'].forEach((ev) => addEventListener(ev, () => { loadSounds().then(reportAudio); }, { once: true, capture: true }));
+// Audio elements "unlocked" by a tap, used whenever the Web Audio engine isn't running (iPhone only lets
+// a page play sound programmatically through elements that were started once during a tap).
+const primed = new Map();
+function prime() {
+  for (const name of SOUND_FILES) {
+    if (primed.has(name)) continue;
+    const el = new Audio(soundUrl(name));
+    el.preload = 'auto'; el.muted = true; el.setAttribute('playsinline', '');
+    el.play().then(() => { el.pause(); el.currentTime = 0; el.muted = false; }).catch(() => { el.muted = false; });
+    primed.set(name, el);
+  }
+}
 
-// The service worker skips the system call notification only when the open app can ring by itself.
+// Every tap (not just the first) re-wakes sound: iPhone silences pages after calls or backgrounding.
+['pointerdown', 'keydown', 'touchend'].forEach((ev) => addEventListener(ev, () => {
+  const a = ac();
+  if (a && (a.state !== 'running' || buffers.size < SOUND_FILES.length)) loadSounds().then(reportAudio);
+  if (primed.size < SOUND_FILES.length) prime();
+}, { capture: true, passive: true }));
+
+// The service worker skips the system call notification only when the open app can ring by itself —
+// so it's told the truth, often, and the claim expires quickly (see sw.js).
 function reportAudio() {
-  const ok = !!actx && actx.state === 'running' && !document.hidden;
+  const ok = !!actx && actx.state === 'running' && !document.hidden && buffers.has('ringtone');
   navigator.serviceWorker?.controller?.postMessage({ type: 'audio', ready: ok });
 }
-document.addEventListener('visibilitychange', reportAudio);
+document.addEventListener('visibilitychange', () => { if (!document.hidden) ac(); reportAudio(); });
+setInterval(() => { if (!document.hidden) reportAudio(); }, 15000);
 
 function play(name, { loop = false, volume = 1 } = {}) {
   const a = ac();
   const buf = buffers.get(name);
-  if (!a || !buf) {
-    // Not unlocked/decoded yet: fall back to a plain audio element (may be blocked before first tap).
-    const el = new Audio(soundUrl(name));
-    el.loop = loop; el.volume = volume;
+  if (!a || !buf || a.state !== 'running') {
+    // Engine not running yet: use the tap-unlocked element (or a fresh one as a last resort).
+    let el = primed.get(name);
+    if (!el || (!el.paused && !loop)) el = el ? el.cloneNode(true) : new Audio(soundUrl(name));
+    el.loop = loop; el.volume = volume; el.muted = false;
+    try { el.currentTime = 0; } catch {}
     el.play().catch(() => {});
-    return { stop: () => { el.pause(); el.src = ''; } };
+    return { stop: () => { el.pause(); try { el.currentTime = 0; } catch {} el.loop = false; } };
   }
   const src = a.createBufferSource();
   const g = a.createGain();
@@ -371,6 +397,9 @@ function play(name, { loop = false, volume = 1 } = {}) {
 
 // Browsers only allow vibration after the person has interacted with the page.
 const buzz = (pattern) => { if (navigator.userActivation?.hasBeenActive !== false) navigator.vibrate?.(pattern); };
+
+// For diagnostics/tests: the current Web Audio state.
+export const audioState = () => actx?.state || 'none';
 
 export const sounds = {
   _loop: null,
@@ -392,6 +421,11 @@ export const sounds = {
     try { if (navigator.audioSession) navigator.audioSession.type = 'auto'; } catch {}
   },
   unlocked: () => !!actx && actx.state === 'running',
+  // After a call the phone leaves "call audio" mode; bring app sounds back to normal playback.
+  afterCall() {
+    try { if (navigator.audioSession) navigator.audioSession.type = 'auto'; } catch {}
+    setTimeout(() => { ac(); reportAudio(); }, 400);
+  },
   hangup() { play('end', { volume: 0.7 }); },
   join() { play('join', { volume: 0.6 }); },
   received() { this.message(); },

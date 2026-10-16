@@ -1390,6 +1390,16 @@ app.get('/api/calls/ringing', auth, wrap(async (req, res) => {
   res.json({ calls: list });
 }));
 
+// Is a group call going on in this chat? (The app shows "Join" when you're not in it.)
+app.get('/api/chats/:id/call', auth, wrap(async (req, res) => {
+  const chatId = toInt(req.params.id);
+  await requireMember(chatId, req.uid);
+  const call = [...calls.values()].find((c) => c.chatId === chatId && c.group && c.participants.size);
+  if (!call) return res.json({ call: null });
+  const userIds = [...new Set([...call.participants.values()].map((p) => p.userId))];
+  res.json({ call: { chatId, callId: call.id, video: call.video, count: userIds.length, userIds } });
+}));
+
 app.post('/api/calls/:id/decline', auth, wrap(async (req, res) => {
   await declineCall(req.uid, { callId: req.params.id });
   res.json({ ok: true });
@@ -2058,6 +2068,7 @@ async function startCall(socket, d) {
     timer: null,
   };
   calls.set(call.id, call);
+  setTimeout(() => calls.get(call.id) && emitCallState(call), 50);
   if (chat.type === 'direct' && userInCall(members[0])) {
     calls.delete(call.id);
     throw bad('Busy — they’re on another call');
@@ -2085,6 +2096,13 @@ async function ringMore(socket, d) {
   await ringUsers(call, ids.filter((u) => members.includes(u)));
 }
 
+// Group calls: tell everyone in the group whether a call is going on (for the "Join" button).
+function emitCallState(call, active = true) {
+  if (!call.group) return;
+  const userIds = [...new Set([...call.participants.values()].map((p) => p.userId))];
+  io.to('c:' + call.chatId).emit('call:active', { chatId: call.chatId, callId: active ? call.id : null, video: call.video, count: active ? userIds.length : 0, userIds: active ? userIds : [] });
+}
+
 async function joinCall(socket, d) {
   const call = calls.get(toInt(d.callId));
   if (!call) throw notFound('This call has ended');
@@ -2100,6 +2118,7 @@ async function joinCall(socket, d) {
   for (const sid of call.participants.keys()) {
     if (sid !== socket.id) io.to(sid).emit('call:peer-joined', { callId: call.id, socketId: socket.id, userId: socket.uid, answeredAt: call.answeredAt });
   }
+  emitCallState(call);
   return { callId: call.id, chatId: call.chatId, video: call.video, peers, answeredAt: call.answeredAt, startedBy: call.startedBy };
 }
 
@@ -2120,12 +2139,13 @@ async function leaveCall(socket, callId) {
   const remaining = call.participants.size;
   if (remaining === 0 || (remaining === 1 && (call.answeredAt || !call.ringing.size)) || (!call.answeredAt && socket.uid === call.startedBy)) {
     endCall(call, call.answeredAt ? 'ended' : 'cancelled');
-  }
+  } else emitCallState(call);
 }
 
 async function endCall(call, reason) {
   if (!calls.has(call.id)) return;
   calls.delete(call.id);
+  emitCallState(call, false);
   clearTimeout(call.timer);
   (call.ringTimers || []).forEach(clearInterval);
   for (const sid of call.participants.keys()) io.to(sid).emit('call:ended', { callId: call.id, reason });

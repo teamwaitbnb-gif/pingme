@@ -23,9 +23,16 @@ import { ensurePermission } from './perm.js';
 import { INTENTS } from './smart.js';
 
 const err = (e) => toast(e.message || String(e), { error: true });
+// The input stays in the page until a file is chosen or the picker is cancelled: iPhone Safari
+// throws away a detached input while you browse the gallery, so a slow pick did nothing.
 const pickFile = (accept) => new Promise((res) => {
-  const i = h('input', { type: 'file', accept });
-  i.onchange = () => res(i.files[0] || null);
+  const i = h('input', { type: 'file', accept, hidden: true, 'aria-hidden': 'true' });
+  let done = false;
+  const finish = (f) => { if (done) return; done = true; window.__pmPicking = false; i.remove(); res(f); };
+  i.addEventListener('change', () => finish(i.files[0] || null));
+  i.addEventListener('cancel', () => finish(null));
+  document.body.append(i);
+  window.__pmPicking = true;
   i.click();
 });
 

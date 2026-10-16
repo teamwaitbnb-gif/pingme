@@ -1643,3 +1643,29 @@ html, body { touch-action: manipulation; overscroll-behavior: none; -webkit-text
 .cm-bar { margin-top: auto; background: var(--bg2); }
 @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .cm-bar { background: #1c1c1e; } }
 :root[data-theme="dark"] .cm-bar { background: #1c1c1e; }
+
+/* Buzz: small source pictures become a tidy thumbnail beside the headline */
+.bz-card.bz-small { display: grid; grid-template-columns: 1fr 92px; grid-template-areas: "body img"; align-items: start; }
+.bz-card.bz-small .bz-media { grid-area: img; width: 92px; height: 92px; aspect-ratio: 1; border-radius: 14px; margin: 16px 16px 0 0; }
+.bz-card.bz-small .bz-body { grid-area: body; padding-right: 10px; }
+.bz-card.bz-small .bz-h { font-size: 17.5px; }
+
+/* Voice recorder: one clean pill */
+.recorder.rec2 { display: flex; align-items: center; gap: 10px; margin: 6px 10px calc(6px + var(--sab)); padding: 6px; border-radius: 28px; background: var(--fill); }
+.rec-x { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; color: var(--text2); flex-shrink: 0; }
+.rec-x svg { width: 20px; height: 20px; }
+.rec-mid { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; overflow: hidden; }
+.rec2 .rec-dot { width: 9px; height: 9px; border-radius: 50%; background: #ff3b30; flex-shrink: 0; animation: recPulse 1.2s ease-in-out infinite; }
+.rec2 .t { font-variant-numeric: tabular-nums; font-size: 15px; font-weight: 600; flex-shrink: 0; min-width: 38px; }
+.rec2 .lvl { flex: 1; display: flex; align-items: center; justify-content: flex-end; gap: 2.5px; height: 30px; overflow: hidden; mask-image: linear-gradient(90deg, transparent, #000 25%); -webkit-mask-image: linear-gradient(90deg, transparent, #000 25%); }
+.rec2 .lvl i { width: 3px; border-radius: 2px; background: var(--text); opacity: .85; flex-shrink: 0; transition: height .08s; }
+.rec-send { width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center; background: var(--accent); color: var(--on-accent); flex-shrink: 0; }
+.rec-send svg { width: 20px; height: 20px; stroke-width: 2.6; }
+@keyframes recPulse { 50% { opacity: .25; } }
+/* "Join" an ongoing group call */
+.join-pill { display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px; border-radius: 17px; background: #30d158; color: #fff; font-weight: 700; font-size: 14px; flex-shrink: 0; animation: joinPulse 2s ease-in-out infinite; }
+.join-pill svg { width: 17px; height: 17px; }
+.join-pill small { font-weight: 600; font-size: 11.5px; opacity: .9; }
+@media (max-width: 420px) { .join-pill small { display: none; } }
+@keyframes joinPulse { 50% { box-shadow: 0 0 0 6px rgba(48,209,88,.18); } }
+@media (prefers-reduced-motion: reduce) { .join-pill { animation: none; } }

@@ -58,4 +58,27 @@ function date(v) {
   return t > Date.now() + 3600000 ? null : t; // never accept dates in the future
 }
 
-module.exports = { text, summarize, canonical, httpUrl, idFor, date, decode };
+// ───── HD images ─────
+// Ask publishers' image servers for a large version where their URL scheme allows it.
+function upgradeImage(u) {
+  if (!u) return u;
+  let x = u.replace(/^http:\/\//i, 'https://');
+  x = x.replace(/(ichef\.bbci\.co\.uk\/(?:ace|news)\/(?:standard|ws)\/)\d{2,4}\//i, '$11024/');           // BBC
+  x = x.replace(/\/alternates\/(LANDSCAPE|SQUARE|PORTRAIT|FREE)_\d{2,4}\//i, '/alternates/$1_1200/');      // The Hindu
+  x = x.replace(/(static\.toiimg\.com\/thumb\/[^/]*?)width-\d+,height-\d+/i, '$1width-1200,height-675');  // Times of India
+  x = x.replace(/(img\.etimg\.com\/thumb\/[^/]*?)width-\d+,height-\d+/i, '$1width-1200,height-675');      // ET
+  // WordPress resized copies ("photo-768x450.jpg") → the original upload.
+  if (/\/wp-content\/uploads\//.test(x)) x = x.replace(/-\d{2,4}x\d{2,4}(\.(?:jpe?g|png|webp))(\?|$)/i, '$1$2');
+  return x;
+}
+
+// Small or placeholder images that should be replaced by the article's own share image.
+function lowRes(u) {
+  if (!u) return true;
+  if (/^http:\/\//i.test(u)) return true;                       // phones block insecure images
+  if (/(encrypted-tbn\d*\.gstatic\.com|\/thumb\/|thumbnail|_thumb|-150x|-300x|default|placeholder|og-image|newmintdefault|logo|android-chrome|apple-touch|favicon)/i.test(u)) return true;
+  const m = /[?&](?:w|width|resize|s)=(\d{2,4})/i.exec(u) || /[_/-](\d{2,3})x\d{2,3}[._/-]/.exec(u) || /\/standard\/(\d{2,3})\//.exec(u);
+  return !!m && Number(m[1]) < 700;
+}
+
+module.exports = { text, summarize, canonical, httpUrl, idFor, date, decode, upgradeImage, lowRes };

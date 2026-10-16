@@ -2,6 +2,8 @@
 // and the Hacker News API, and read a missing image/description from the article page itself —
 // only on the publisher's own site. No open "fetch any URL" endpoint exists.
 const { XMLParser } = require('fast-xml-parser');
+const dns = require('dns').promises;
+const net = require('net');
 const N = require('./normalize');
 
 const UA = 'Mozilla/5.0 (compatible; PingMeBuzz/1.0; +https://pingme.app)';
@@ -17,14 +19,31 @@ const parser = new XMLParser({
   isArray: (name) => ['item', 'entry', 'link', 'media:content', 'media:thumbnail', 'enclosure', 'category', 'ht:news_item'].includes(name),
 });
 
+// Never fetch private / internal addresses (e.g. the cloud metadata server) — article and logo URLs
+// come from publisher feeds, so every hop is checked.
+function privateIp(ip) {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split('.').map(Number);
+    return a === 10 || a === 127 || a === 0 || (a === 169 && b === 254) || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 100 && b >= 64 && b <= 127) || a >= 224;
+  }
+  const x = ip.toLowerCase();
+  return x === '::1' || x === '::' || x.startsWith('fc') || x.startsWith('fd') || x.startsWith('fe80') || x.startsWith('::ffff:127.') || x.startsWith('::ffff:10.') || x.startsWith('::ffff:169.254.') || x.startsWith('::ffff:192.168.');
+}
+async function assertPublic(url) {
+  const u = new URL(url);
+  if (!/^https?:$/.test(u.protocol) || (u.port && !['80', '443'].includes(u.port))) throw new FetchError('Blocked URL');
+  const host = u.hostname.replace(/^\[|\]$/g, '');
+  const addrs = net.isIP(host) ? [{ address: host }] : await dns.lookup(host, { all: true });
+  if (!addrs.length || addrs.some((a) => privateIp(a.address))) throw new FetchError('Blocked private address');
+}
+
 class FetchError extends Error { constructor(msg, status, retryAfter) { super(msg); this.status = status; this.retryAfter = retryAfter; } }
 
 // GET with timeout, size cap, manual redirects (http/https only, max 3) and conditional headers.
 async function safeGet(url, { timeout = 9000, maxBytes = MAX_FEED_BYTES, etag, lastModified, accept, ua = UA } = {}) {
   let current = url;
   for (let hop = 0; hop < 4; hop++) {
-    const u = new URL(current);
-    if (!/^https?:$/.test(u.protocol)) throw new FetchError('Blocked URL scheme');
+    await assertPublic(current);
     const headers = { 'user-agent': ua, accept: accept || 'application/rss+xml, application/atom+xml, application/xml, text/xml, application/json;q=0.9, */*;q=0.5' };
     if (hop === 0 && etag) headers['if-none-match'] = etag;
     if (hop === 0 && lastModified) headers['if-modified-since'] = lastModified;
@@ -187,10 +206,10 @@ async function collect(src, state = {}) {
 
 // Missing image or summary: read the article's own Open Graph tags — only on the publisher's site.
 const sameSite = (url, site) => { try { const h = new URL(url).hostname; return h === site || h.endsWith('.' + site); } catch { return false; } };
-async function enrich(url, site) {
-  if (!site || !sameSite(url, site)) return null;
+async function enrich(url, site, { anySite = false } = {}) {
+  if (!anySite && (!site || !sameSite(url, site))) return null;
   const r = await safeGet(url, { timeout: 6000, maxBytes: MAX_PAGE_BYTES, accept: 'text/html' });
-  if (!r.body || (r.finalUrl && !sameSite(r.finalUrl, site))) return null;
+  if (!r.body || (!anySite && r.finalUrl && !sameSite(r.finalUrl, site))) return null;
   const head = r.body.slice(0, 300000);
   const meta = (prop) => {
     const re = new RegExp(`<meta[^>]+(?:property|name)=["']${prop}["'][^>]*>`, 'i');
@@ -200,7 +219,8 @@ async function enrich(url, site) {
   };
   const image = N.httpUrl(meta('og:image') || meta('twitter:image') || '', url);
   const description = N.summarize(meta('og:description') || meta('description') || meta('twitter:description') || '', '');
-  return { image: image && !/(logo|default|placeholder)/i.test(image) ? image : null, description };
+  const big = image && N.upgradeImage(image);
+  return { image: big && !/(logo|default|placeholder|og-image\.png|android-chrome|apple-touch|favicon|site-?icon|cropped-[^/]*\d{2,3}x\d{2,3})/i.test(big) ? big : null, description };
 }
 
 // The publisher's own logo: apple-touch-icon / icon from their homepage (largest), else /favicon.ico.
@@ -223,7 +243,8 @@ async function fetchLogo(site) {
   candidates = [...candidates.filter((c) => c.size >= 48 && c.size <= 512), ...candidates, { u: home + 'favicon.ico', size: 16 }];
   for (const c of candidates) {
     try {
-      const r = await fetch(c.u, { headers: { 'user-agent': UA_BROWSER, accept: 'image/*' }, redirect: 'follow', signal: AbortSignal.timeout(6000) });
+      await assertPublic(c.u);
+      const r = await fetch(c.u, { headers: { 'user-agent': UA_BROWSER, accept: 'image/*' }, redirect: 'error', signal: AbortSignal.timeout(6000) });
       const type = (r.headers.get('content-type') || '').split(';')[0];
       if (!r.ok || !/^image\/(png|jpeg|x-icon|vnd\.microsoft\.icon|webp|gif)$/.test(type)) continue;
       const buf = Buffer.from(await r.arrayBuffer());

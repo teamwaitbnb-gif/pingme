@@ -29,6 +29,13 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
 
   async function store(src, items) {
     let n = 0;
+    // A site-wide default picture used on several stories is not the story's photo.
+    const seen = new Map();
+    for (const it of items) if (it.image) seen.set(it.image, (seen.get(it.image) || 0) + 1);
+    for (const it of items) {
+      if (it.image && seen.get(it.image) >= 3) it.image = null;
+      if (it.image) it.image = N.upgradeImage(it.image);
+    }
     for (const it of items) {
       const url = N.canonical(it.url);
       if (!url) continue;
@@ -89,19 +96,36 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
 
   // Missing image / summary: read the article page's own Open Graph tags (publisher's site only).
   async function enrichSome() {
-    const rows = await db.q(`SELECT id, source_id, url FROM feed_items WHERE enriched=0 AND (summary IS NULL OR image_url IS NULL)
-      AND fetched_at > ? ORDER BY fetched_at DESC LIMIT 12`, [new Date(Date.now() - 36 * 3600e3)]);
+    // Every new story is checked once: missing summary, or a missing / small / placeholder image is
+    // replaced with the article's own share image (usually 1200px) — so every photo is HD.
+    // Stories people are about to see (the top of each city's feed) come first.
+    const top = [...new Set([...cache.values()].flatMap((c) => c.list.slice(0, 72).map((x) => x.row.id)))];
+    const pri = top.length ? await db.q('SELECT id, source_id, url, image_url, summary FROM feed_items WHERE enriched=0 AND id IN (?)', [top]) : [];
+    const rest = await db.q(`SELECT id, source_id, url, image_url, summary FROM feed_items WHERE enriched=0 AND fetched_at > ?
+      ORDER BY COALESCE(published_at, fetched_at) DESC LIMIT 40`, [new Date(Date.now() - 36 * 3600e3)]);
+    const rows = [...pri, ...rest.filter((r) => !pri.some((p) => p.id === r.id))].filter((r) => !r.summary || N.lowRes(r.image_url));
+    const skip = await db.q(`SELECT id FROM feed_items WHERE enriched=0 AND fetched_at > ? AND summary IS NOT NULL AND image_url IS NOT NULL LIMIT 200`, [new Date(Date.now() - 36 * 3600e3)]);
+    const fine = skip.filter((r) => !rows.some((x) => x.id === r.id)).map((r) => r.id);
     let i = 0;
-    await Promise.all(Array.from({ length: 3 }, async () => {
-      while (i < rows.length) {
+    await Promise.all(Array.from({ length: 6 }, async () => {
+      while (i < Math.min(rows.length, 24)) {
         const r = rows[i++];
         const src = byId(r.source_id);
         let got = null;
-        if (src && !src.aggregator) { try { got = await enrich(r.url, src.site); } catch {} }
-        await db.q('UPDATE feed_items SET enriched=1, image_url=COALESCE(image_url, ?), summary=COALESCE(summary, ?) WHERE id=?', [got?.image || null, got?.description || null, r.id]);
+        // Google News links are redirects we can't follow; Trends links go straight to the article.
+        if (src && (!src.aggregator || src.trends)) { try { got = await enrich(r.url, src.site, { anySite: !!src.trends }); } catch {} }
+        // Better image found → use it. Otherwise keep a small real photo, but drop icons/placeholders.
+        const junk = /(android-chrome|apple-touch|favicon|site-?icon|logo|placeholder|default|og-image|cropped-)/i.test(r.image_url || '');
+        const img = got?.image && (N.lowRes(r.image_url) || !r.image_url) ? got.image : (junk || (N.lowRes(r.image_url) && !/^https:/.test(r.image_url || '')) ? null : r.image_url);
+        await db.q('UPDATE feed_items SET enriched=1, image_url=?, summary=COALESCE(summary, ?) WHERE id=?', [img || null, got?.description || null, r.id]);
         if (got?.image || got?.description) dirty = true;
       }
     }));
+    // Stories that already had a large image and a summary need no visit.
+    for (let k = 0; k < fine.length; k += 100) {
+      const chunk = (await db.q('SELECT id, image_url FROM feed_items WHERE id IN (?)', [fine.slice(k, k + 100)])).filter((r) => !N.lowRes(r.image_url)).map((r) => r.id);
+      if (chunk.length) await db.q('UPDATE feed_items SET enriched=1 WHERE id IN (?)', [chunk]);
+    }
   }
 
   // Publisher logos (one per website), refreshed weekly, stored in the database.
