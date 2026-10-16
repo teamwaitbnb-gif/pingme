@@ -228,7 +228,7 @@ function startApp() {
     chat: (id) => S.chats.get(id),
     chatTitle, chatAvatar, userAvatar,
   });
-  loadChats().then(() => { handleUrl(); loadSafety(); checkRecovery(); if (S.me.settings?.onboarded) askNotificationsOnce(); setTimeout(warmNotificationFaces, 4000); });
+  loadChats().then(() => { handleUrl(); loadSafety(); checkRecovery(); if (S.me.settings?.onboarded) askNotificationsOnce(); setTimeout(warmNotificationFaces, 4000); S.calls?.checkRinging(); });
   setupPush(false);
   history.replaceState({ root: true }, '');
   if (globalsBound) return;
@@ -237,9 +237,14 @@ function startApp() {
     if (e.data?.type === 'open' && S.me) handleUrl(new URL(e.data.url, location.origin));
   });
   addEventListener('popstate', onPopState);
-  let pushChecked = 0;
+  let pushChecked = 0, hiddenAt = 0;
   document.addEventListener('visibilitychange', () => {
-    if (document.hidden || !S.me) return;
+    if (document.hidden) { hiddenAt = Date.now(); return; }
+    if (!S.me) return;
+    // Back from the background: a frozen app's socket may be dead without knowing it — reconnect now
+    // (never mid-call) and ask directly whether someone is calling.
+    if (hiddenAt && Date.now() - hiddenAt > 10000 && S.socket && !S.calls?.active()) { S.socket.disconnect(); S.socket.connect(); }
+    S.calls?.checkRinging();
     markRead(); updateBadge(); clearChatNotifications(S.current);
     // Keep this phone's push subscription fresh (phones sometimes drop it) and pick up a permission
     // the person just turned on in system settings.
@@ -268,6 +273,8 @@ async function handleUrl(url = new URL(location.href)) {
   const p = url.searchParams;
   const add = p.get('add');
   const chat = Number(p.get('chat'));
+  // Opened from a call notification: show (or answer) the call right away.
+  if (p.get('call')) S.calls?.checkRinging({ autoAnswer: p.get('answer') === '1' });
   if (p.get('recovery') || p.get('recoveryAlert')) openRecoveryRequests();
   if (p.get('new')) openNewMessage();
   if (p.get('search')) setTimeout(() => els.search?.focus(), 300);

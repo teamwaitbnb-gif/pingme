@@ -1,5 +1,5 @@
 // Ping Me service worker: app-shell caching + app-style notifications.
-const VERSION = 'pm-v16';
+const VERSION = 'pm-v17';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/manifest.webmanifest',
   '/js/video-recorder.js', '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',
@@ -259,6 +259,7 @@ self.addEventListener('notificationclick', (e) => {
     if (e.action === 'read' && d.chatId) { await apiPost(`/api/chats/${d.chatId}/read`); return updateBadge(); }
     if (e.action === 'decline' && d.callId) return apiPost(`/api/calls/${d.callId}/decline`);
     if (e.action === 'reply' && d.chatId) return openApp(`/?chat=${d.chatId}&reply=1`);
+    if (e.action === 'answer' && d.callId) return openApp(`${d.url || '/'}${(d.url || '/').includes('?') ? '&' : '?'}answer=1`);
     await openApp(d.url || '/');
     await updateBadge();
   })());

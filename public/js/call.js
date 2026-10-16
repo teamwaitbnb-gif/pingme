@@ -1210,8 +1210,23 @@ export function initCalls(ctx) {
     if (call?.lostAt) { toast('Call ended — the connection dropped', { error: true }); cleanup(); }
   });
 
+  // Ask the server directly whether someone is calling me (app just opened / woke up).
+  // autoAnswer: the person tapped "Answer" on the notification.
+  let checking = null;
+  function checkRinging({ autoAnswer = false } = {}) {
+    if (checking) return checking;
+    checking = api('GET', '/api/calls/ringing').then(({ calls }) => {
+      const inv = calls?.[0];
+      if (!inv) return;
+      if (incoming?.invite.callId !== inv.callId) showIncoming(inv);
+      if (autoAnswer && incoming?.invite.callId === inv.callId && !call) accept(inv.video);
+    }).catch(() => {}).finally(() => { checking = null; });
+    return checking;
+  }
+
   return {
     start,
+    checkRinging,
     active: () => call,
     restore,
     hangup,

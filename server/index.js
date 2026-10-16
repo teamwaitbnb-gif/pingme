@@ -1344,6 +1344,14 @@ app.post('/api/chats/:id/read', auth, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+// Calls ringing for me right now. Asked over plain HTTP when the app opens or wakes up, because the
+// old socket of a frozen app can look alive to the server for ~30s and swallow the invite.
+app.get('/api/calls/ringing', auth, wrap(async (req, res) => {
+  const list = [];
+  for (const call of calls.values()) if (call.ringing.has(req.uid)) list.push(callInvite(call));
+  res.json({ calls: list });
+}));
+
 app.post('/api/calls/:id/decline', auth, wrap(async (req, res) => {
   await declineCall(req.uid, { callId: req.params.id });
   res.json({ ok: true });
