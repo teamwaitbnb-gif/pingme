@@ -1202,6 +1202,17 @@ async function iceServers() {
 }
 const hasRelay = (ice) => ice.some((s) => [].concat(s.urls).some((u) => /^turns?:/.test(u)));
 
+// Check the relay at startup so the logs say plainly whether calls on mobile data will work.
+if (process.env.CF_TURN_KEY_ID && process.env.CF_TURN_API_TOKEN) {
+  if (/PASTE_/i.test(process.env.CF_TURN_KEY_ID + process.env.CF_TURN_API_TOKEN)) {
+    console.error('TURN relay: NOT SET UP — CF_TURN_KEY_ID / CF_TURN_API_TOKEN still contain the PASTE_ placeholders. Put your real Cloudflare keys in .env.');
+  } else {
+    cloudflareIce().then((l) => console.log(hasRelay(l) ? 'TURN relay: OK (Cloudflare)' : 'TURN relay: FAILED — Cloudflare rejected the keys (check CF_TURN_KEY_ID / CF_TURN_API_TOKEN)'));
+  }
+} else if (!process.env.TURN_URLS) {
+  console.warn('TURN relay: not configured — calls between phones on mobile data may connect without audio/video.');
+}
+
 app.get('/api/ice', auth, wrap(async (req, res) => {
   const ice = await iceServers();
   res.json({ iceServers: ice, relay: hasRelay(ice) });
@@ -1212,7 +1223,7 @@ app.get('/api/config', (req, res) => {
   res.json({
     instance: INSTANCE_ID,
     iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }],
-    relay: !!(process.env.TURN_URLS || (process.env.CF_TURN_KEY_ID && process.env.CF_TURN_API_TOKEN)),
+    relay: !!process.env.TURN_URLS || !!(cfIce.list && hasRelay(cfIce.list)), // true only once Cloudflare accepted the keys
     vapidPublicKey: push.enabled ? process.env.VAPID_PUBLIC_KEY : null,
     maxUpload: MAX_UPLOAD,
     googleClientId: oauth.enabled('google') ? process.env.GOOGLE_CLIENT_ID.split(',')[0].trim() : null,
