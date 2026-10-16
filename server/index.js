@@ -444,6 +444,10 @@ async function buildBody(chatId, senderId, input) {
       h: toInt(extra.h) || meta.h || undefined,
       dur: Number(extra.dur) > 0 ? Math.round(Number(extra.dur) * 10) / 10 : meta.dur || undefined,
       wave: Array.isArray(extra.wave) ? extra.wave.slice(0, 64).map((x) => Math.max(0, Math.min(1, Number(x) || 0))) : undefined,
+      // Video edits from the Ping Me camera: played as instructions, the file itself is untouched.
+      trim: Array.isArray(extra.trim) && extra.trim.length === 2 && extra.trim.every((x) => Number.isFinite(Number(x)) && Number(x) >= 0) && Number(extra.trim[1]) > Number(extra.trim[0])
+        ? [Math.round(Number(extra.trim[0]) * 100) / 100, Math.round(Number(extra.trim[1]) * 100) / 100] : undefined,
+      muted: extra.muted === true ? true : undefined,
     };
   } else if (kind === 'location') {
     const lat = Number(input.loc?.lat), lng = Number(input.loc?.lng);

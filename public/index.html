@@ -46,6 +46,12 @@
   <link rel="apple-touch-startup-image" href="/icons/splash/1640x2360-dark.png" media="(prefers-color-scheme: dark) and (device-width: 820px) and (device-height: 1180px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)">
   <link rel="apple-touch-startup-image" href="/icons/splash/1620x2160-dark.png" media="(prefers-color-scheme: light) and (device-width: 810px) and (device-height: 1080px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)">
   <link rel="apple-touch-startup-image" href="/icons/splash/1620x2160-dark.png" media="(prefers-color-scheme: dark) and (device-width: 810px) and (device-height: 1080px) and (-webkit-device-pixel-ratio: 2) and (orientation: portrait)">
+  <meta name="color-scheme" content="dark light">
+  <!-- Painted before anything else loads, so a slow network never shows a white page. -->
+  <style>html,body{background:#000;margin:0;height:100%}html[data-theme="light"],html[data-theme="light"] body{background:#fff}
+    .boot{position:fixed;inset:0;display:grid;place-items:center}.boot img{filter:invert(1);opacity:.9}html[data-theme="light"] .boot img{filter:none}
+    .boot-stuck{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#000;color:#fff;font:16px -apple-system,Roboto,sans-serif;text-align:center;padding:24px;z-index:999}
+    .boot-stuck button{padding:12px 26px;border-radius:999px;border:0;background:#fff;color:#000;font-weight:600;font-size:16px}</style>
   <link rel="stylesheet" href="/css/app.css">
   <script>
     // Apply the saved theme before first paint (dark by default) so there's no white flash.
@@ -65,5 +71,27 @@
   <div id="toasts" aria-live="polite"></div>
   <script src="/socket.io/socket.io.js"></script>
   <script type="module" src="/js/app.js"></script>
+  <script>
+    // Watchdog: if start-up gets stuck (very slow network, or a half-updated cache after a release),
+    // reload once by itself; if it's still stuck, offer a reload button — never a blank screen.
+    (function () {
+      function stuck() {
+        if (window.__pmBooted) return;
+        var tried = false; try { tried = sessionStorage.getItem('pm:boot-retry') === '1'; } catch (e) {}
+        if (!tried) { try { sessionStorage.setItem('pm:boot-retry', '1'); } catch (e) {} return location.reload(); }
+        if (document.querySelector('.boot-stuck')) return;
+        var d = document.createElement('div'); d.className = 'boot-stuck';
+        d.innerHTML = '<img src="/icons/icon-192.png" width="72" height="72" style="border-radius:16px" alt=""><b>Ping Me is taking longer than usual</b><span style="opacity:.7">Check your connection, then tap reload.</span><button>Reload</button>';
+        d.querySelector('button').onclick = function () {
+          try { sessionStorage.removeItem('pm:boot-retry'); } catch (e) {}
+          if (navigator.serviceWorker) navigator.serviceWorker.getRegistrations().then(function (r) { r.forEach(function (x) { x.update(); }); }).finally(function () { location.reload(); });
+          else location.reload();
+        };
+        document.body.appendChild(d);
+      }
+      setTimeout(stuck, 12000);
+      addEventListener('error', function (e) { if (e.target && (e.target.tagName === 'SCRIPT' || e.target.tagName === 'LINK')) setTimeout(stuck, 1500); }, true);
+    })();
+  </script>
 </body>
 </html>

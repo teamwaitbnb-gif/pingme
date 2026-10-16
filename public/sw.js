@@ -1,8 +1,8 @@
 // Ping Me service worker: app-shell caching + app-style notifications.
-const VERSION = 'pm-v19';
+const VERSION = 'pm-v21';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/manifest.webmanifest',
-  '/js/video-recorder.js', '/js/camera.js', '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',
+  '/js/video-recorder.js', '/js/camera.js', '/js/editor.js', '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',
   '/js/onboarding.js', '/js/lock.js', '/js/keys.js', '/js/secure.js', '/js/smart.js', '/js/stories.js', '/js/perm.js', '/js/install.js', '/js/qr.js',
   '/icons/icon.svg', '/icons/logo.svg', '/icons/logo-h.svg', '/icons/hand.svg', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png', '/icons/badge-96.png',
   '/sounds/message.mp3', '/sounds/tick.wav', '/sounds/sent.wav', '/sounds/ringtone.wav', '/sounds/ringback.wav', '/sounds/join.wav', '/sounds/end.wav', '/sounds/ping.wav',
@@ -25,23 +25,26 @@ self.addEventListener('fetch', (e) => {
   // Never cache API / realtime traffic (private, and must be fresh).
   if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io/')) return;
 
-  if (e.request.mode === 'navigate') {
-    e.respondWith(fetch(e.request).then((r) => {
-      if (r.ok && url.pathname === '/') { const copy = r.clone(); caches.open(VERSION).then((c) => c.put('/index.html', copy)); }
+  // Fresh from the network when it answers quickly; otherwise the saved copy right away. A slow or
+  // stalled mobile connection used to leave the app on a blank white screen until it timed out.
+  const navigate = e.request.mode === 'navigate';
+  e.respondWith((async () => {
+    const cache = await caches.open(VERSION);
+    const cacheKey = navigate ? '/index.html' : e.request;
+    const network = fetch(e.request).then((r) => {
+      if (r.ok && (!navigate || url.pathname === '/')) cache.put(cacheKey, r.clone()).catch(() => {});
       return r;
-    }).catch(() => caches.match('/index.html')));
-    return;
-  }
-  // Network-first so updates show immediately; the cache is the offline fallback.
-  e.respondWith(caches.open(VERSION).then(async (c) => {
+    });
+    const saved = await cache.match(cacheKey);
+    if (!saved) return network.catch(() => Response.error());
+    const slow = new Promise((res) => setTimeout(() => res(null), navigate ? 3000 : 2500));
     try {
-      const r = await fetch(e.request);
-      if (r.ok) c.put(e.request, r.clone());
-      return r;
-    } catch {
-      return (await c.match(e.request)) || Response.error();
-    }
-  }));
+      const r = await Promise.race([network, slow]);
+      if (r && r.ok) return r;
+    } catch {}
+    e.waitUntil(network.catch(() => {})); // keep updating the saved copy in the background
+    return saved;
+  })());
 });
 
 // ───── notifications ─────

@@ -56,7 +56,11 @@ document.addEventListener('touchmove', (e) => {
 async function boot() {
   applyPrefs();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js').catch(() => {});
-  try { S.config = await api('GET', '/api/config'); } catch {}
+  // The app is running: tell the start-up watchdog in index.html (and forget an earlier retry).
+  window.__pmBooted = true;
+  try { sessionStorage.removeItem('pm:boot-retry'); } catch {}
+  // Don't let a stalled network hold up start-up: give the config 5s, then carry on with defaults.
+  try { S.config = { ...S.config, ...(await Promise.race([api('GET', '/api/config'), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))])) }; } catch {}
   setSignedInHandler(startApp);
   // Results of a Google/Apple redirect sign-in come back in the URL.
   const params = new URLSearchParams(location.search);
@@ -1309,9 +1313,11 @@ function mediaBox(m) {
     }
   }
   else {
-    const v = h('video', { src: src + (src.startsWith('blob:') ? '' : '#t=0.1'), preload: 'metadata', muted: true, playsinline: true });
+    const trim = Array.isArray(m.att?.trim) ? m.att.trim : null;
+    const v = h('video', { src: src + (src.startsWith('blob:') ? '' : `#t=${trim ? trim[0] : 0.1}`), preload: 'metadata', muted: true, playsinline: true });
     v.muted = true;
-    box.append(v, h('div', { class: 'play' }, h('span', null, icon('play', 'fill'))), m.att?.dur ? h('span', { class: 'dur' }, fmtDur(m.att.dur)) : null);
+    const shown = trim ? trim[1] - trim[0] : m.att?.dur;
+    box.append(v, h('div', { class: 'play' }, h('span', null, icon('play', 'fill'))), shown ? h('span', { class: 'dur' }, fmtDur(shown)) : null);
   }
   if (m.pending) box.append(h('div', { class: 'progress' }, m.failed ? 'Failed' : `${Math.round((m.progress || 0) * 100)}%`));
   else box.addEventListener('click', (e) => { e.stopPropagation(); if (m.effect === 'ink' && !m._revealed) return; openViewer(m); });
@@ -1753,7 +1759,10 @@ export async function send(opts = {}) {
   }
   for (let i = 0; i < tray.length; i++) {
     const caption = i === 0 ? text : '';
-    sendFile(chatId, tray[i].file, { ...base, secure: false, text: caption, replyTo: i === 0 ? replyTo : null }, tray[i].url);
+    const f = tray[i].file;
+    // Camera "View once" switch sends this photo/video as a vanish-after-viewing message.
+    const vanish = base.vanish || (f.pmViewOnce && feature('vanishAfterRead'));
+    sendFile(chatId, f, { ...base, vanish, secure: false, text: caption, replyTo: i === 0 ? replyTo : null }, tray[i].url);
   }
 }
 
@@ -1785,7 +1794,7 @@ async function sendFile(chatId, file, base, localUrl) {
   if (!base.sendAt && st) { st.list.push(pending); if (S.current === chatId) { renderMessages(); scrollToBottom(true); } }
   let blob = file, media = {};
   try {
-    if (kind === 'image' && !store.get('sendHD', true)) {
+    if (kind === 'image' && (file.pmSD || (file.pmSD === undefined && !store.get('sendHD', true)))) {
       const r = await compressImage(file);
       blob = r.blob; media = { w: r.w, h: r.h };
       pending.att.w = r.w; pending.att.h = r.h;
@@ -1795,6 +1804,9 @@ async function sendFile(chatId, file, base, localUrl) {
       if (bmp) { media = { w: bmp.width, h: bmp.height }; pending.att.w = bmp.width; pending.att.h = bmp.height; bmp.close?.(); }
     } else if (kind === 'video') {
       media = await videoMeta(file);
+      // Camera edits: trim/mute are playback instructions — the original video is sent untouched.
+      if (file.pmMeta?.trim) media.trim = file.pmMeta.trim;
+      if (file.pmMeta?.muted) media.muted = true;
       Object.assign(pending.att, media);
     }
     let lastRender = 0;

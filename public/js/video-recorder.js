@@ -14,9 +14,9 @@ export function recordingOptions(track) {
 }
 
 export class VideoRecorder {
-  async open(facing = 'environment') {
+  async open(facing = 'environment', { hd = true } = {}) {
     const stream = await navigator.mediaDevices.getUserMedia({
-      video: { facingMode: { ideal: facing }, width: { ideal: 3840 }, height: { ideal: 2160 }, frameRate: { ideal: 30, max: 30 }, resizeMode: { ideal: 'none' } },
+      video: { facingMode: { ideal: facing }, width: { ideal: hd ? 3840 : 1280 }, height: { ideal: hd ? 2160 : 720 }, frameRate: { ideal: 30, max: 30 }, resizeMode: { ideal: 'none' } },
       audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, sampleRate: { ideal: 48000 }, channelCount: { ideal: 2 } },
     });
     if (this.closed) { stream.getTracks().forEach((t) => t.stop()); return null; }

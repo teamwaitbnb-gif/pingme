@@ -2,7 +2,8 @@
 // video. Uses the camera at its highest resolution; photos come from the camera's still-photo mode
 // where the browser offers it (full sensor resolution), videos are recorded at a high bitrate and
 // sent exactly as recorded — nothing is compressed afterwards.
-import { h, icon, toast, registerLayer, fmtDur } from './ui.js';
+import { h, icon, toast, registerLayer, fmtDur, store } from './ui.js';
+import { editPhoto, editVideo } from './editor.js';
 import { ensurePermission } from './perm.js';
 import { VideoRecorder } from './video-recorder.js';
 
@@ -12,12 +13,19 @@ export async function openCamera({ maxBytes, onSend, onGallery }) {
   if (!(await ensurePermission(['camera', 'microphone'], 'To take photos and record videos with sound.'))) return;
   let recorder = null, stream = null, facing = 'environment', torch = false, closed = false;
   let mode = 'photo', recording = false, holdTimer = null, tick = null, startedAt = 0, zoom = null;
+  let hd = store.get('camHD', true); // HD: highest resolution + original quality; off: smaller, faster to send
 
   const video = h('video', { class: 'cam-view', autoplay: true, playsinline: true, muted: true });
   video.muted = true;
   const timer = h('div', { class: 'cam-timer', hidden: true });
   const res = h('div', { class: 'cam-res' });
   const flashBtn = h('button', { class: 'cam-icon', 'aria-label': 'Flash', hidden: true, onclick: toggleTorch }, icon('zap'));
+  const hdBtn = h('button', { class: 'cam-hd' + (hd ? ' on' : ''), 'aria-label': 'HD quality', onclick: async () => {
+    if (recording) return;
+    hd = !hd; store.set('camHD', hd); hdBtn.classList.toggle('on', hd);
+    toast(hd ? 'HD on — highest quality' : 'HD off — smaller files, faster to send', { timeout: 1800 });
+    await start();
+  } }, 'HD');
   const shutter = h('button', { class: 'cam-shutter', 'aria-label': 'Take photo, hold for video' }, h('span'));
   const hint = h('div', { class: 'cam-hint' }, 'Tap for photo, hold for video');
   const modes = h('div', { class: 'cam-modes' },
@@ -27,7 +35,7 @@ export async function openCamera({ maxBytes, onSend, onGallery }) {
     video,
     h('div', { class: 'cam-top' },
       h('button', { class: 'cam-icon', 'aria-label': 'Close', onclick: () => close() }, icon('x')),
-      timer, res, flashBtn),
+      timer, res, hdBtn, flashBtn),
     h('div', { class: 'cam-bottom' }, hint, modes,
       h('div', { class: 'cam-row' },
         h('button', { class: 'cam-icon big', 'aria-label': 'Choose from gallery', onclick: () => { close(); onGallery?.(); } }, icon('image')),
@@ -50,7 +58,7 @@ export async function openCamera({ maxBytes, onSend, onGallery }) {
     recorder?.cancel();
     recorder = new VideoRecorder();
     try {
-      stream = await recorder.open(facing);
+      stream = await recorder.open(facing, { hd });
       if (!stream || closed) return;
       video.srcObject = stream;
       video.classList.toggle('mirror', facing === 'user');
@@ -179,29 +187,56 @@ export async function openCamera({ maxBytes, onSend, onGallery }) {
     root.classList.remove('recording', 'held');
   }
 
-  // Review before sending (like WhatsApp): Retake or Send.
-  function preview(file) {
+  // Review before sending (like WhatsApp): edit, HD, view once, then Send — or Retake.
+  function preview(captured) {
     resetRecording();
     stream?.getTracks().forEach((t) => t.stop());
-    const url = URL.createObjectURL(file);
-    const isVideo = file.type.startsWith('video/');
-    const media = isVideo
-      ? h('video', { class: 'cam-review', src: url, autoplay: true, playsinline: true, loop: true, onclick: (e) => { const v = e.currentTarget; if (v.paused) v.play(); else v.pause(); } })
-      : h('img', { class: 'cam-review', src: url, alt: '' });
+    const isVideo = captured.type.startsWith('video/');
+    const st = { file: captured, viewOnce: false, hd, trim: null, muted: false };
+    let url = null;
+    const holder = h('div', { class: 'cam-review-wrap' });
     const info = h('div', { class: 'cam-res' });
-    const showSize = (w, hh) => { info.textContent = `${w}×${hh} · ${(file.size / 1048576).toFixed(1)} MB · original quality`; };
-    if (isVideo) media.addEventListener('loadedmetadata', () => showSize(media.videoWidth, media.videoHeight));
-    else media.addEventListener('load', () => showSize(media.naturalWidth, media.naturalHeight));
+    const show = () => {
+      if (url) URL.revokeObjectURL(url);
+      url = URL.createObjectURL(st.file);
+      const media = isVideo
+        ? h('video', { class: 'cam-review', src: url, autoplay: true, playsinline: true, loop: true, onclick: (e) => { const v = e.currentTarget; if (v.paused) v.play(); else v.pause(); } })
+        : h('img', { class: 'cam-review', src: url, alt: '' });
+      if (isVideo) {
+        media.muted = st.muted;
+        media.addEventListener('loadedmetadata', () => { info.textContent = `${media.videoWidth}×${media.videoHeight} · ${(st.file.size / 1048576).toFixed(1)} MB`; if (st.trim) media.currentTime = st.trim[0]; });
+        media.addEventListener('timeupdate', () => { if (st.trim && media.currentTime >= st.trim[1]) media.currentTime = st.trim[0]; });
+      } else media.addEventListener('load', () => { info.textContent = `${media.naturalWidth}×${media.naturalHeight} · ${(st.file.size / 1048576).toFixed(1)} MB`; });
+      holder.replaceChildren(media);
+    };
+    const tool = (ic, label, fn) => h('button', { class: 'cam-tool', onclick: fn }, icon(ic), h('span', null, label));
+    const photoEdit = async (t) => { const f = await editPhoto(st.file, t); if (f && f !== st.file) { st.file = f; show(); } };
+    const muteBtn = tool('vol', 'Sound', () => { st.muted = !st.muted; muteBtn.replaceChildren(icon(st.muted ? 'mute' : 'vol'), h('span', null, st.muted ? 'Muted' : 'Sound')); muteBtn.classList.toggle('on', st.muted); const v = holder.querySelector('video'); if (v) v.muted = st.muted; });
+    const tools = isVideo
+      ? [tool('crop', 'Trim', async () => { const r = await editVideo(st.file, st); if (r) { st.trim = r.trim; st.muted = r.muted; show(); muteBtn.classList.toggle('on', st.muted); } }), muteBtn]
+      : [tool('crop', 'Crop', () => photoEdit('crop')), tool('edit', 'Draw', () => photoEdit('draw')), tool('text', 'Text', () => photoEdit('text')), tool('sparkle', 'Filters', () => photoEdit('filter'))];
+    const hdChip = h('button', { class: 'cam-hd' + (st.hd ? ' on' : ''), 'aria-label': 'HD', disabled: isVideo, title: isVideo ? 'Recorded in ' + (st.hd ? 'HD' : 'standard quality') : 'Send in HD (original quality)', onclick: () => { st.hd = !st.hd; hdChip.classList.toggle('on', st.hd); toast(st.hd ? 'Sending in HD — original quality' : 'Sending a smaller photo', { timeout: 1600 }); } }, 'HD');
+    const onceBtn = h('button', { class: 'cam-once', 'aria-label': 'View once', title: 'View once', onclick: () => { st.viewOnce = !st.viewOnce; onceBtn.classList.toggle('on', st.viewOnce); toast(st.viewOnce ? 'View once: they can open it one time' : 'View once off', { timeout: 1600 }); } }, '1');
     const review = h('div', { class: 'cam cam-reviewing' },
-      media,
+      holder,
       h('div', { class: 'cam-top' },
         h('button', { class: 'cam-icon', 'aria-label': 'Retake', onclick: () => retake() }, icon('x')), info),
+      h('div', { class: 'cam-tools' }, tools),
       h('div', { class: 'cam-bottom' },
         h('div', { class: 'cam-row end' },
-          h('button', { class: 'cam-retake', onclick: () => retake() }, 'Retake'),
-          h('button', { class: 'cam-send', 'aria-label': 'Send', onclick: () => { URL.revokeObjectURL(url); review.remove(); close(); onSend(file); } }, icon('send')))));
+          h('div', { class: 'cam-left' }, h('button', { class: 'cam-retake', onclick: () => retake() }, 'Retake'), hdChip, onceBtn),
+          h('button', { class: 'cam-send', 'aria-label': 'Send', onclick: () => {
+            if (url) URL.revokeObjectURL(url);
+            review.remove(); close();
+            const f = st.file;
+            f.pmMeta = isVideo ? { trim: st.trim, muted: st.muted } : null;
+            f.pmSD = !isVideo && !st.hd;
+            f.pmViewOnce = st.viewOnce;
+            onSend(f);
+          } }, icon('send')))));
+    show();
     root.append(review);
-    function retake() { URL.revokeObjectURL(url); review.remove(); start(); }
+    function retake() { if (url) URL.revokeObjectURL(url); review.remove(); start(); }
   }
 
   await start();
