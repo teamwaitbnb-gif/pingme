@@ -22,17 +22,17 @@ function text(v) {
 const BOILER = [/The post .{0,200} appeared first on .{0,120}\.?$/i, /Continue reading\.{0,3}$/i, /Read more\.{0,3}$/i, /\[(…|\.\.\.)\]$/, /Comments$/, /…\s*$/];
 
 // A readable summary: 2–3 complete sentences from the publisher's own description (≈ 200–380 chars).
-function summarize(desc, title) {
+function summarize(desc, title, max = 380) {
   let s = text(desc);
   for (const re of BOILER) s = s.replace(re, '').trim();
   if (!s || s.length < 25) return null;
   const t = text(title).toLowerCase();
   if (t && s.toLowerCase().startsWith(t) && s.length - t.length < 25) return null; // just repeats the headline
-  if (s.length <= 380) return s;
+  if (s.length <= max) return s;
   const sentences = s.match(/[^.!?।]+[.!?।]+["’”)]?\s*/g) || [s];
   let out = '';
-  for (const x of sentences) { if ((out + x).length > 380 && out.length >= 140) break; out += x; }
-  if (out.length < 80) out = s.slice(0, 360).replace(/\s+\S*$/, '') + '…';
+  for (const x of sentences) { if ((out + x).length > max && out.length >= 140) break; out += x; }
+  if (out.length < 80) out = s.slice(0, max - 20).replace(/\s+\S*$/, '') + '…';
   return out.trim();
 }
 
@@ -81,4 +81,46 @@ function lowRes(u) {
   return !!m && Number(m[1]) < 700;
 }
 
-module.exports = { text, summarize, canonical, httpUrl, idFor, date, decode, upgradeImage, lowRes };
+// The article's own opening paragraphs (a fuller summary than most feeds give): first real paragraphs
+// of the story body, skipping bylines, "also read", subscription prompts and ads.
+const BOILERPLATE = /(subscribe|sign up|sign in|log in|download the app|follow us|click here|also read|read more|read also|advertisement|©|copyright|all rights reserved|cookie|newsletter|whatsapp channel|join our|for more updates|updated on|published on|trending now|watch:|recommended|catch all the|first published|disclaimer|subscription|premium stories|unlock these)/i;
+function leadParagraphs(html, title, max = 560) {
+  let body = String(html);
+  const art = /<article[\s\S]*?<\/article>/i.exec(body);
+  if (art && art[0].length > 800) body = art[0];
+  body = body.replace(/<(script|style|nav|aside|footer|header|figure|figcaption|form|noscript|button)[\s\S]*?<\/\1>/gi, ' ');
+  const paras = [];
+  const re = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+  let m;
+  while ((m = re.exec(body)) && paras.length < 12) {
+    const t = text(m[1]);
+    if (t.length < 70 || BOILERPLATE.test(t) || /^[^a-z]*$/.test(t) || t.split(' ').length < 12) continue;
+    // Skip a paragraph that mostly repeats one already taken (standfirst + first paragraph).
+    const words = new Set(t.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) || []);
+    if (paras.some((p) => { const w = new Set(p.toLowerCase().match(/[\p{L}\p{N}]{4,}/gu) || []); let n = 0; for (const x of words) if (w.has(x)) n++; return n / Math.max(1, Math.min(words.size, w.size)) > 0.55; })) continue;
+    paras.push(t);
+    if (paras.join(' ').length > max * 1.4) break;
+  }
+  if (!paras.length) return null;
+  return summarize(paras.join(' '), title, max);
+}
+
+// The story body as plain text (for the AI description): the article's real paragraphs, in order.
+function articleText(html, max = 4000) {
+  let body = String(html);
+  const art = /<article[\s\S]*?<\/article>/i.exec(body);
+  if (art && art[0].length > 800) body = art[0];
+  body = body.replace(/<(script|style|nav|aside|footer|header|figure|figcaption|form|noscript|button)[\s\S]*?<\/\1>/gi, ' ');
+  const out = [];
+  let len = 0;
+  const re = /<p[^>]*>([\s\S]*?)<\/p>/gi;
+  let m;
+  while ((m = re.exec(body)) && len < max) {
+    const t = text(m[1]);
+    if (t.length < 50 || BOILERPLATE.test(t) || t.split(' ').length < 9 || out.includes(t)) continue;
+    out.push(t); len += t.length + 1;
+  }
+  return out.join('\n').slice(0, max) || null;
+}
+
+module.exports = { text, summarize, canonical, httpUrl, idFor, date, decode, upgradeImage, lowRes, leadParagraphs, articleText };

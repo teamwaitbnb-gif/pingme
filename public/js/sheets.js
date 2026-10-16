@@ -98,6 +98,7 @@ export function openSettings() {
       h('div', { class: 'group-label' }, 'Privacy'),
       h('div', { class: 'group' },
         cell({ icon: 'check', color: '#0a84ff', label: 'Send read receipts', right: toggle(me.settings.readReceipts, (v) => setPriv('readReceipts', v)) }),
+        cell({ icon: 'fire', color: '#ff9f0a', label: 'Personalise Buzz from my chats', sub: 'Topic keywords only — never your messages. Off forgets them.', right: toggle(!!me.settings.buzzFromChats, (v) => setPriv('buzzFromChats', v)) }),
         cell({ icon: 'dots', color: '#5856d6', label: 'Show typing indicator', right: toggle(me.settings.typing, (v) => setPriv('typing', v)) }),
         cell({ icon: 'clock', color: '#34c759', label: 'Show online & last seen', right: toggle(me.settings.lastSeen, (v) => setPriv('lastSeen', v)) }),
         cell({ icon: 'ban', color: '#ff3b30', label: 'Blocked contacts', chevron: true, onClick: openBlocked })),

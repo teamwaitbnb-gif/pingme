@@ -550,6 +550,11 @@ async function insertMessage({ chatId, senderId, kind, body, replyTo = null, att
   }
 
   if (kind !== 'system') notifyMembers(chatId, senderId, msg, members).catch(() => {});
+  // Buzz personalisation from chats (only if the sender turned it on): topic keywords from their own
+  // text messages — never private/eyes-only/ink messages, and the message itself isn't stored there.
+  if (kind === 'text' && body.text && !body.secure && !body.eyes && effect !== 'ink') {
+    getUser(senderId).then((u) => { if (u?.settings?.buzzFromChats) buzz.learnFromChat(senderId, body.text); }).catch(() => {});
+  }
   return msg;
 }
 
@@ -1027,7 +1032,11 @@ app.patch('/api/me', auth, wrap(async (req, res) => {
     }
     // SMS backup: your number, shared only with people you chat with one-to-one, and only if you allow it.
     if (typeof inSet.smsBackup === 'boolean') s.smsBackup = inSet.smsBackup;
-    if (typeof inSet.buzzRegion === 'string' && /^(india|hyderabad|bengaluru|mumbai|delhi|chennai|kolkata|pune)$/.test(inSet.buzzRegion)) s.buzzRegion = inSet.buzzRegion;
+    if (typeof inSet.buzzFromChats === 'boolean') {
+      s.buzzFromChats = inSet.buzzFromChats;
+      if (!inSet.buzzFromChats) buzz.forgetChatInterests(req.uid).catch(() => {}); // turning it off forgets everything learned
+    }
+    if (typeof inSet.buzzRegion === 'string' && (inSet.buzzRegion === 'india' || Object.prototype.hasOwnProperty.call(require('./buzz/sources').CITIES, inSet.buzzRegion))) s.buzzRegion = inSet.buzzRegion;
     if (typeof inSet.smsPhone === 'string') {
       const digits = inSet.smsPhone.replace(/[\s()-]/g, '');
       if (digits && !/^\+?[0-9]{7,15}$/.test(digits)) throw bad('Enter a valid phone number, like +91 98765 43210');

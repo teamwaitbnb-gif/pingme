@@ -2,9 +2,10 @@
 // business + world + cricket + cinema).
 // Publisher feeds → server collectors (scheduled, per-source polling, backoff) → normalised rows in our
 // database (durable, shared by everyone) → ranked per region → GET /api/feed → the app checks every 5s.
-const { SOURCES, CITIES, byId } = require('./sources');
+const { SOURCES, CITIES, STATE_OF, byId } = require('./sources');
 const { collect, enrich, fetchLogo } = require('./collect');
 const N = require('./normalize');
+const AI = require('./ai');
 
 module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, rateLimit, publicUser, ms }) {
   const REGIONS = new Set([...Object.keys(CITIES), 'india']);
@@ -14,7 +15,16 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
   const state = new Map(); // source id → row from feed_sources
   let dirty = true;
 
+  // Source ids renamed when cities were generated from a table — keep older stories attached.
+  const RENAMED = { 'hindu-hyd': 'hindu-hyderabad', 'toi-hyd': 'toi-hyderabad', 'gn-hyd': 'gn-hyderabad', 'hindu-blr': 'hindu-bengaluru', 'toi-blr': 'toi-bengaluru',
+    'hindu-mum': 'hindu-mumbai', 'toi-mum': 'toi-mumbai', 'hindu-del': 'hindu-delhi', 'toi-del': 'toi-delhi', 'hindu-che': 'hindu-chennai', 'toi-che': 'toi-chennai',
+    'hindu-kol': 'hindu-kolkata', 'toi-kol': 'toi-kolkata', 'ht-entertainment': 'ht-entertainment' };
+  async function migrateIds() {
+    for (const [a, b] of Object.entries(RENAMED)) if (a !== b) { await db.q('UPDATE feed_items SET source_id=? WHERE source_id=?', [b, a]); await db.q('DELETE FROM feed_sources WHERE id=?', [a]); }
+  }
+
   async function loadState() {
+    await migrateIds().catch(() => {});
     for (const r of await db.q('SELECT * FROM feed_sources')) state.set(r.id, r);
   }
 
@@ -90,6 +100,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       await Promise.all(Array.from({ length: 4 }, async () => { while (i < due.length) await runSource(due[i++]); }));
       await enrichSome();
       await logosSome();
+      await aiSome();
     } catch (e) { console.error('buzz tick', e.message); }
     ticking = false;
   }
@@ -103,12 +114,12 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     const pri = top.length ? await db.q('SELECT id, source_id, url, image_url, summary FROM feed_items WHERE enriched=0 AND id IN (?)', [top]) : [];
     const rest = await db.q(`SELECT id, source_id, url, image_url, summary FROM feed_items WHERE enriched=0 AND fetched_at > ?
       ORDER BY COALESCE(published_at, fetched_at) DESC LIMIT 40`, [new Date(Date.now() - 36 * 3600e3)]);
-    const rows = [...pri, ...rest.filter((r) => !pri.some((p) => p.id === r.id))].filter((r) => !r.summary || N.lowRes(r.image_url));
-    const skip = await db.q(`SELECT id FROM feed_items WHERE enriched=0 AND fetched_at > ? AND summary IS NOT NULL AND image_url IS NOT NULL LIMIT 200`, [new Date(Date.now() - 36 * 3600e3)]);
+    const rows = [...pri, ...rest.filter((r) => !pri.some((p) => p.id === r.id))].filter((r) => !r.summary || r.summary.length < 220 || N.lowRes(r.image_url));
+    const skip = await db.q(`SELECT id FROM feed_items WHERE enriched=0 AND fetched_at > ? AND summary IS NOT NULL AND CHAR_LENGTH(summary) >= 220 AND image_url IS NOT NULL LIMIT 200`, [new Date(Date.now() - 36 * 3600e3)]);
     const fine = skip.filter((r) => !rows.some((x) => x.id === r.id)).map((r) => r.id);
     let i = 0;
-    await Promise.all(Array.from({ length: 6 }, async () => {
-      while (i < Math.min(rows.length, 24)) {
+    await Promise.all(Array.from({ length: 8 }, async () => {
+      while (i < Math.min(rows.length, 32)) {
         const r = rows[i++];
         const src = byId(r.source_id);
         let got = null;
@@ -117,14 +128,40 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
         // Better image found → use it. Otherwise keep a small real photo, but drop icons/placeholders.
         const junk = /(android-chrome|apple-touch|favicon|site-?icon|logo|placeholder|default|og-image|cropped-)/i.test(r.image_url || '');
         const img = got?.image && (N.lowRes(r.image_url) || !r.image_url) ? got.image : (junk || (N.lowRes(r.image_url) && !/^https:/.test(r.image_url || '')) ? null : r.image_url);
-        await db.q('UPDATE feed_items SET enriched=1, image_url=?, summary=COALESCE(summary, ?) WHERE id=?', [img || null, got?.description || null, r.id]);
-        if (got?.image || got?.description) dirty = true;
+        // Fuller summary: the article's opening paragraphs when they say more than the feed did.
+        const cur = r.summary || '';
+        const better = [got?.lead, got?.description].filter((x) => x && x.length > cur.length + 40).sort((a, b) => b.length - a.length)[0];
+        await db.q('UPDATE feed_items SET enriched=1, image_url=?, summary=? WHERE id=?', [img || null, better || r.summary || null, r.id]);
+        if (got?.image || better) dirty = true;
       }
     }));
     // Stories that already had a large image and a summary need no visit.
     for (let k = 0; k < fine.length; k += 100) {
       const chunk = (await db.q('SELECT id, image_url FROM feed_items WHERE id IN (?)', [fine.slice(k, k + 100)])).filter((r) => !N.lowRes(r.image_url)).map((r) => r.id);
       if (chunk.length) await db.q('UPDATE feed_items SET enriched=1 WHERE id IN (?)', [chunk]);
+    }
+  }
+
+  // AI descriptions (Groq) for the stories people are about to see: the server reads the full story and
+  // the model writes a clear 2–3 sentence description. Paced to the free tier; otherwise the
+  // publisher's opening paragraphs stay.
+  async function aiSome() {
+    if (!AI.enabled()) return;
+    const top = [];
+    for (const c of cache.values()) for (const x of c.list.slice(0, 80)) if (!top.includes(x.row.id)) top.push(x.row.id);
+    if (!top.length) return;
+    const rows = await db.q('SELECT id, source_id, url, title, via FROM feed_items WHERE ai_summary IS NULL AND ai_tries < 2 AND id IN (?)', [top]);
+    rows.sort((a, b) => top.indexOf(a.id) - top.indexOf(b.id));
+    for (const r of rows.slice(0, 2)) {
+      const src = byId(r.source_id);
+      if (!src || (src.aggregator && !src.trends)) { await db.q('UPDATE feed_items SET ai_tries=9 WHERE id=?', [r.id]); continue; }
+      let page = null;
+      try { page = await enrich(r.url, src.site, { anySite: !!src.trends }); } catch {}
+      if (!page?.fullText || page.fullText.length < 300) { await db.q('UPDATE feed_items SET ai_tries=ai_tries+1 WHERE id=?', [r.id]); continue; }
+      const out = await AI.summarize({ title: r.title, source: r.via || src.name, text: page.fullText });
+      if (out?.throttled) break;
+      if (out?.text) { await db.q('UPDATE feed_items SET ai_summary=?, ai_model=? WHERE id=?', [out.text, out.model, r.id]); dirty = true; }
+      else await db.q('UPDATE feed_items SET ai_tries=ai_tries+1 WHERE id=?', [r.id]);
     }
   }
 
@@ -178,7 +215,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     return row.topic === 'video' ? 'entertainment' : row.topic;
   }
 
-  const AREA = { hyderabad: 'Telangana', bengaluru: 'Karnataka', mumbai: 'Maharashtra', pune: 'Maharashtra', delhi: 'Delhi', chennai: 'Tamil Nadu', kolkata: 'West Bengal' };
+  const AREA = STATE_OF;
   function score(row, eng, region) {
     const src = byId(row.source_id);
     const t = row.published_at ? ms(row.published_at) : ms(row.fetched_at);
@@ -263,7 +300,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     const c = cache.get(region);
     if (c && !dirty && Date.now() - c.at < 20000) return c;
     if (c && Date.now() - c.at < 4000) return c;
-    const rows = await db.q(`SELECT id, source_id, region, topic, url, title, summary, image_url, video_url, via, discuss_url, engagement, src_rank, published_at, fetched_at
+    const rows = await db.q(`SELECT id, source_id, region, topic, url, title, COALESCE(ai_summary, summary) summary, image_url, video_url, via, discuss_url, engagement, src_rank, published_at, fetched_at
       FROM feed_items WHERE (region IN (?, 'india', 'world')) AND COALESCE(published_at, fetched_at) > ? ORDER BY COALESCE(published_at, fetched_at) DESC LIMIT 1500`,
     [region, new Date(Date.now() - 48 * 3600e3)]);
     const eng = await engagementFor(rows.map((r) => r.id), null);
@@ -280,7 +317,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     const out = [], credit = new Map(mix.map(([b]) => [b, 0]));
     const total = mix.reduce((s, [, w]) => s + w, 0);
     let lastSource = null;
-    while (out.length < 400 && [...buckets.values()].some((l) => l.length)) {
+    while (out.length < 600 && [...buckets.values()].some((l) => l.length)) {
       for (const [b, w] of mix) credit.set(b, credit.get(b) + w / total);
       const pick = [...credit.entries()].filter(([b]) => buckets.get(b).length).sort((a, b) => b[1] - a[1])[0];
       if (!pick) break;
@@ -297,6 +334,176 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     cache.set(region, entry);
     dirty = false;
     return entry;
+  }
+
+  // ───── For You: personal ranking from what each person likes ─────
+  // Signals (last 30 days, fading over ~10 days): like ×3, comment ×4, repost ×4, open ×1.5.
+  // Profile = interest weights for topics, publishers and title words. Each story's personal score
+  // = trending score + match with the profile; sections the person likes get more room. Every 4th
+  // story is chosen purely by what's trending, so nobody gets stuck in a bubble.
+  const profiles = new Map(); // uid → { at, p }
+  async function interests(uid) {
+    const hit = profiles.get(uid);
+    if (hit && Date.now() - hit.at < 60000) return hit.p;
+    const since = new Date(Date.now() - 30 * 86400e3);
+    const sig = [];
+    for (const [table, w] of [['feed_likes', 3], ['feed_comments', 4], ['feed_reposts', 4]]) {
+      for (const r of await db.q(`SELECT item_id id, created_at FROM ${table} WHERE user_id=? AND created_at > ? ORDER BY created_at DESC LIMIT 300`, [uid, since])) sig.push({ id: r.id, w, t: ms(r.created_at) });
+    }
+    // Behaviour: opens, how long a story was read on screen (dwell), and quick scroll-pasts (less of this).
+    for (const r of await db.q(`SELECT item id, type, value, created_at FROM analytics_events WHERE user_id=? AND type IN ('buzz_open','buzz_dwell','buzz_skip') AND created_at > ? ORDER BY created_at DESC LIMIT 600`, [uid, since]).catch(() => [])) {
+      // dwell value = % of the story's reading time spent in the reading zone (100 = read fully).
+      const w = r.type === 'buzz_open' ? 1.5 : r.type === 'buzz_dwell' ? Math.min(1.8, ((Number(r.value) || 0) / 100) * 1.2) : -0.25;
+      sig.push({ id: r.id, w, t: ms(r.created_at) });
+    }
+    const p = { topics: {}, sources: {}, words: {}, n: sig.length };
+    if (sig.length) {
+      const items = new Map((await db.q('SELECT id, title, topic, source_id, via FROM feed_items WHERE id IN (?)', [[...new Set(sig.map((x) => x.id))]])).map((r) => [r.id, r]));
+      for (const x of sig) {
+        const it = items.get(x.id);
+        if (!it) continue;
+        const w = x.w * Math.exp(-(Date.now() - x.t) / (10 * 86400e3));
+        p.topics[it.topic] = (p.topics[it.topic] || 0) + w;
+        const src = it.via || it.source_id;
+        p.sources[src] = (p.sources[src] || 0) + w;
+        for (const t of tokens(it.title)) p.words[t] = (p.words[t] || 0) + w;
+      }
+      const norm = (o, keep) => {
+        const top = Object.entries(o).sort((a, b) => b[1] - a[1]).slice(0, keep);
+        const max = top[0]?.[1] || 1;
+        return Object.fromEntries(top.map(([k, v]) => [k, v / max]));
+      };
+      p.topics = norm(p.topics, 10); p.sources = norm(p.sources, 25); p.words = norm(p.words, 80);
+    }
+    // Topics from the person's own chats (only if they turned it on): keywords, never messages.
+    const chat = await chatInterests(uid);
+    if (chat) {
+      for (const [w, v] of Object.entries(chat)) p.words[w] = Math.max(p.words[w] || 0, 0.8 * v);
+      p.n += Object.keys(chat).length ? 1 : 0;
+    }
+    profiles.set(uid, { at: Date.now(), p });
+    return p;
+  }
+
+  // ───── chat topics (opt-in) ─────
+  // When someone turns on "Personalise Buzz from my chats", words from messages THEY send are turned
+  // into topic keywords (stop-words, numbers, links and short words dropped) and kept as an encrypted
+  // weight list — the messages themselves are never stored here. Weights fade over ~2 weeks.
+  const CHAT_STOP = new Set(('watch watching watched amazing awesome tonight today tomorrow yesterday morning evening night crazy planning plan plans ride going come coming good great nice cool okay fine sure yeah yess yes nope thanks thank please sorry really very much more some like love lovely haha hahaha lol omg wow what when where which while with will would could should about after again also always another anything around back because been before being best better both call calling called cant come could didnt does doesnt doing done dont down each even ever every first from gonna gotta have having here home hope just keep know last later leave left life little look looking lots made make many maybe mean meet message miss money need next nothing number only other ours over people place pretty quite right said same saying says seen send sent should show since sleep something sometimes soon start still stuff such sure take talk tell than that thats their them then there these they thing things think this those though thought through time told took true trying tried until very want wanted wants week weekend well went were what whats where while will wish with without wont work working world would yeah year years your yours feel feeling happy free busy reach reached wait waiting').split(' '));
+  async function chatInterests(uid) {
+    const row = await db.one('SELECT data_enc FROM user_interests WHERE user_id=?', [uid]);
+    const d = row && C.decJson(row.data_enc, null);
+    if (!d?.words) return null;
+    const out = {};
+    const now = Date.now();
+    let max = 0;
+    // A topic counts once it has come up at least twice (fading over ~2 weeks).
+    for (const [w, [v, t]] of Object.entries(d.words)) { if (CHAT_STOP.has(w)) continue; const x = v * Math.exp(-(now - t) / (14 * 86400e3)); if (x >= 1.6) { out[w] = x; max = Math.max(max, x); } }
+    for (const w of Object.keys(out)) out[w] /= max || 1;
+    return Object.keys(out).length ? out : null;
+  }
+  const chatLocks = new Map();
+  async function learnFromChat(uid, text) {
+    const words = [...tokens(String(text).replace(/https?:\/\/\S+|\S+@\S+|\d+/g, ' '))].filter((w) => w.length <= 24 && !CHAT_STOP.has(w)).slice(0, 12);
+    if (!words.length) return;
+    const prev = chatLocks.get(uid) || Promise.resolve();
+    const job = prev.then(async () => {
+      const row = await db.one('SELECT data_enc FROM user_interests WHERE user_id=?', [uid]);
+      const d = (row && C.decJson(row.data_enc, null)) || { words: {} };
+      const now = Date.now();
+      for (const w of words) { const [v = 0, t = now] = d.words[w] || []; d.words[w] = [v * Math.exp(-(now - t) / (14 * 86400e3)) + 1, now]; }
+      const kept = Object.entries(d.words).sort((a, b) => b[1][0] - a[1][0]).slice(0, 250);
+      d.words = Object.fromEntries(kept);
+      await db.q('INSERT INTO user_interests (user_id, data_enc) VALUES (?,?) ON DUPLICATE KEY UPDATE data_enc=VALUES(data_enc), updated_at=CURRENT_TIMESTAMP(3)', [uid, C.enc(d)]);
+      profiles.delete(uid);
+    }).catch(() => {});
+    chatLocks.set(uid, job);
+    await job;
+  }
+  async function forgetChatInterests(uid) { await db.q('DELETE FROM user_interests WHERE user_id=?', [uid]); profiles.delete(uid); }
+
+  function affinity(x, p) {
+    const r = x.row;
+    const t = p.topics[r.topic] || 0;
+    const s = p.sources[r.via || r.source_id] || 0;
+    let k = 0;
+    for (const w of tokens(r.title)) k += p.words[w] || 0;
+    return 0.3 * t + 0.2 * s + 0.5 * Math.min(1, k / 1.2);
+  }
+
+  const personalCache = new Map(); // uid:region → { at, base, entry }
+  async function personalized(region, uid) {
+    const base = await ranked(region);
+    const p = await interests(uid);
+    if (!p.n) return base;
+    const key = uid + ':' + region;
+    const hit = personalCache.get(key);
+    if (hit && hit.base === base.version && Date.now() - hit.at < 15000) return hit.entry;
+    const mix = region === 'india' ? MIX_INDIA : MIX_CITY;
+    const buckets = new Map(mix.map(([b]) => [b, []]));
+    const general = [...base.list];
+    for (const x of base.list) {
+      const b = bucketOf(x.row, region);
+      if (buckets.has(b)) buckets.get(b).push({ ...x, pscore: x.score + 0.7 * affinity(x, p) });
+    }
+    for (const list of buckets.values()) list.sort((a, b) => b.pscore - a.pscore);
+    // Sections the person enjoys get a bigger share (local news keeps its place).
+    const weights = new Map(mix.map(([b, w]) => [b, w * (1 + 3 * (p.topics[b === 'local' ? 'local' : b] || 0))]));
+    const total = [...weights.values()].reduce((a, b) => a + b, 0);
+    const credit = new Map(mix.map(([b]) => [b, 0]));
+    // Pattern per 4 stories: personal best · section mix · personal best · trending. Half the feed is
+    // what this person likes, a quarter keeps the city/section mix, a quarter is purely what's big.
+    const personal = base.list.map((x) => ({ x, a: affinity(x, p) })).filter((y) => y.a > 0.12)
+      .sort((u, v) => (v.a + 0.6 * v.x.score) - (u.a + 0.6 * u.x.score));
+    const out = [], used = new Set();
+    let lastSource = null;
+    const takeFrom = (arr, get = (y) => y) => {
+      let k = arr.findIndex((y) => !used.has(get(y).row.id) && get(y).row.source_id !== lastSource);
+      if (k < 0) k = arr.findIndex((y) => !used.has(get(y).row.id));
+      return k < 0 ? null : get(arr.splice(k, 1)[0]);
+    };
+    while (out.length < base.list.length) {
+      const slot = out.length % 4;
+      let x = null;
+      if (slot === 0 || slot === 2) x = takeFrom(personal, (y) => y.x);
+      if (!x && slot === 3) x = takeFrom(general);
+      if (!x) {
+        for (const [b, w] of weights) credit.set(b, credit.get(b) + w / total);
+        const pick = [...credit.entries()].filter(([b]) => buckets.get(b).some((y) => !used.has(y.row.id))).sort((a, b) => b[1] - a[1])[0];
+        if (pick) { x = takeFrom(buckets.get(pick[0])); credit.set(pick[0], pick[1] - 1); }
+      }
+      if (!x) x = takeFrom(general);
+      if (!x) break;
+      if (used.has(x.row.id)) continue;
+      used.add(x.row.id);
+      lastSource = x.row.source_id;
+      out.push(x);
+    }
+    const version = require('crypto').createHash('sha1').update(out.slice(0, 60).map((x) => x.row.id).join(',')).digest('hex').slice(0, 16);
+    const entry = { at: Date.now(), version, list: out };
+    personalCache.set(key, { at: Date.now(), base: base.version, entry });
+    return entry;
+  }
+
+  // "More like this": stories closest to the one just liked (shared title words, same topic/publisher).
+  async function relatedTo(itemId, region, uid, exclude = new Set()) {
+    const it = await db.one('SELECT id, title, topic, source_id FROM feed_items WHERE id=?', [itemId]);
+    if (!it) return [];
+    const tk = tokens(it.title);
+    const base = await ranked(region);
+    const scored = [];
+    for (const x of base.list) {
+      if (x.row.id === itemId || exclude.has(x.row.id)) continue;
+      let n = 0;
+      for (const w of tokens(x.row.title)) if (tk.has(w)) n++;
+      const sc = n * 1.0 + (x.row.topic === it.topic ? 0.6 : 0) + (x.row.source_id === it.source_id ? 0.2 : 0) + x.score * 0.3;
+      if (n >= 1 || x.row.topic === it.topic) scored.push({ x, sc, n });
+    }
+    scored.sort((a, b) => b.sc - a.sc);
+    const pick = scored.filter((s) => s.n >= 1).slice(0, 4);
+    if (pick.length < 4) pick.push(...scored.filter((s) => s.n === 0).slice(0, 4 - pick.length));
+    const eng = await engagementFor(pick.map((s) => s.x.row.id), uid);
+    return pick.map((s) => present(s.x, eng.get(s.x.row.id)));
   }
 
   function present(x, e) {
@@ -319,7 +526,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     const region = REGIONS.has(String(req.query.region)) ? String(req.query.region) : 'india';
     const offset = Math.max(0, toInt(req.query.offset) || 0);
     const limit = Math.min(48, Math.max(1, toInt(req.query.limit) || 24));
-    const r = await ranked(region);
+    const r = await personalized(region, req.uid);
     const page = r.list.slice(offset, offset + limit);
     const eng = await engagementFor(page.map((x) => x.row.id), req.uid);
     const lastOk = Math.max(0, ...[...state.values()].map((s) => (s.last_ok ? ms(s.last_ok) : 0)));
@@ -328,6 +535,11 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       items: page.map((x) => present(x, eng.get(x.row.id))), hasMore: offset + limit < r.list.length, total: r.list.length,
     });
   }));
+
+  // Cities people can pick (and the coordinates used to find the nearest one).
+  app.get('/api/feed/regions', auth, (req, res) => {
+    res.json({ regions: [...Object.entries(CITIES).map(([id, c]) => ({ id, name: c.name, lat: c.lat, lon: c.lon })).sort((a, b) => a.name.localeCompare(b.name)), { id: 'india', name: 'All of India' }] });
+  });
 
   app.get('/api/feed/sources', auth, wrap(async (req, res) => {
     res.json({
@@ -354,7 +566,10 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     if (had) await db.q('DELETE FROM feed_likes WHERE item_id=? AND user_id=?', [id, req.uid]);
     else await db.q('INSERT IGNORE INTO feed_likes (item_id, user_id) VALUES (?,?)', [id, req.uid]);
     dirty = true;
-    res.json(await counts(id, req.uid));
+    profiles.delete(req.uid);
+    const region = REGIONS.has(String(req.body?.region)) ? String(req.body.region) : 'india';
+    const exclude = new Set(Array.isArray(req.body?.have) ? req.body.have.slice(0, 600).map(String) : []);
+    res.json({ ...(await counts(id, req.uid)), related: had ? [] : await relatedTo(id, region, req.uid, exclude) });
   }));
 
   app.post('/api/feed/:id/repost', auth, wrap(async (req, res) => {
@@ -364,6 +579,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     if (had && req.body?.on !== true) await db.q('DELETE FROM feed_reposts WHERE item_id=? AND user_id=?', [id, req.uid]);
     else await db.q('INSERT IGNORE INTO feed_reposts (item_id, user_id) VALUES (?,?)', [id, req.uid]);
     dirty = true;
+    profiles.delete(req.uid);
     res.json(await counts(id, req.uid));
   }));
 
@@ -382,6 +598,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     if (!text) throw bad('Write a comment first');
     const r = await db.q('INSERT INTO feed_comments (item_id, user_id, body_enc) VALUES (?,?,?)', [id, req.uid, C.enc(text)]);
     dirty = true;
+    profiles.delete(req.uid);
     res.json({ comment: { id: Number(r.insertId), userId: req.uid, text, createdAt: Date.now(), mine: true }, counts: await counts(id, req.uid) });
   }));
 
@@ -398,5 +615,5 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     if (process.env.BUZZ_COLLECT === 'off') return;
     loadState().then(() => { tick(); setInterval(tick, 20000).unref(); setInterval(cleanup, 3600e3).unref(); }).catch((e) => console.error('buzz start', e.message));
   }
-  return { start, tick, ranked, REGIONS, CITIES };
+  return { start, tick, ranked, REGIONS, CITIES, learnFromChat, forgetChatInterests, aiStatus: AI.status };
 };

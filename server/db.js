@@ -116,6 +116,11 @@ const SCHEMA = [
     opens INT NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, day), INDEX (day)
   )`,
+  `CREATE TABLE IF NOT EXISTS user_interests (
+    user_id BIGINT UNSIGNED PRIMARY KEY,
+    data_enc MEDIUMTEXT NOT NULL,
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+  )`,
   `CREATE TABLE IF NOT EXISTS user_devices (
     user_id BIGINT UNSIGNED PRIMARY KEY,
     platform VARCHAR(16) NOT NULL,
@@ -154,6 +159,9 @@ const SCHEMA = [
     published_at DATETIME(3) NULL,
     fetched_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     enriched TINYINT NOT NULL DEFAULT 0,
+    ai_summary TEXT NULL,
+    ai_model VARCHAR(60) NULL,
+    ai_tries TINYINT NOT NULL DEFAULT 0,
     INDEX (region, fetched_at),
     INDEX (published_at)
   )`,
@@ -332,6 +340,8 @@ async function migrate(dbName) {
   }
   const sessions = await cols('sessions');
   if (!sessions.has('device_hash')) await pool.query('ALTER TABLE sessions ADD COLUMN device_hash CHAR(64) NULL AFTER ua_enc');
+  const fitems = await cols('feed_items');
+  if (fitems.size && !fitems.has('ai_summary')) await pool.query('ALTER TABLE feed_items ADD COLUMN ai_summary TEXT NULL, ADD COLUMN ai_model VARCHAR(60) NULL, ADD COLUMN ai_tries TINYINT NOT NULL DEFAULT 0');
   const fsrc = await cols('feed_sources');
   if (fsrc.size && !fsrc.has('logo')) await pool.query('ALTER TABLE feed_sources ADD COLUMN logo MEDIUMBLOB NULL, ADD COLUMN logo_type VARCHAR(60) NULL, ADD COLUMN logo_at DATETIME(3) NULL');
   const members = await cols('chat_members');

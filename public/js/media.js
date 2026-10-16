@@ -403,8 +403,8 @@ export const audioState = () => actx?.state || 'none';
 
 export const sounds = {
   _loop: null,
-  message() { play('message', { volume: 0.8 }); buzz([30, 40, 30]); },
-  tick() { play('tick', { volume: 0.5 }); },
+  message() { play('message', { volume: 0.8 }); buzz([180, 100, 180]); },
+  tick() { play('tick', { volume: 0.5 }); buzz(60); },
   sent() { play('sent', { volume: 0.45 }); },
   ping() { play('ping', { volume: 0.9 }); buzz([60, 80, 60, 80, 220]); },
   ringtone() {
@@ -412,7 +412,7 @@ export const sounds = {
     // iPhone: let the ringtone play even when the silent switch is on (like call apps).
     try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch {}
     this._loop = play('ringtone', { loop: true });
-    const ring = () => buzz([500, 300, 500]);
+    const ring = () => buzz([800, 400, 800]);
     ring(); this._vib = setInterval(ring, 2600);
   },
   ringback() { this.stopLoop(); this._loop = play('ringback', { loop: true, volume: 0.35 }); },

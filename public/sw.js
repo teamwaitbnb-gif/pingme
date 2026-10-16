@@ -1,5 +1,5 @@
 // Ping Me service worker: app-shell caching + app-style notifications.
-const VERSION = 'pm-v33';
+const VERSION = 'pm-v36';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/manifest.webmanifest',
   '/js/video-recorder.js', '/js/camera.js', '/js/editor.js', '/js/pet.js', '/js/buzz.js', '/js/analytics.js', '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',
@@ -54,9 +54,9 @@ self.addEventListener('fetch', (e) => {
 // Browsers don't allow custom sounds on system notifications (the OS plays its own), so Ping Me
 // uses its own vibration patterns + grouped, actionable notifications, and plays its own sounds
 // whenever the app is open.
-const VIBRATE_MSG = [40, 60, 40, 60, 120];
-const VIBRATE_CALL = [600, 300, 600, 300, 600, 300, 600];
-const VIBRATE_PING = [60, 80, 60, 80, 220];
+const VIBRATE_MSG = [220, 120, 220];                 // noticeable double buzz
+const VIBRATE_CALL = [900, 400, 900, 400, 900, 400, 900, 400, 900];
+const VIBRATE_PING = [90, 80, 90, 80, 320];
 let audioReadyAt = 0; // last time the open app said it can ring by itself
 self.addEventListener('message', (e) => {
   if (e.data?.type === 'audio') audioReadyAt = e.data.ready ? Date.now() : 0;

@@ -40,6 +40,8 @@ Also set `PUBLIC_URL=https://YOUR-LIVE-URL` in `.env` once deployed. New Google 
 | `INVITE_ONLY=true` | Golden Keys launch: sign-up needs an invite code; everyone gets 3 (the first account is exempt) |
 | `RECOVERY_DELAY_MIN=30` | Safety delay after 3 friends approve an account recovery (the owner can cancel during it) |
 | `TURN_URLS / TURN_USERNAME / TURN_CREDENTIAL` | TURN relay so calls connect on strict mobile/office networks |
+| `GROQ_API_KEY` | Optional. Buzz descriptions written by AI after reading the full article (without it, the publisher's own sentences are used) |
+| `ADMIN_KEY` | Password for the owner-only `/admin` portal |
 
 ## What's inside
 
@@ -80,7 +82,7 @@ Before release, check two physical phones over Wi-Fi and cellular: answer/declin
 
 ## Buzz (live news tab)
 
-**Chats | Buzz** tabs sit at the bottom of the main page. Buzz is one combined feed of real stories, mixed for the reader's city (Hyderabad, Bengaluru, Mumbai, Delhi, Chennai, Kolkata, Pune, or all of India): about a third local, then India, tech, business, world, cricket and cinema, interleaved so no publisher dominates.
+**Chats | Buzz** tabs sit at the bottom of the main page. Buzz is one combined feed of real stories, mixed for the reader's city (35 Indian cities, or all of India): about a third local, then India, tech, business, world, cricket and cinema, interleaved so no publisher dominates.
 
 Architecture: publisher RSS/Atom feeds + Hacker News API → server collectors (`server/buzz/collect.js`, per-source polling, ETag/Last-Modified, timeouts, size limits, redirect checks, Retry-After + exponential backoff) → normalised rows in MySQL (`feed_sources`, `feed_items`, `feed_likes`, `feed_reposts`, `feed_comments`) → per-region ranking (`server/buzz/index.js`) → `GET /api/feed` → the app checks every 5 s while Buzz is on screen (one request at a time), merges new stories at the top without moving the reader, and keeps the last feed in local storage for offline use.
 
@@ -91,7 +93,11 @@ Architecture: publisher RSS/Atom feeds + Hacker News API → server collectors (
 - Optional, disabled until credentials are set: YouTube popular videos (`YOUTUBE_API_KEY`) and Reddit (`REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET`). These adapters are stubs until those keys exist.
 - Google Trends (India + each city's state) adds what people are searching for right now, with real search volumes; the same story covered by several outlets is grouped into one card ("Covered by N outlets") and ranked higher.
 - Publisher logos are fetched once from each publisher's own site and stored in the database (`/api/feed/logo/:id`).
-- Known source status: 43 feeds working; Moneycontrol returns HTTP 403 to servers and Ars Technica blocks logo requests (both handled gracefully).
+- **For You:** each reader's feed is ranked by what they actually engage with — likes, comments, reposts, opens, and how long a story sits in the middle of the screen (the reading zone) compared with its expected reading time; quick flicks past a story count as a skip. Signals fade over 10 days. Liking a story slides a few related stories in right below it, and new stories are added below the reader's position as they scroll, so the feed never ends and never jumps.
+- **From chats (opt-in, off by default):** Settings → Privacy → *Personalise Buzz from my chats*. Only topic keywords mentioned at least twice are kept, encrypted, and fade over 14 days; message text is never stored. Turning it off deletes them. Secret, eyes-only and ink messages are never used.
+- **AI descriptions:** with `GROQ_API_KEY` set, the server reads each top story's full article and writes a 2–3 sentence factual summary (paced to stay inside Groq's free tier, ~900/day; it backs off on rate limits). Off-topic answers are rejected and the publisher's own lead paragraphs are used instead.
+- Sources: The Hindu, Times of India and Google News for 35 cities, Google Trends for 19 states, plus ~45 national, tech, business, world, sports and entertainment publishers (158 in `server/buzz/sources.js`).
+- Known source status: Moneycontrol returns HTTP 403 to servers and Ars Technica blocks logo requests (both handled gracefully).
 
 ## Admin portal (owner only)
 

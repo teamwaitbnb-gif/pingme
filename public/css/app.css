@@ -1669,3 +1669,7 @@ html, body { touch-action: manipulation; overscroll-behavior: none; -webkit-text
 @media (max-width: 420px) { .join-pill small { display: none; } }
 @keyframes joinPulse { 50% { box-shadow: 0 0 0 6px rgba(48,209,88,.18); } }
 @media (prefers-reduced-motion: reduce) { .join-pill { animation: none; } }
+.bz-loading { display: grid; place-items: center; padding: 18px; }
+.bz-card.bz-fresh { animation: bzSlide .5s ease; }
+@keyframes bzSlide { from { opacity: 0; transform: translateY(14px) scale(.98); } }
+.bz-d { -webkit-line-clamp: 6; }

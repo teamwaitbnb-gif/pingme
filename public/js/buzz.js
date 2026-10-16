@@ -6,22 +6,69 @@ import { track } from './analytics.js';
 
 // Analytics: a story counts as "seen" after being at least half on screen for a second; opens are
 // taps on its photo, headline or Read link.
+// Reading behaviour teaches the For You ranking:
+//  • "seen": a story at least half on screen for a second (counts only);
+//  • "reading": time a story spends in the reading zone (middle of the screen) while the person isn't
+//    scrolling fast — compared with how long the story takes to read, so lingering means interest;
+//  • "skip": flicked past in under a second (a gentle "less of this").
 const seenIds = new Set();
 let seenPending = 0;
 const seenTimers = new Map();
+const shownAt = new Map(), skipped = new Set(), readTime = new Map(), readSent = new Map(), inZone = new Set();
+let lastScrollY = 0, lastScrollT = 0, fastUntil = 0;
+const expectedSecs = (el) => Math.max(3, Math.round(((el.querySelector('.bz-h')?.textContent || '') + ' ' + (el.querySelector('.bz-d:not(.none)')?.textContent || '')).split(/\s+/).length / 3.5));
 const seenObserver = 'IntersectionObserver' in window ? new IntersectionObserver((entries) => {
   for (const e of entries) {
     const id = e.target.dataset.id;
-    if (!id || seenIds.has(id)) continue;
-    if (e.isIntersecting) seenTimers.set(id, setTimeout(() => { seenIds.add(id); seenPending++; seenObserver.unobserve(e.target); }, 1000));
-    else { clearTimeout(seenTimers.get(id)); seenTimers.delete(id); }
+    if (!id) continue;
+    if (e.isIntersecting) {
+      shownAt.set(id, performance.now());
+      if (!seenIds.has(id)) seenTimers.set(id, setTimeout(() => { seenIds.add(id); seenPending++; }, 1000));
+    } else {
+      clearTimeout(seenTimers.get(id)); seenTimers.delete(id);
+      const t0 = shownAt.get(id); shownAt.delete(id);
+      if (t0 == null || document.hidden) continue;
+      if ((performance.now() - t0) / 1000 < 0.9 && !skipped.has(id) && !readSent.has(id) && e.boundingClientRect.top < (e.rootBounds?.top ?? 0)) {
+        skipped.add(id);
+        track({ t: 'buzz_skip', i: id });
+      }
+    }
   }
 }, { threshold: 0.5 }) : null;
+// The reading zone: the middle half of the screen.
+const zoneObserver = 'IntersectionObserver' in window ? new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    const id = e.target.dataset.id;
+    if (!id) continue;
+    if (e.isIntersecting) inZone.add(id);
+    else { inZone.delete(id); flushRead(e.target); }
+  }
+}, { rootMargin: '-25% 0px -25% 0px', threshold: 0.3 }) : null;
+function flushRead(el) {
+  const id = el.dataset.id;
+  const secs = readTime.get(id) || 0;
+  if (secs < 2) return;
+  readTime.set(id, 0);
+  readSent.set(id, (readSent.get(id) || 0) + secs);
+  track({ t: 'buzz_dwell', i: id, v: Math.round(secs), e: expectedSecs(el) });
+}
+// Count reading time 4× a second, only while the page is visible and the person isn't scrolling fast.
+setInterval(() => {
+  if (document.hidden || !inZone.size || performance.now() < fastUntil) return;
+  for (const id of inZone) readTime.set(id, (readTime.get(id) || 0) + 0.25);
+}, 250);
+function noteScroll(pane) {
+  const now = performance.now(), y = pane.scrollTop;
+  const speed = Math.abs(y - lastScrollY) / Math.max(1, now - lastScrollT) * 1000; // px per second
+  if (speed > 900) fastUntil = now + 350;
+  lastScrollY = y; lastScrollT = now;
+}
 setInterval(() => { if (seenPending) { track({ t: 'buzz_seen', v: seenPending }); seenPending = 0; } }, 10000);
 
 const POLL_MS = 5000;
-const CITIES = [['hyderabad', 'Hyderabad'], ['bengaluru', 'Bengaluru'], ['mumbai', 'Mumbai'], ['delhi', 'Delhi'], ['chennai', 'Chennai'], ['kolkata', 'Kolkata'], ['pune', 'Pune'], ['india', 'All of India']];
-const COORDS = { hyderabad: [17.385, 78.4867], bengaluru: [12.9716, 77.5946], mumbai: [19.076, 72.8777], delhi: [28.6139, 77.209], chennai: [13.0827, 80.2707], kolkata: [22.5726, 88.3639], pune: [18.5204, 73.8567] };
+// Cities come from the server (35+); this short list is only the offline fallback.
+let CITIES = [['hyderabad', 'Hyderabad'], ['bengaluru', 'Bengaluru'], ['mumbai', 'Mumbai'], ['delhi', 'Delhi NCR'], ['chennai', 'Chennai'], ['kolkata', 'Kolkata'], ['pune', 'Pune'], ['india', 'All of India']];
+let COORDS = { hyderabad: [17.385, 78.4867], bengaluru: [12.9716, 77.5946], mumbai: [19.076, 72.8777], delhi: [28.6139, 77.209], chennai: [13.0827, 80.2707], kolkata: [22.5726, 88.3639], pune: [18.5204, 73.8567] };
 
 const ago = (t) => {
   if (!t) return '';
@@ -38,20 +85,19 @@ const hue = (s) => { let x = 0; for (const c of String(s)) x = (x * 31 + c.charC
 
 export function initBuzz(ctx) {
   // ctx: { api, me(), userAvatar(id), chats(), chatTitle(c), chatAvatar(c), sendToChat(chatId, text), saveRegion(r) }
-  let root = null, feedEl = null, statusEl = null, newPill = null, moreBtn = null, sourcesEl = null;
+  let root = null, feedEl = null, statusEl = null, moreBtn = null, sourcesEl = null, loadingMore = false;
   let region = ctx.me()?.settings?.buzzRegion || store.get('buzzRegion', null) || 'india';
   let cards = new Map(); // id → { el, data }
   let order = [];        // ids in display order
   let version = null, offset = 0, hasMore = false, inFlight = false, timer = null, visible = false;
-  let lastCheck = 0, lastNew = 0, offline = false, pendingNew = 0;
+  let lastCheck = 0, lastNew = 0, offline = false;
 
   function mount(container) {
     root = container;
     const chip = h('button', { class: 'bz-loc', 'aria-label': 'Change location', onclick: pickRegion }, icon('map'), h('span', null, nameOf(region)), icon('chev'));
     statusEl = h('span', { class: 'bz-status', role: 'status', 'aria-live': 'polite' }, 'Loading…');
-    newPill = h('button', { class: 'bz-new', hidden: true, onclick: () => { root.scrollTo({ top: 0, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); hideNew(); } }, icon('up'), h('span'));
     feedEl = h('div', { class: 'bz-feed' });
-    moreBtn = h('button', { class: 'bz-more', hidden: true, onclick: loadMore }, 'More stories');
+    moreBtn = h('div', { class: 'bz-loading', hidden: true }, h('span', { class: 'spinner' }));
     sourcesEl = h('details', { class: 'bz-sources' }, h('summary', null, 'Sources & status'), h('div', { class: 'bz-src-list' }, 'Loading…'));
     sourcesEl.addEventListener('toggle', () => { if (sourcesEl.open) loadSources(); });
     root.replaceChildren(
@@ -60,8 +106,18 @@ export function initBuzz(ctx) {
         chip),
       h('div', { class: 'bz-sub' }, statusEl),
       region === 'india' && !store.get('buzzAskedCity') ? cityPrompt() : null,
-      newPill, feedEl, moreBtn, sourcesEl);
-    root.addEventListener('scroll', () => { if (root.scrollTop < 40) hideNew(); }, { passive: true });
+      !ctx.me()?.settings?.buzzFromChats && !store.get('buzzChatAsked') ? chatPrompt() : null,
+      feedEl, moreBtn, sourcesEl);
+    // Endless feed: the next stories load before you reach the end.
+    root.addEventListener('scroll', () => {
+      noteScroll(root);
+      if (hasMore && !loadingMore && root.scrollTop + root.clientHeight > root.scrollHeight - 1600) loadMore();
+    }, { passive: true });
+    ctx.api('GET', '/api/feed/regions').then(({ regions }) => {
+      CITIES = regions.map((r) => [r.id, r.name]);
+      COORDS = Object.fromEntries(regions.filter((r) => r.lat).map((r) => [r.id, [r.lat, r.lon]]));
+      const span = root.querySelector('.bz-loc span'); if (span) span.textContent = nameOf(region);
+    }).catch(() => {});
     // Saved stories first (instant, and they survive a lost connection).
     const saved = store.get('buzzCache:' + region, null);
     if (saved?.items?.length) { renderAll(saved.items); setStatus(`Saved stories · ${ago(saved.at)}`); }
@@ -74,6 +130,16 @@ export function initBuzz(ctx) {
       h('div', { class: 'bz-ask-btns' },
         h('button', { class: 'bz-btn', onclick: () => { box.remove(); useMyLocation(); } }, 'Use my location'),
         h('button', { class: 'bz-btn ghost', onclick: () => { box.remove(); pickRegion(); } }, 'Choose city')));
+    return box;
+  }
+
+  // One-time, clear opt-in: use topics from the person's own chats to tailor Buzz.
+  function chatPrompt() {
+    const box = h('div', { class: 'bz-ask' },
+      h('div', null, h('b', null, 'Make Buzz yours'), h('span', null, 'Let Buzz learn topics from what you chat about — like a team, a city or a hobby — to show stories you’ll care about. Only topic keywords are used, never your messages. You can turn this off anytime in Settings.')),
+      h('div', { class: 'bz-ask-btns' },
+        h('button', { class: 'bz-btn', onclick: async () => { box.remove(); store.set('buzzChatAsked', true); await ctx.saveSettings?.({ buzzFromChats: true }); toast('Buzz will learn from your chat topics'); } }, 'Turn on'),
+        h('button', { class: 'bz-btn ghost', onclick: () => { box.remove(); store.set('buzzChatAsked', true); } }, 'Not now')));
     return box;
   }
 
@@ -153,6 +219,7 @@ export function initBuzz(ctx) {
           link('bz-read', 'Read', icon('chev')))));
     el._refs = { likeBtn, comBtn, repBtn };
     seenObserver?.observe(el);
+    zoneObserver?.observe(el);
     el.addEventListener('click', (e) => { if (e.target.closest('a.bz-media, a.bz-h, a.bz-read, a.bz-ph')) track({ t: 'buzz_open', i: it.id }); });
     el.querySelector('.bz-h').addEventListener('auxclick', (e) => e.stopPropagation());
     return el;
@@ -194,22 +261,30 @@ export function initBuzz(ctx) {
     for (const it of items) { if (cards.has(it.id)) continue; const el = card(it); cards.set(it.id, { el, data: it }); order.push(it.id); feedEl.append(el); }
   }
 
-  // Merge a fresh first page: patch known stories, put genuinely new ones on top without moving what
-  // the reader is looking at.
-  function merge(items) {
+  // Fresh stories slip in just below where you're reading — no banner, no jump. At the very top they
+  // simply appear first.
+  function insertAhead(items, { after = null } = {}) {
     const fresh = items.filter((it) => !cards.has(it.id));
-    for (const it of items) if (cards.has(it.id)) patch(it);
     if (!fresh.length) return 0;
-    const before = root.scrollHeight, top = root.scrollTop;
-    const frag = document.createDocumentFragment();
-    for (const it of fresh) { const el = card(it); el.classList.add('bz-fresh'); cards.set(it.id, { el, data: it }); frag.append(el); }
-    feedEl.prepend(frag);
-    order = [...fresh.map((x) => x.id), ...order];
-    if (top > 40) { root.scrollTop = top + (root.scrollHeight - before); showNew(fresh.length); }
+    const els = fresh.map((it) => { const el = card(it); el.classList.add('bz-fresh'); cards.set(it.id, { el, data: it }); return el; });
+    let anchor = after;
+    if (!anchor) {
+      if (root.scrollTop < 60 && !after) { feedEl.prepend(...els); order = [...fresh.map((x) => x.id), ...order]; return fresh.length; }
+      // The first card that starts below the bottom of the screen: new stories go right before it.
+      const bottom = root.getBoundingClientRect().bottom;
+      anchor = [...feedEl.children].find((c) => c.getBoundingClientRect().top > bottom + 40) || null;
+      if (!anchor) { feedEl.append(...els); order.push(...fresh.map((x) => x.id)); return fresh.length; }
+      anchor.before(...els);
+    } else anchor.after(...els);
+    const ids = fresh.map((x) => x.id);
+    const at = order.indexOf((after || anchor).dataset.id);
+    order.splice(after ? at + 1 : Math.max(0, at), 0, ...ids);
     return fresh.length;
   }
-  function showNew(n) { pendingNew += n; newPill.hidden = false; newPill.lastChild.textContent = `${pendingNew} new ${pendingNew === 1 ? 'story' : 'stories'}`; }
-  function hideNew() { pendingNew = 0; if (newPill) newPill.hidden = true; }
+  function merge(items) {
+    for (const it of items) if (cards.has(it.id)) patch(it);
+    return insertAhead(items);
+  }
 
   // ───── live updates: one request at a time, every 5s while visible ─────
   async function check(force = false) {
@@ -223,7 +298,6 @@ export function initBuzz(ctx) {
       else for (const it of r.items) patch(it);
       if (!offset) { offset = r.items.length; hasMore = r.hasMore; }
       version = r.version;
-      moreBtn.hidden = !hasMore;
       store.set('buzzCache:' + region, { at: Date.now(), items: order.slice(0, 48).map((id) => cards.get(id).data) });
       // "Checking" and "new content" are different things: say which one happened.
       setStatus(Date.now() - lastNew < 15000 ? 'New stories just arrived' : `Up to date · checked ${new Date(lastCheck).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}`);
@@ -235,13 +309,14 @@ export function initBuzz(ctx) {
   }
 
   async function loadMore() {
-    moreBtn.disabled = true;
+    if (loadingMore || !hasMore) return;
+    loadingMore = true; moreBtn.hidden = false;
     try {
       const r = await ctx.api('GET', `/api/feed?region=${region}&limit=24&offset=${offset}`);
       for (const it of r.items) { if (cards.has(it.id)) continue; const el = card(it); cards.set(it.id, { el, data: it }); order.push(it.id); feedEl.append(el); }
-      offset += r.items.length; hasMore = r.hasMore;
-    } catch (e) { toast(e.message, { error: true }); }
-    moreBtn.disabled = false; moreBtn.hidden = !hasMore;
+      offset += r.items.length; hasMore = r.hasMore && r.items.length > 0;
+    } catch {}
+    loadingMore = false; moreBtn.hidden = true;
   }
 
   async function loadSources() {
@@ -261,7 +336,13 @@ export function initBuzz(ctx) {
     const c = cards.get(id); if (!c) return;
     const d = c.data; const liked = !d.liked;
     patch({ ...d, liked, likes: Math.max(0, (d.likes || 0) + (liked ? 1 : -1)) }); // instant
-    try { const r = await ctx.api('POST', `/api/feed/${id}/like`); patch({ ...cards.get(id).data, ...r }); } catch (e) { patch(d); toast(e.message, { error: true }); }
+    try {
+      const r = await ctx.api('POST', `/api/feed/${id}/like`, { region, have: order.slice(0, 600) });
+      const { related, ...counts } = r;
+      patch({ ...cards.get(id).data, ...counts });
+      // More like this: related stories slide in right after the one you liked.
+      if (liked && related?.length) setTimeout(() => insertAhead(related.slice(0, 3), { after: cards.get(id)?.el }), 450);
+    } catch (e) { patch(d); toast(e.message, { error: true }); }
   }
   async function repost(id) {
     const c = cards.get(id); if (!c) return;

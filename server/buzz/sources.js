@@ -1,73 +1,136 @@
 // Source registry for Buzz. Adding a publisher = one entry here (plus an adapter only for a new kind
-// of API). Each source: id, name, url, adapter, enabled, poll interval, timeout, credentials,
-// region (a city, 'india' or 'world') and topic. Runtime state (last success, next retry, status,
-// ETag…) lives in the feed_sources table.
+// of API). Cities are generated from the table below: each gets its Times of India and The Hindu
+// city feeds where they exist, a Google News local search, and Google Trends for its state.
+// Runtime state (last success, next retry, status, ETag…) lives in the feed_sources table.
 const GN = (q) => `https://news.google.com/rss/search?q=${encodeURIComponent(q)}+when:1d&hl=en-IN&gl=IN&ceid=IN:en`;
+const TOI = (id) => `https://timesofindia.indiatimes.com/rssfeeds/${id}.cms`;
+const HINDU = (slug) => `https://www.thehindu.com/news/cities/${slug}/feeder/default.rss`;
 const min = (n) => n * 60000;
 
-const CITIES = {
-  hyderabad: { name: 'Hyderabad', lat: 17.385, lon: 78.4867 },
-  bengaluru: { name: 'Bengaluru', lat: 12.9716, lon: 77.5946 },
-  mumbai: { name: 'Mumbai', lat: 19.076, lon: 72.8777 },
-  delhi: { name: 'Delhi', lat: 28.6139, lon: 77.209 },
-  chennai: { name: 'Chennai', lat: 13.0827, lon: 80.2707 },
-  kolkata: { name: 'Kolkata', lat: 22.5726, lon: 88.3639 },
-  pune: { name: 'Pune', lat: 18.5204, lon: 73.8567 },
+// key: [name, lat, lon, state Google Trends geo, state name, The Hindu slug, TOI feed id(s)]
+const CITY_TABLE = {
+  hyderabad: ['Hyderabad', 17.385, 78.4867, 'IN-TG', 'Telangana', 'Hyderabad', ['-2128816011']],
+  bengaluru: ['Bengaluru', 12.9716, 77.5946, 'IN-KA', 'Karnataka', 'Bangalore', ['-2128833038']],
+  mumbai: ['Mumbai', 19.076, 72.8777, 'IN-MH', 'Maharashtra', 'Mumbai', ['-2128838597', '3831863']],
+  delhi: ['Delhi NCR', 28.6139, 77.209, 'IN-DL', 'Delhi', 'Delhi', ['-2128839596', '6547154', '8021716']],
+  chennai: ['Chennai', 13.0827, 80.2707, 'IN-TN', 'Tamil Nadu', 'Chennai', ['2950623']],
+  kolkata: ['Kolkata', 22.5726, 88.3639, 'IN-WB', 'West Bengal', 'Kolkata', ['-2128830821']],
+  pune: ['Pune', 18.5204, 73.8567, 'IN-MH', 'Maharashtra', null, ['-2128821991']],
+  ahmedabad: ['Ahmedabad', 23.0225, 72.5714, 'IN-GJ', 'Gujarat', null, ['-2128821153']],
+  jaipur: ['Jaipur', 26.9124, 75.7873, 'IN-RJ', 'Rajasthan', null, ['3012544']],
+  lucknow: ['Lucknow', 26.8467, 80.9462, 'IN-UP', 'Uttar Pradesh', null, ['-2128819658']],
+  chandigarh: ['Chandigarh', 30.7333, 76.7794, 'IN-CH', 'Chandigarh', null, ['-2128816762']],
+  kochi: ['Kochi', 9.9312, 76.2673, 'IN-KL', 'Kerala', 'Kochi', []],
+  thiruvananthapuram: ['Thiruvananthapuram', 8.5241, 76.9366, 'IN-KL', 'Kerala', 'Thiruvananthapuram', ['878156304']],
+  kozhikode: ['Kozhikode', 11.2588, 75.7804, 'IN-KL', 'Kerala', 'kozhikode', []],
+  coimbatore: ['Coimbatore', 11.0168, 76.9558, 'IN-TN', 'Tamil Nadu', 'Coimbatore', ['7503091']],
+  madurai: ['Madurai', 9.9252, 78.1198, 'IN-TN', 'Tamil Nadu', 'Madurai', []],
+  tiruchirappalli: ['Tiruchirappalli', 10.7905, 78.7047, 'IN-TN', 'Tamil Nadu', 'Tiruchirapalli', []],
+  visakhapatnam: ['Visakhapatnam', 17.6868, 83.2185, 'IN-AP', 'Andhra Pradesh', 'Visakhapatnam', []],
+  vijayawada: ['Vijayawada', 16.5062, 80.648, 'IN-AP', 'Andhra Pradesh', 'Vijayawada', []],
+  mangaluru: ['Mangaluru', 12.9141, 74.856, 'IN-KA', 'Karnataka', null, ['3942690']],
+  mysuru: ['Mysuru', 12.2958, 76.6394, 'IN-KA', 'Karnataka', null, ['3942693']],
+  hubballi: ['Hubballi', 15.3647, 75.124, 'IN-KA', 'Karnataka', null, ['3942695']],
+  bhubaneswar: ['Bhubaneswar', 20.2961, 85.8245, 'IN-OR', 'Odisha', null, ['4118235']],
+  guwahati: ['Guwahati', 26.1445, 91.7362, 'IN-AS', 'Assam', null, ['4118215']],
+  patna: ['Patna', 25.5941, 85.1376, 'IN-BR', 'Bihar', null, ['-2128817995']],
+  ranchi: ['Ranchi', 23.3441, 85.3096, 'IN-JH', 'Jharkhand', null, ['4118245']],
+  nagpur: ['Nagpur', 21.1458, 79.0882, 'IN-MH', 'Maharashtra', null, ['442002']],
+  surat: ['Surat', 21.1702, 72.8311, 'IN-GJ', 'Gujarat', null, ['3942660']],
+  vadodara: ['Vadodara', 22.3072, 73.1812, 'IN-GJ', 'Gujarat', null, ['3942666']],
+  rajkot: ['Rajkot', 22.3039, 70.8022, 'IN-GJ', 'Gujarat', null, ['3942663']],
+  goa: ['Goa', 15.4909, 73.8278, 'IN-GA', 'Goa', null, ['3012535']],
+  kanpur: ['Kanpur', 26.4499, 80.3319, 'IN-UP', 'Uttar Pradesh', null, ['3947067']],
+  varanasi: ['Varanasi', 25.3176, 82.9739, 'IN-UP', 'Uttar Pradesh', null, ['3947071']],
+  prayagraj: ['Prayagraj', 25.4358, 81.8463, 'IN-UP', 'Uttar Pradesh', null, ['3947060']],
+  ludhiana: ['Ludhiana', 30.901, 75.8573, 'IN-PB', 'Punjab', null, ['3947051']],
 };
 
+const CITIES = Object.fromEntries(Object.entries(CITY_TABLE).map(([k, [name, lat, lon, geo, state]]) => [k, { name, lat, lon, geo, state }]));
+const STATE_OF = Object.fromEntries(Object.entries(CITY_TABLE).map(([k, c]) => [k, c[4]]));
+
+const citySources = Object.entries(CITY_TABLE).flatMap(([key, [name, , , , , hindu, toi]]) => [
+  ...(hindu ? [{ id: `hindu-${key}`, name: `The Hindu · ${name}`, site: 'thehindu.com', url: HINDU(hindu), region: key, topic: 'local', poll: min(6) }] : []),
+  ...toi.map((id, i) => ({ id: `toi-${key}${i ? '-' + i : ''}`, name: `Times of India · ${name}`, site: 'indiatimes.com', url: TOI(id), region: key, topic: 'local', poll: min(6) })),
+  { id: `gn-${key}`, name: `Google News · ${name}`, site: 'news.google.com', url: GN(name.replace(' NCR', '')), region: key, topic: 'local', poll: min(10), aggregator: true },
+]);
+
+// Google Trends for every state that has a city above (plus all of India).
+const STATES = [...new Map(Object.entries(CITY_TABLE).map(([key, c]) => [c[3], { geo: c[3], area: c[4], region: key }])).values()];
+const trendSources = [{ geo: 'IN', area: 'India', region: 'india' }, ...STATES].map(({ geo, area, region }) => ({
+  id: 'trends-' + geo.toLowerCase(), name: `Google Trends · ${area}`, site: 'trends.google.com', url: `https://trends.google.com/trending/rss?geo=${geo}`,
+  adapter: 'trends', region, topic: region === 'india' ? 'india' : 'local', area, poll: min(10), aggregator: true, trends: true,
+}));
+
 const SOURCES = [
-  // ── Hyderabad ──
-  { id: 'hindu-hyd', name: 'The Hindu · Hyderabad', site: 'thehindu.com', url: 'https://www.thehindu.com/news/cities/Hyderabad/feeder/default.rss', region: 'hyderabad', topic: 'local', poll: min(5) },
-  { id: 'toi-hyd', name: 'Times of India · Hyderabad', site: 'indiatimes.com', url: 'https://timesofindia.indiatimes.com/rssfeeds/-2128816011.cms', region: 'hyderabad', topic: 'local', poll: min(5) },
+  // ── Hyderabad extras ──
   { id: 'telangana-today', name: 'Telangana Today', site: 'telanganatoday.com', url: 'https://telanganatoday.com/hyderabad/feed', region: 'hyderabad', topic: 'local', poll: min(5) },
   { id: 'siasat', name: 'The Siasat Daily', site: 'siasat.com', url: 'https://www.siasat.com/feed/', region: 'hyderabad', topic: 'local', poll: min(6) },
-  { id: 'gn-hyd', name: 'Google News · Hyderabad', site: 'news.google.com', url: GN('Hyderabad'), region: 'hyderabad', topic: 'local', poll: min(8), aggregator: true },
   { id: 'gn-tollywood', name: 'Google News · Tollywood', site: 'news.google.com', url: GN('Tollywood'), region: 'hyderabad', topic: 'entertainment', poll: min(15), aggregator: true },
-  // ── Other cities ──
-  { id: 'hindu-blr', name: 'The Hindu · Bengaluru', site: 'thehindu.com', url: 'https://www.thehindu.com/news/cities/Bangalore/feeder/default.rss', region: 'bengaluru', topic: 'local', poll: min(6) },
-  { id: 'toi-blr', name: 'Times of India · Bengaluru', site: 'indiatimes.com', url: 'https://timesofindia.indiatimes.com/rssfeeds/-2128833038.cms', region: 'bengaluru', topic: 'local', poll: min(6) },
-  { id: 'hindu-mum', name: 'The Hindu · Mumbai', site: 'thehindu.com', url: 'https://www.thehindu.com/news/cities/Mumbai/feeder/default.rss', region: 'mumbai', topic: 'local', poll: min(6) },
-  { id: 'toi-mum', name: 'Times of India · Mumbai', site: 'indiatimes.com', url: 'https://timesofindia.indiatimes.com/rssfeeds/-2128838597.cms', region: 'mumbai', topic: 'local', poll: min(6) },
-  { id: 'hindu-del', name: 'The Hindu · Delhi', site: 'thehindu.com', url: 'https://www.thehindu.com/news/cities/Delhi/feeder/default.rss', region: 'delhi', topic: 'local', poll: min(6) },
-  { id: 'toi-del', name: 'Times of India · Delhi', site: 'indiatimes.com', url: 'https://timesofindia.indiatimes.com/rssfeeds/-2128839596.cms', region: 'delhi', topic: 'local', poll: min(6) },
-  { id: 'hindu-che', name: 'The Hindu · Chennai', site: 'thehindu.com', url: 'https://www.thehindu.com/news/cities/Chennai/feeder/default.rss', region: 'chennai', topic: 'local', poll: min(6) },
-  { id: 'toi-che', name: 'Times of India · Chennai', site: 'indiatimes.com', url: 'https://timesofindia.indiatimes.com/rssfeeds/2950623.cms', region: 'chennai', topic: 'local', poll: min(6) },
-  { id: 'hindu-kol', name: 'The Hindu · Kolkata', site: 'thehindu.com', url: 'https://www.thehindu.com/news/cities/Kolkata/feeder/default.rss', region: 'kolkata', topic: 'local', poll: min(6) },
-  { id: 'toi-kol', name: 'Times of India · Kolkata', site: 'indiatimes.com', url: 'https://timesofindia.indiatimes.com/rssfeeds/-2128830821.cms', region: 'kolkata', topic: 'local', poll: min(6) },
-  { id: 'toi-pune', name: 'Times of India · Pune', site: 'indiatimes.com', url: 'https://timesofindia.indiatimes.com/rssfeeds/-2128821991.cms', region: 'pune', topic: 'local', poll: min(6) },
+  { id: '123telugu', name: '123telugu', site: '123telugu.com', url: 'https://www.123telugu.com/feed', region: 'hyderabad', topic: 'entertainment', poll: min(15) },
+  ...citySources,
   // ── India ──
   { id: 'hindu-national', name: 'The Hindu', site: 'thehindu.com', url: 'https://www.thehindu.com/news/national/feeder/default.rss', region: 'india', topic: 'india', poll: min(5) },
   { id: 'ndtv', name: 'NDTV', site: 'ndtv.com', url: 'https://feeds.feedburner.com/ndtvnews-top-stories', region: 'india', topic: 'india', poll: min(5) },
   { id: 'indian-express', name: 'The Indian Express', site: 'indianexpress.com', url: 'https://indianexpress.com/feed/', region: 'india', topic: 'india', poll: min(5) },
+  { id: 'india-today', name: 'India Today', site: 'indiatoday.in', url: 'https://www.indiatoday.in/rss/home', region: 'india', topic: 'india', poll: min(5) },
+  { id: 'ht-india', name: 'Hindustan Times', site: 'hindustantimes.com', url: 'https://www.hindustantimes.com/feeds/rss/india-news/rssfeed.xml', region: 'india', topic: 'india', poll: min(6) },
+  { id: 'ht-cities', name: 'Hindustan Times · Cities', site: 'hindustantimes.com', url: 'https://www.hindustantimes.com/feeds/rss/cities/rssfeed.xml', region: 'india', topic: 'india', poll: min(8) },
+  { id: 'toi-india', name: 'Times of India', site: 'indiatimes.com', url: TOI('-2128936835'), region: 'india', topic: 'india', poll: min(5) },
+  { id: 'scroll', name: 'Scroll', site: 'scroll.in', url: 'https://feeds.feedburner.com/ScrollinArticles.rss', region: 'india', topic: 'india', poll: min(10) },
+  { id: 'nie', name: 'The New Indian Express', site: 'newindianexpress.com', url: 'https://www.newindianexpress.com/feed', region: 'india', topic: 'india', poll: min(8) },
   { id: 'gn-india', name: 'Google News · India top stories', site: 'news.google.com', url: 'https://news.google.com/rss?hl=en-IN&gl=IN&ceid=IN:en', region: 'india', topic: 'india', poll: min(5), aggregator: true, topList: true },
-  // ── Tech ──
+  // ── Tech & startups ──
   { id: 'hn', name: 'Hacker News', site: 'news.ycombinator.com', url: 'https://hacker-news.firebaseio.com/v0/topstories.json', adapter: 'hn', region: 'world', topic: 'tech', poll: min(4) },
   { id: 'verge', name: 'The Verge', site: 'theverge.com', url: 'https://www.theverge.com/rss/index.xml', region: 'world', topic: 'tech', poll: min(8) },
   { id: 'techcrunch', name: 'TechCrunch', site: 'techcrunch.com', url: 'https://techcrunch.com/feed/', region: 'world', topic: 'tech', poll: min(8) },
   { id: 'ars', name: 'Ars Technica', site: 'arstechnica.com', url: 'https://feeds.arstechnica.com/arstechnica/index', region: 'world', topic: 'tech', poll: min(10) },
+  { id: 'wired', name: 'Wired', site: 'wired.com', url: 'https://www.wired.com/feed/rss', region: 'world', topic: 'tech', poll: min(12) },
+  { id: 'engadget', name: 'Engadget', site: 'engadget.com', url: 'https://www.engadget.com/rss.xml', region: 'world', topic: 'tech', poll: min(10) },
+  { id: 'androidauthority', name: 'Android Authority', site: 'androidauthority.com', url: 'https://www.androidauthority.com/feed/', region: 'world', topic: 'tech', poll: min(15) },
+  { id: '9to5mac', name: '9to5Mac', site: '9to5mac.com', url: 'https://9to5mac.com/feed/', region: 'world', topic: 'tech', poll: min(15) },
   { id: 'gadgets360', name: 'Gadgets 360', site: 'gadgets360.com', url: 'https://feeds.feedburner.com/gadgets360-latest', region: 'india', topic: 'tech', poll: min(8) },
+  { id: 'et-tech', name: 'ET Tech', site: 'indiatimes.com', url: 'https://economictimes.indiatimes.com/tech/rssfeeds/13357270.cms', region: 'india', topic: 'tech', poll: min(8) },
+  { id: 'toi-tech', name: 'Times of India · Tech', site: 'indiatimes.com', url: TOI('66949542'), region: 'india', topic: 'tech', poll: min(10) },
+  { id: 'hindu-scitech', name: 'The Hindu · Technology', site: 'thehindu.com', url: 'https://www.thehindu.com/sci-tech/technology/feeder/default.rss', region: 'india', topic: 'tech', poll: min(12) },
+  { id: 'yourstory', name: 'YourStory', site: 'yourstory.com', url: 'https://yourstory.com/feed', region: 'india', topic: 'business', poll: min(12) },
+  { id: 'inc42', name: 'Inc42', site: 'inc42.com', url: 'https://inc42.com/feed/', region: 'india', topic: 'business', poll: min(12) },
   // ── Business ──
   { id: 'et', name: 'The Economic Times', site: 'indiatimes.com', url: 'https://economictimes.indiatimes.com/rssfeedstopstories.cms', region: 'india', topic: 'business', poll: min(5) },
   { id: 'mint', name: 'Mint · Markets', site: 'livemint.com', url: 'https://www.livemint.com/rss/markets', region: 'india', topic: 'business', poll: min(6) },
+  { id: 'mint-news', name: 'Mint', site: 'livemint.com', url: 'https://www.livemint.com/rss/news', region: 'india', topic: 'business', poll: min(8) },
+  { id: 'hindu-business', name: 'The Hindu · Business', site: 'thehindu.com', url: 'https://www.thehindu.com/business/feeder/default.rss', region: 'india', topic: 'business', poll: min(8) },
+  { id: 'toi-business', name: 'Times of India · Business', site: 'indiatimes.com', url: TOI('1898055'), region: 'india', topic: 'business', poll: min(8) },
   { id: 'moneycontrol', name: 'Moneycontrol', site: 'moneycontrol.com', url: 'https://www.moneycontrol.com/rss/latestnews.xml', region: 'india', topic: 'business', poll: min(6) },
   { id: 'cnbc', name: 'CNBC', site: 'cnbc.com', url: 'https://www.cnbc.com/id/100003114/device/rss/rss.html', region: 'world', topic: 'business', poll: min(8) },
   // ── World ──
   { id: 'bbc-world', name: 'BBC News · World', site: 'bbc.co.uk', url: 'https://feeds.bbci.co.uk/news/world/rss.xml', region: 'world', topic: 'world', poll: min(6) },
+  { id: 'nyt-world', name: 'The New York Times · World', site: 'nytimes.com', url: 'https://rss.nytimes.com/services/xml/rss/nyt/World.xml', region: 'world', topic: 'world', poll: min(8) },
+  { id: 'cnn-world', name: 'CNN · World', site: 'cnn.com', url: 'http://rss.cnn.com/rss/edition_world.rss', region: 'world', topic: 'world', poll: min(8) },
   { id: 'aljazeera', name: 'Al Jazeera', site: 'aljazeera.com', url: 'https://www.aljazeera.com/xml/rss/all.xml', region: 'world', topic: 'world', poll: min(8) },
   { id: 'guardian-world', name: 'The Guardian · World', site: 'theguardian.com', url: 'https://www.theguardian.com/world/rss', region: 'world', topic: 'world', poll: min(8) },
+  { id: 'france24', name: 'France 24', site: 'france24.com', url: 'https://www.france24.com/en/rss', region: 'world', topic: 'world', poll: min(10) },
+  { id: 'dw', name: 'DW', site: 'dw.com', url: 'https://rss.dw.com/rdf/rss-en-world', region: 'world', topic: 'world', poll: min(12) },
   { id: 'npr-world', name: 'NPR · World', site: 'npr.org', url: 'https://feeds.npr.org/1004/rss.xml', region: 'world', topic: 'world', poll: min(10) },
-  // ── Sports & entertainment ──
+  { id: 'hindu-intl', name: 'The Hindu · World', site: 'thehindu.com', url: 'https://www.thehindu.com/news/international/feeder/default.rss', region: 'world', topic: 'world', poll: min(10) },
+  { id: 'toi-world', name: 'Times of India · World', site: 'indiatimes.com', url: TOI('296589292'), region: 'world', topic: 'world', poll: min(10) },
+  // ── Sports ──
   { id: 'cricinfo', name: 'ESPNcricinfo', site: 'espncricinfo.com', url: 'https://www.espncricinfo.com/rss/content/story/feeds/0.xml', region: 'india', topic: 'sports', poll: min(6) },
+  { id: 'toi-cricket', name: 'Times of India · Cricket', site: 'indiatimes.com', url: TOI('54829575'), region: 'india', topic: 'sports', poll: min(8) },
+  { id: 'sportstar', name: 'Sportstar', site: 'thehindu.com', url: 'https://sportstar.thehindu.com/feeder/default.rss', region: 'india', topic: 'sports', poll: min(8) },
+  { id: 'ndtv-sports', name: 'NDTV Sports', site: 'ndtv.com', url: 'https://feeds.feedburner.com/ndtvsports-latest', region: 'india', topic: 'sports', poll: min(8) },
+  { id: 'hindu-sport', name: 'The Hindu · Sport', site: 'thehindu.com', url: 'https://www.thehindu.com/sport/feeder/default.rss', region: 'india', topic: 'sports', poll: min(10) },
+  { id: 'espn', name: 'ESPN', site: 'espn.com', url: 'https://www.espn.com/espn/rss/news', region: 'world', topic: 'sports', poll: min(12) },
+  // ── Entertainment ──
   { id: 'ht-entertainment', name: 'Hindustan Times · Entertainment', site: 'hindustantimes.com', url: 'https://www.hindustantimes.com/feeds/rss/entertainment/rssfeed.xml', region: 'india', topic: 'entertainment', poll: min(8) },
-  // ── Google Trends: what people in each state are searching for right now (real search volume) ──
-  ...[['india', 'IN', 'India'], ['hyderabad', 'IN-TG', 'Telangana'], ['bengaluru', 'IN-KA', 'Karnataka'], ['mumbai', 'IN-MH', 'Maharashtra'],
-    ['delhi', 'IN-DL', 'Delhi'], ['chennai', 'IN-TN', 'Tamil Nadu'], ['kolkata', 'IN-WB', 'West Bengal']].map(([region, geo, area]) => ({
-    id: 'trends-' + geo.toLowerCase(), name: `Google Trends · ${area}`, site: 'trends.google.com', url: `https://trends.google.com/trending/rss?geo=${geo}`,
-    adapter: 'trends', region, topic: region === 'india' ? 'india' : 'local', area, poll: min(10), aggregator: true, trends: true,
-  })),
+  { id: 'toi-entertainment', name: 'Times of India · Entertainment', site: 'indiatimes.com', url: TOI('1081479906'), region: 'india', topic: 'entertainment', poll: min(10) },
+  { id: 'hindu-entertainment', name: 'The Hindu · Entertainment', site: 'thehindu.com', url: 'https://www.thehindu.com/entertainment/feeder/default.rss', region: 'india', topic: 'entertainment', poll: min(12) },
+  { id: 'pinkvilla', name: 'Pinkvilla', site: 'pinkvilla.com', url: 'https://www.pinkvilla.com/rss.xml', region: 'india', topic: 'entertainment', poll: min(12) },
+  { id: 'bollywoodhungama', name: 'Bollywood Hungama', site: 'bollywoodhungama.com', url: 'https://www.bollywoodhungama.com/feed/', region: 'india', topic: 'entertainment', poll: min(15) },
+  ...trendSources,
   // ── Optional platforms: need documented API access, so off until credentials are configured ──
   { id: 'youtube-in', name: 'YouTube · Popular in India', site: 'youtube.com', url: 'https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=IN&maxResults=20', adapter: 'youtube', region: 'india', topic: 'video', poll: min(30), credentials: 'YOUTUBE_API_KEY' },
   { id: 'reddit-india', name: 'Reddit · r/india', site: 'reddit.com', url: 'https://oauth.reddit.com/r/india/hot?limit=25', adapter: 'reddit', region: 'india', topic: 'india', poll: min(15), credentials: 'REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET' },
 ].map((s) => ({ adapter: 'rss', timeout: 9000, ...s, enabled: s.credentials ? s.credentials.split(' + ').every((k) => !!process.env[k]) : true }));
 
-module.exports = { SOURCES, CITIES, byId: (id) => SOURCES.find((s) => s.id === id) };
+module.exports = { SOURCES, CITIES, STATE_OF, byId: (id) => SOURCES.find((s) => s.id === id) };

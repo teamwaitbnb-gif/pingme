@@ -5,6 +5,7 @@
 const crypto = require('crypto');
 const { byId } = require('./buzz/sources');
 const srcName = (id) => byId(id)?.name || id;
+const AI = require('./buzz/ai');
 
 const SCREENS = new Set(['chats', 'chat', 'group', 'buzz', 'call', 'camera', 'settings', 'auth', 'install', 'other']);
 const PLATFORMS = new Set(['ios', 'android', 'desktop', 'other']);
@@ -38,6 +39,13 @@ module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, pu
       } else if (type === 'buzz_seen') {
         const v = Math.max(0, Math.min(500, Math.round(Number(e.v) || 0)));
         if (v) { rows.push([req.uid, sid, 'buzz_seen', 'buzz', null, v]); buzz = 1; }
+      } else if (type === 'buzz_dwell' || type === 'buzz_skip') {
+        const item = String(e.i || '').replace(/[^a-f0-9]/gi, '').slice(0, 24);
+        // Reading: store how much of the story's expected reading time was spent (100 = read it fully).
+        const secs = Math.max(1, Math.min(180, Math.round(Number(e.v) || 0)));
+        const expected = Math.max(3, Math.min(120, Math.round(Number(e.e) || 10)));
+        const v = type === 'buzz_dwell' ? Math.min(300, Math.round((secs / expected) * 100)) : 1;
+        if (item) rows.push([req.uid, sid, type, 'buzz', item, v]);
       } else if (type === 'buzz_open') {
         const item = String(e.i || '').replace(/[^a-f0-9]/gi, '').slice(0, 24);
         if (item) { rows.push([req.uid, sid, 'buzz_open', 'buzz', item, 1]); buzz = 1; }
@@ -197,7 +205,9 @@ module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, pu
     const ids = await db.q('SELECT DISTINCT user_id FROM user_days WHERE buzz=1 AND day >= ?', [daysAgo(days - 1)]);
     for (const r of ids.slice(0, 3000)) { const u = await getUser(Number(r.user_id)); const k = u?.settings?.buzzRegion || 'india'; regions[k] = (regions[k] || 0) + 1; }
     const seen = n(ev.seen), opens = n(ev.opens);
-    res.json({ users: n(ev.users), seen, opens, ctr: seen ? Math.round((opens / seen) * 1000) / 10 : 0, likes, comments, reposts,
+    const [ai] = await db.q('SELECT COUNT(*) n, SUM(ai_summary IS NOT NULL) done FROM feed_items WHERE fetched_at >= ?', [new Date(Date.now() - 2 * 86400e3)]);
+    const [opt] = await db.q('SELECT COUNT(*) n FROM user_interests');
+    res.json({ ai: { ...AI.status(), summarised48h: n(ai.done), stories48h: n(ai.n) }, chatPersonalisedUsers: n(opt.n), users: n(ev.users), seen, opens, ctr: seen ? Math.round((opens / seen) * 1000) / 10 : 0, likes, comments, reposts,
       top: top.map((t) => ({ title: t.title, source: t.via || srcName(t.source_id), opens: n(t.opens), likes: n(t.likes), comments: n(t.comments), reposts: n(t.reposts) })),
       sources: sources.map((s) => ({ source: srcName(s.source_id), opens: n(s.opens) })), regions });
   }));

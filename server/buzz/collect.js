@@ -10,7 +10,7 @@ const UA = 'Mozilla/5.0 (compatible; PingMeBuzz/1.0; +https://pingme.app)';
 // Some publishers only serve their site icon to regular browsers.
 const UA_BROWSER = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1';
 const MAX_FEED_BYTES = 4 * 1024 * 1024;
-const MAX_PAGE_BYTES = 700 * 1024;
+const MAX_PAGE_BYTES = 1200 * 1024;
 const MAX_ITEMS = 60;
 
 const parser = new XMLParser({
@@ -220,7 +220,9 @@ async function enrich(url, site, { anySite = false } = {}) {
   const image = N.httpUrl(meta('og:image') || meta('twitter:image') || '', url);
   const description = N.summarize(meta('og:description') || meta('description') || meta('twitter:description') || '', '');
   const big = image && N.upgradeImage(image);
-  return { image: big && !/(logo|default|placeholder|og-image\.png|android-chrome|apple-touch|favicon|site-?icon|cropped-[^/]*\d{2,3}x\d{2,3})/i.test(big) ? big : null, description };
+  const lead = N.leadParagraphs(r.body, meta('og:title') || '');
+  const fullText = N.articleText(r.body);
+  return { image: big && !/(logo|default|placeholder|og-image\.png|android-chrome|apple-touch|favicon|site-?icon|cropped-[^/]*\d{2,3}x\d{2,3})/i.test(big) ? big : null, description, lead, fullText };
 }
 
 // The publisher's own logo: apple-touch-icon / icon from their homepage (largest), else /favicon.ico.

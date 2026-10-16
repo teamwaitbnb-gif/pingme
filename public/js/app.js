@@ -240,6 +240,7 @@ function startApp() {
     api, me: () => S.me, userAvatar, chats: () => sortedChats(), chatTitle, chatAvatar,
     sendToChat: (chatId, text) => sendPayload(chatId, { kind: 'text', text }),
     saveRegion: (r) => api('PATCH', '/api/me', { settings: { buzzRegion: r } }).then(({ user: u }) => { S.me = u; }).catch(() => {}),
+    saveSettings: (settings) => api('PATCH', '/api/me', { settings }).then(({ user: u }) => { S.me = u; }).catch((e) => toast(e.message, { error: true })),
   });
   if (sessionStorage.getItem('pm:tab') === 'buzz') setTimeout(() => setTab('buzz'), 0);
   let st;
