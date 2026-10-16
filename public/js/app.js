@@ -1388,7 +1388,7 @@ function buildMessage(m, { first, last, status, chat }) {
   const info = [];
   if (last || m.editedAt) {
     if (last && !m.pending) info.push(h('span', null, fmtTime(m.createdAt)));
-    if (m.editedAt && !m.deleted) info.push(h('span', { class: 'ed', onclick: () => openMessageInfo(m) }, 'Edited'));
+    if (m.editedAt && !m.deleted) info.push(h('span', { class: 'edited-tag', onclick: () => openMessageInfo(m) }, 'Edited'));
     if (m.expiresAt && !m.readTtl) info.push(icon('timer'));
     if (m.silent && mine) info.push(icon('belloff'));
   }
