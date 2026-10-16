@@ -376,7 +376,7 @@ function connectSocket() {
     if (ev.callId) S.groupCalls.set(ev.chatId, ev); else S.groupCalls.delete(ev.chatId);
     if (S.current === ev.chatId) renderHeader();
   });
-  socket.on('msg:update', (m) => { upsertMessage(m); updateChatPreview(m.chatId, m); });
+  socket.on('msg:update', (m) => { upsertMessage(m); updateChatPreview(m.chatId, m); if (m.chatId === S.current) probeVisible('update'); });
   socket.on('msg:remove', ({ chatId, id }) => {
     const st = S.msgs.get(chatId);
     if (st) { st.list = st.list.filter((m) => m.id !== id); if (S.current === chatId) renderMessages(); }
@@ -755,6 +755,7 @@ export function openChat(id, { around = null, push = true } = {}) {
   else { renderMessages(); scrollToBottom(); markRead(); }
   loadScheduled(id);
   clearChatNotifications(id);
+  probeVisible('open', [1500, 4000]);
 }
 
 export function closeChat() {
@@ -1196,6 +1197,45 @@ export function renderMessages() {
     conv.nodes.clear(); els.msgs.replaceChildren();
     try { drawMessages(chat, st); } catch (e) { reportError(e, 'render-empty-retry'); }
   }
+}
+
+// Visibility probe: messages exist but none are on screen (iPhone layout/paint glitch) → record the
+// exact layout (no message text) and repair it: reset page scroll/offsets, force a redraw, go to bottom.
+const probeTimers = new Set();
+function probeVisible(reason, delays = [700, 2000]) {
+  for (const d of delays) {
+    const t = setTimeout(() => { probeTimers.delete(t); checkVisible(reason + '@' + d); }, d);
+    probeTimers.add(t);
+  }
+}
+function checkVisible(reason) {
+  const box = els.msgs, chatId = S.current;
+  const st = chatId && S.msgs.get(chatId);
+  if (!box || !st?.loaded || !st.list.length || document.hidden || document.querySelector('.ctx, .sheet, .viewer, .call')) return;
+  const r = box.getBoundingClientRect();
+  const items = [...box.querySelectorAll('.m, .sys:not(.intro)')];
+  const vh = window.visualViewport?.height || innerHeight;
+  const vis = items.filter((el) => { const b = el.getBoundingClientRect(); return b.height > 0 && b.bottom > Math.max(0, r.top) && b.top < Math.min(vh, r.bottom); }).length;
+  if (vis > 0 && r.height > 40) return;
+  const chain = [];
+  for (let el = box; el && el !== document.documentElement; el = el.parentElement) {
+    const cs = getComputedStyle(el);
+    const bits = [cs.display !== 'block' && cs.display !== 'flex' ? 'd:' + cs.display : '', cs.visibility !== 'visible' ? 'v:' + cs.visibility : '', cs.opacity !== '1' ? 'o:' + cs.opacity : '', cs.transform !== 'none' ? 't:' + cs.transform : '', el.hidden ? 'hidden' : ''].filter(Boolean);
+    const br = el.getBoundingClientRect();
+    chain.push(`${el.tagName.toLowerCase()}.${String(el.className).split(' ').slice(0, 2).join('.')}[${Math.round(br.top)},${Math.round(br.height)}]${bits.length ? '{' + bits.join(' ') + '}' : ''}`);
+  }
+  const info = { reason, msgs: st.list.length, nodes: items.length, vis, box: [r.top, r.height, r.bottom].map(Math.round), scroll: [box.scrollTop, box.scrollHeight, box.clientHeight].map(Math.round),
+    win: [scrollY, innerHeight, Math.round(vh), Math.round(window.visualViewport?.offsetTop || 0)], app: [app.style.height, app.style.transform], kb: document.documentElement.classList.contains('kb-open'), active: document.activeElement?.tagName, chain };
+  const e = new Error(`chat not visible (${reason}): ${items.length} nodes, ${vis} visible, box h ${Math.round(r.height)}`);
+  e.stack = JSON.stringify(info);
+  reportError(e, 'invisible:' + reason.split('@')[0]);
+  // Repair.
+  try {
+    window.scrollTo(0, 0); document.scrollingElement && (document.scrollingElement.scrollTop = 0);
+    if (window.visualViewport) { app.style.height = window.visualViewport.height + 'px'; app.style.transform = ''; }
+    box.style.display = 'none'; void box.offsetHeight; box.style.display = '';
+    scrollToBottom();
+  } catch {}
 }
 
 function drawMessages(chat, st) {
@@ -1929,6 +1969,7 @@ export async function send(opts = {}) {
     els.ta.value = '';
     autosize(); renderCtxBar(); updateSendBtn();
     if (text !== (m.text || '')) emit('msg:edit', { id: m.id, text }).catch((e) => toast(e.message, { error: true }));
+    probeVisible('edit', [800, 2500, 5000]);
     return;
   }
   if (!text && !conv.tray.length) return;
