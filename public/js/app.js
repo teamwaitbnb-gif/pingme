@@ -1,4 +1,4 @@
-import { openVideoRecorder } from './video-recorder.js';
+import { openCamera } from './camera.js';
 import {
   h, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, handleLayerPop, whenHistorySettled, longPress, richText, emojiCount,
   fmtTime, fmtListTime, fmtDay, fmtDur, fmtSize, lastSeenText, isIOS, isMobile, isStandalone, store,
@@ -1473,9 +1473,10 @@ function renderComposer() {
   els.ta.value = store.get('draft:' + chat.id, '');
   els.sendBtn = h('button', { class: 'send', 'aria-label': 'Send' }, icon('send'));
   els.micBtn = h('button', { class: 'mic', 'aria-label': 'Record voice message', onclick: startRecording }, icon('mic'));
+  els.camBtn = navigator.mediaDevices?.getUserMedia ? h('button', { class: 'cam-btn', 'aria-label': 'Camera', onclick: () => openChatCamera(chat) }, icon('camera')) : null;
   els.plus = h('button', { class: 'plus', 'aria-label': 'Attach', onclick: plusMenu }, icon('plus'));
   els.fileInput = h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => { addFiles([...e.target.files]); e.target.value = ''; } });
-  els.composer = h('div', { class: 'composer' }, els.plus, h('div', { class: 'inputbox' }, els.intentBtn, els.ta, els.sendBtn, els.micBtn), els.fileInput);
+  els.composer = h('div', { class: 'composer' }, els.plus, h('div', { class: 'inputbox' }, els.intentBtn, els.ta, els.sendBtn, els.camBtn, els.micBtn), els.fileInput);
   els.blockedNote = h('div', { class: 'blocked-note', hidden: true });
   els.composerWrap.append(els.sched, els.ctxBar, els.optsBar, els.tray, els.composer, els.blockedNote);
 
@@ -1522,6 +1523,7 @@ function updateSendBtn() {
   const has = els.ta.value.trim() || conv.tray.length || conv.editing;
   els.sendBtn.hidden = !has;
   els.micBtn.hidden = !!has;
+  if (els.camBtn) els.camBtn.hidden = !!has;
   els.sendBtn.classList.toggle('sched', !!conv.sendAt);
   els.sendBtn.replaceChildren(icon(conv.editing ? 'check' : 'send'));
 }
@@ -1625,6 +1627,20 @@ async function pickIntent() {
   if (r) setMessageOpts({ intent: r === 'none' ? null : r });
 }
 
+// WhatsApp-style camera: shoot, review, send — the file goes out exactly as captured.
+function openChatCamera(chat) {
+  if (S.calls?.active()) return toast('Finish your call before using the camera');
+  openCamera({
+    maxBytes: S.config.maxUpload,
+    onSend: (file) => {
+      if (S.current !== chat.id) return toast('Chat changed — please take it again in the right chat');
+      addFiles([file]);
+      send();
+    },
+    onGallery: () => { const fi = els.fileInput; fi.removeAttribute('capture'); fi.accept = 'image/*,video/*'; fi.multiple = true; fi.click(); },
+  });
+}
+
 async function plusMenu() {
   els.plus.classList.add('open');
   const chat = S.chats.get(S.current);
@@ -1633,9 +1649,8 @@ async function plusMenu() {
     actions: [
       chat.type === 'direct' && feature('ping') ? { label: 'Send a Ping', icon: 'hand', value: 'ping' } : null,
       chat.type === 'direct' && feature('usSpace') ? { label: 'Write an open-when letter', icon: 'mail', value: 'letter' } : null,
-      isMobile() || (window.MediaRecorder && navigator.mediaDevices?.getUserMedia) ? { label: 'Record video', icon: 'video', value: 'record-video' } : null,
       { label: 'Photos & Videos', icon: 'image', value: 'media' },
-      isMobile() ? { label: 'Take photo', icon: 'camera', value: 'camera' } : null,
+      navigator.mediaDevices?.getUserMedia ? { label: 'Camera', icon: 'camera', value: 'camera' } : null,
       feature('verifiedCamera') ? { label: 'Verified Real photo', icon: 'shield', value: 'vr' } : null,
       { label: 'Document', icon: 'file', value: 'file' },
       { label: 'Location', icon: 'map', value: 'loc' },
@@ -1650,19 +1665,8 @@ async function plusMenu() {
   const fi = els.fileInput;
   fi.removeAttribute('capture');
   fi.multiple = r !== 'camera';
-  // Phones: open the phone's own camera app in video mode — full quality, stabilisation, HDR — and send
-  // the file exactly as recorded. (Browser recording can't match the camera app.) Computers use the
-  // in-app recorder.
-  if (r === 'record-video' && isMobile()) { fi.accept = 'video/*'; fi.setAttribute('capture', 'environment'); fi.multiple = false; return fi.click(); }
-  if (r === 'record-video') {
-    if (S.calls.active()) return toast('Finish your call before recording a video');
-    return openVideoRecorder({ maxBytes: S.config.maxUpload, onChoose: (file) => {
-      if (S.current === chat.id) addFiles([file]);
-      else toast('Chat changed. Please record again in the intended chat.');
-    } });
-  }
   if (r === 'media') { fi.accept = 'image/*,video/*'; fi.click(); }
-  if (r === 'camera') { fi.accept = 'image/*'; fi.setAttribute('capture', 'environment'); fi.click(); }
+  if (r === 'camera') return openChatCamera(chat);
   if (r === 'file') { fi.accept = ''; fi.click(); }
   if (r === 'loc') sendLocation(chat.id, conv.reply?.id);
   if (r === 'poll') openPoll(chat.id);

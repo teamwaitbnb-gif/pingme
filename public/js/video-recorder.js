@@ -1,7 +1,8 @@
 import { h, openSheet, toast, fmtDur } from './ui.js';
 import { ensurePermission } from './perm.js';
 
-const TYPES = ['video/mp4', 'video/webm;codecs=vp8,opus', 'video/webm'];
+// MP4/H.264 first: plays everywhere (iPhone and Android) without conversion.
+const TYPES = ['video/mp4;codecs=avc1.640028,mp4a.40.2', 'video/mp4;codecs=avc1,mp4a.40.2', 'video/mp4', 'video/webm;codecs=vp8,opus', 'video/webm'];
 
 export function recordingOptions(track) {
   const { width = 1920, height = 1080, frameRate = 30 } = track.getSettings();
