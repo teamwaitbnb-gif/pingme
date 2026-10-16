@@ -55,3 +55,21 @@ export function popScreen(name) {
   if (i < 0) return;
   endSegment(); overlays.splice(i, 1); beginSegment();
 }
+
+// App errors (crash reports for the owner): what broke and where — never message text. Sent at most
+// 20 per page load, duplicates collapsed.
+const sentErrors = new Set();
+let errorCount = 0;
+export function reportError(err, where = '') {
+  try {
+    const msg = String(err?.message || err || 'error').slice(0, 300);
+    const key = where + '|' + msg;
+    if (sentErrors.has(key) || errorCount >= 20) return;
+    sentErrors.add(key); errorCount++;
+    const stack = String(err?.stack || '').split('\n').slice(0, 8).map((l) => l.replace(/https?:\/\/[^/]+/g, '')).join('\n').slice(0, 1500);
+    const body = JSON.stringify({ where: String(where).slice(0, 60), msg, stack, screen: current(), platform, standalone: isStandalone() });
+    fetch('/api/client-error', { method: 'POST', keepalive: true, credentials: 'same-origin', headers: { 'content-type': 'application/json', 'x-pingme': '1' }, body }).catch(() => {});
+  } catch {}
+}
+addEventListener('error', (e) => { if ((e.error || e.message) && !/^Script error\.?$/.test(e.message || '')) reportError(e.error || e.message, 'window'); });
+addEventListener('unhandledrejection', (e) => { const r = e.reason; if (r && !(r.name === 'AbortError') && !/Failed to fetch|NetworkError|Load failed/i.test(String(r.message || r))) reportError(r, 'promise'); });

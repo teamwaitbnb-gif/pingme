@@ -69,9 +69,9 @@ const heat = (v) => {
 // ───── dashboard ─────
 async function dashboard() {
   root.replaceChildren(el('div', { class: 'loading' }, 'Loading dashboard…'));
-  const [ov, ts, ret, scr, bz, live, users, algo] = await Promise.all([
+  const [ov, ts, ret, scr, bz, live, users, algo, errs] = await Promise.all([
     api('/api/admin/overview'), api(`/api/admin/timeseries?days=${range}`), api('/api/admin/retention'),
-    api(`/api/admin/screens?days=${range}`), api(`/api/admin/buzz?days=${range}`), api('/api/admin/live'), api('/api/admin/users'), api(`/api/admin/algo?days=${range}`),
+    api(`/api/admin/screens?days=${range}`), api(`/api/admin/buzz?days=${range}`), api('/api/admin/live'), api('/api/admin/users'), api(`/api/admin/algo?days=${range}`), api('/api/admin/errors'),
   ]).catch((e) => { if (e.status === 401) { boot(); return []; } root.replaceChildren(el('div', { class: 'loading' }, e.message)); return []; });
   if (!ov) return;
   const seg = el('div', { class: 'seg' }, [7, 30, 90].map((d) => el('button', { class: d === range ? 'on' : '', onclick: () => { range = d; localStorage.setItem('pmAdminRange', d); dashboard(); } }, `${d} days`)));
@@ -125,6 +125,11 @@ async function dashboard() {
         : el('div', { class: 'empty' }, 'No story activity yet')),
 
     ...algoSection(algo, kpi),
+
+    el('h2', null, 'App errors', el('small', null, 'crashes on people’s phones · last 14 days')),
+    el('div', { class: 'card' }, errs.errors.length ? el('div', { class: 'tablewrap' }, el('table', null,
+      el('tr', null, el('th', null, 'Where'), el('th', null, 'Error'), el('th', { class: 'num' }, 'Times'), el('th', { class: 'num' }, 'People'), el('th', null, 'Devices'), el('th', null, 'Last')),
+      errs.errors.map((x) => el('tr', { title: x.stack || '' }, el('td', null, el('span', { class: 'chip' }, x.where)), el('td', { class: 'title-cell' }, x.msg), el('td', { class: 'num' }, fmt(x.count)), el('td', { class: 'num' }, fmt(x.users)), el('td', null, x.platforms || '—'), el('td', null, ago(x.last) + ' ago'))))) : el('div', { class: 'empty' }, 'No app errors — everything is running smoothly')),
 
     el('h2', null, 'Users', el('small', null, 'most recently active first')),
     el('div', { class: 'card' }, el('div', { class: 'tablewrap' }, el('table', null,

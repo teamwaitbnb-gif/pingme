@@ -66,6 +66,17 @@ module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, pu
     res.json({ ok: true });
   }));
 
+  // App crash reports from phones (what broke and where — never message text).
+  app.post('/api/client-error', auth, wrap(async (req, res) => {
+    rateLimit('cerr:' + req.uid, 30, 3600e3);
+    const b = req.body || {};
+    const str = (v, n) => String(v || '').slice(0, n);
+    await db.q('INSERT INTO client_errors (user_id, where_at, msg, stack, screen, platform, ua) VALUES (?,?,?,?,?,?,?)',
+      [req.uid, str(b.where, 60) || 'unknown', str(b.msg, 300) || 'error', str(b.stack, 1500) || null, SCREENS.has(b.screen) ? b.screen : 'other', PLATFORMS.has(b.platform) ? b.platform : 'other', str(req.headers['user-agent'], 300)]);
+    console.warn('client error', b.where, str(b.msg, 200));
+    res.json({ ok: true });
+  }));
+
   // Live: which screen each connected phone is on right now (sent over the socket).
   io.on('connection', (socket) => {
     socket.on('screen', (d) => {
@@ -105,6 +116,7 @@ module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, pu
 
   // ───── numbers ─────
   const n = (v) => Number(v || 0);
+  const ms0 = (d) => (d ? new Date(d).getTime() : null);
   const daysAgo = (k) => istDay(Date.now() - k * 86400e3);
 
   app.get('/api/admin/overview', adminOnly, wrap(async (req, res) => {
@@ -306,6 +318,12 @@ module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, pu
     });
   }));
 
+  app.get('/api/admin/errors', adminOnly, wrap(async (req, res) => {
+    const rows = await db.q(`SELECT where_at, msg, MAX(stack) stack, COUNT(*) n, COUNT(DISTINCT user_id) users, MAX(created_at) last, GROUP_CONCAT(DISTINCT platform) platforms
+      FROM client_errors WHERE created_at >= ? GROUP BY where_at, msg ORDER BY last DESC LIMIT 40`, [new Date(Date.now() - 14 * 86400e3)]);
+    res.json({ errors: rows.map((r) => ({ where: r.where_at, msg: r.msg, stack: r.stack, count: n(r.n), users: n(r.users), last: ms0(r.last), platforms: r.platforms })) });
+  }));
+
   app.get('/api/admin/live', adminOnly, wrap(async (req, res) => {
     const byUser = new Map();
     for (const [, s] of io.sockets.sockets) {
@@ -343,6 +361,7 @@ module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, pu
   setInterval(() => {
     db.q('DELETE FROM analytics_events WHERE created_at < ?', [new Date(Date.now() - 120 * 86400e3)]).catch(() => {});
     db.q('DELETE FROM feed_seen WHERE seen_at < ?', [new Date(Date.now() - 120 * 86400e3)]).catch(() => {});
+    db.q('DELETE FROM client_errors WHERE created_at < ?', [new Date(Date.now() - 30 * 86400e3)]).catch(() => {});
   }, 6 * 3600e3).unref();
 
   return { isAdmin };

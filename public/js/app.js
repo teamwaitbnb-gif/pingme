@@ -1,7 +1,7 @@
 import { openCamera } from './camera.js';
 import { mountPet, petHidden } from './pet.js';
 import { initBuzz } from './buzz.js';
-import { initAnalytics, setSocket, setScreen, pushScreen, popScreen } from './analytics.js';
+import { initAnalytics, setSocket, setScreen, pushScreen, popScreen, reportError } from './analytics.js';
 import {
   h, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, handleLayerPop, whenHistorySettled, longPress, richText, emojiCount,
   fmtTime, fmtListTime, fmtDay, fmtDur, fmtSize, lastSeenText, isIOS, isMobile, isStandalone, store,
@@ -1172,11 +1172,33 @@ function receiptStatus(m, chat) {
   return deliv.length ? 'Delivered' : 'Sent';
 }
 
+// Never leave a chat blank: if drawing fails, or the messages ended up in a stale (detached) view,
+// rebuild the conversation and draw it again from scratch; if that still fails, say so with a retry.
+// Failures are reported (no message text) so they can be fixed.
 export function renderMessages() {
   const chatId = S.current;
   const chat = S.chats.get(chatId);
   const st = S.msgs.get(chatId);
-  if (!chat || !st || !els.msgs) return;
+  if (!chat || !st) return;
+  if (!els.msgs || !els.msgs.isConnected) { buildConv(chat); }
+  try { drawMessages(chat, st); } catch (e) {
+    reportError(e, 'render');
+    try { conv.nodes.clear(); els.msgs.replaceChildren(); drawMessages(chat, st); } catch (e2) {
+      reportError(e2, 'render-retry');
+      els.msgs.replaceChildren(h('div', { class: 'load-fail' }, h('b', null, 'Couldn’t show this chat'), h('span', null, 'Something went wrong while drawing it.'),
+        h('button', { class: 'btn small', onclick: () => loadMessages(chatId, { reset: true }) }, 'Try again')));
+      return;
+    }
+  }
+  // Messages exist but nothing is on screen: draw again from scratch (self-healing).
+  if (st.list.length && !els.msgs.querySelector('.m, .sys:not(.intro), .ping-row')) {
+    reportError(new Error(`empty render (${st.list.length} messages)`), 'render-empty');
+    conv.nodes.clear(); els.msgs.replaceChildren();
+    try { drawMessages(chat, st); } catch (e) { reportError(e, 'render-empty-retry'); }
+  }
+}
+
+function drawMessages(chat, st) {
   const list = st.list;
   const lastMineIdx = (() => { for (let i = list.length - 1; i >= 0; i--) if (list[i].senderId === S.me.id && !['system', 'call'].includes(list[i].kind)) return i; return -1; })();
   const nodes = [];
@@ -1204,6 +1226,7 @@ export function renderMessages() {
       // One message that can't be drawn must never blank the whole chat.
       try { return buildMessage(m, { first, last, status, chat }); } catch (e) {
         console.warn('message render failed', m.id, e);
+        reportError(e, 'message:' + m.kind + (m.editedAt ? ':edited' : ''));
         return h('div', { class: 'sys' }, 'This message can’t be shown — update Ping Me to see it');
       }
     }));

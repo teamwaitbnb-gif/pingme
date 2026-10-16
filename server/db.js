@@ -134,6 +134,19 @@ const SCHEMA = [
     seen_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     PRIMARY KEY (user_id, item_id), INDEX (seen_at), INDEX (user_id, seen_at)
   )`,
+  // App crash reports (what broke and where; never message text), kept 30 days.
+  `CREATE TABLE IF NOT EXISTS client_errors (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT UNSIGNED NULL,
+    where_at VARCHAR(60) NOT NULL,
+    msg VARCHAR(300) NOT NULL,
+    stack TEXT NULL,
+    screen VARCHAR(24) NULL,
+    platform VARCHAR(12) NULL,
+    ua VARCHAR(300) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX (created_at)
+  )`,
   `CREATE TABLE IF NOT EXISTS user_devices (
     user_id BIGINT UNSIGNED PRIMARY KEY,
     platform VARCHAR(16) NOT NULL,
