@@ -1,5 +1,5 @@
 // Ping Me service worker: app-shell caching + app-style notifications.
-const VERSION = 'pm-v15';
+const VERSION = 'pm-v16';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/manifest.webmanifest',
   '/js/video-recorder.js', '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',
@@ -14,7 +14,7 @@ self.addEventListener('install', (e) => {
 
 self.addEventListener('activate', (e) => {
   e.waitUntil((async () => {
-    for (const k of await caches.keys()) if (k !== VERSION && k !== 'pm-prefs') await caches.delete(k);
+    for (const k of await caches.keys()) if (k !== VERSION && k !== 'pm-prefs' && k !== FACE_STORE) await caches.delete(k);
     await self.clients.claim();
   })());
 });
@@ -52,7 +52,13 @@ const VIBRATE_MSG = [40, 60, 40, 60, 120];
 const VIBRATE_CALL = [600, 300, 600, 300, 600, 300, 600];
 const VIBRATE_PING = [60, 80, 60, 80, 220];
 let audioReadyAt = 0; // last time the open app said it can ring by itself
-self.addEventListener('message', (e) => { if (e.data?.type === 'audio') audioReadyAt = e.data.ready ? Date.now() : 0; });
+self.addEventListener('message', (e) => {
+  if (e.data?.type === 'audio') audioReadyAt = e.data.ready ? Date.now() : 0;
+  // The open app hands over its contacts so their faces are ready before any notification arrives.
+  if (e.data?.type === 'warm-faces' && Array.isArray(e.data.people)) {
+    e.waitUntil((async () => { for (const p of e.data.people.slice(0, 60)) await face(p).catch(() => {}); })());
+  }
+});
 const canActions = typeof Notification !== 'undefined' && 'actions' in Notification.prototype;
 
 async function hasFocusedClient() {
@@ -91,14 +97,26 @@ async function loadBitmap(url) {
 const initials = (name = '') => name.trim().split(/\s+/).slice(0, 2).map((w) => [...w][0] || '').join('').toUpperCase() || '?';
 
 // A round 192px face for the notification's large icon.
+// Faces are kept in Cache Storage too, so after the first message the photo shows instantly —
+// even on a slow network or after the phone killed the service worker.
+const FACE_STORE = 'pm-faces';
+async function storedFace(key) {
+  try { const r = await (await caches.open(FACE_STORE)).match('/__face/' + encodeURIComponent(key)); return r ? await r.text() : null; } catch { return null; }
+}
+async function storeFace(key, url) {
+  try { await (await caches.open(FACE_STORE)).put('/__face/' + encodeURIComponent(key), new Response(url)); } catch {}
+}
+
 async function face(from) {
   if (!from || !canDraw) return '/icons/icon-192.png';
   const key = from.avatar || 'i:' + from.id + ':' + from.name;
   if (faceCache.has(key)) return faceCache.get(key);
+  const saved = await storedFace(key);
+  if (saved) { faceCache.set(key, saved); return saved; }
   try {
     const S = 192, c = new OffscreenCanvas(S, S), x = c.getContext('2d');
     x.beginPath(); x.arc(S / 2, S / 2, S / 2, 0, Math.PI * 2); x.clip();
-    const bmp = from.avatar ? await withTimeout(loadBitmap(from.avatar), 500) : null;
+    const bmp = from.avatar ? await withTimeout(loadBitmap(from.avatar), 4000) : null;
     if (bmp) {
       const k = Math.max(S / bmp.width, S / bmp.height);
       x.drawImage(bmp, (S - bmp.width * k) / 2, (S - bmp.height * k) / 2, bmp.width * k, bmp.height * k);
@@ -112,6 +130,7 @@ async function face(from) {
     const url = await toDataUrl(await c.convertToBlob({ type: 'image/png' }));
     if (faceCache.size > 50) faceCache.clear();
     faceCache.set(key, url);
+    if (bmp || !from.avatar) storeFace(key, url); // don't save initials as a stand-in for a real photo
     return url;
   } catch { return '/icons/icon-192.png'; }
 }
@@ -120,7 +139,7 @@ async function face(from) {
 async function picture(url) {
   if (!url || !canDraw) return undefined;
   try {
-    const bmp = await withTimeout(loadBitmap(url), 700);
+    const bmp = await withTimeout(loadBitmap(url), 5000);
     if (!bmp) return undefined;
     const k = Math.min(1, 720 / Math.max(bmp.width, bmp.height));
     const c = new OffscreenCanvas(Math.round(bmp.width * k), Math.round(bmp.height * k));
@@ -147,7 +166,8 @@ async function renderMessage(d) {
   const count = (existing?.data?.count || 0) + 1;
   const [icon, image] = await Promise.all([face(d.from), picture(d.image)]);
   existing?.close();
-  const title = `${d.urgent ? 'URGENT · ' : d.ping ? '👋 Ping · ' : ''}${d.title || 'Ping Me'}${count > 1 ? ` · ${count} new messages` : ''}`;
+  const name = d.title || 'Ping Me';
+  const title = count > 1 ? `${name} · ${count} new messages` : d.urgent ? `${name} · Urgent` : name;
   await self.registration.showNotification(title, {
     body: count > 1 ? lines.join('\n') : line,
     tag: d.tag,
@@ -165,8 +185,8 @@ async function renderMessage(d) {
 }
 
 async function showCall(d) {
-  await self.registration.showNotification(`${d.video ? '📹 Video call' : '☎ Incoming call'} · ${d.title || 'Ping Me'}`, {
-    body: (d.video ? 'Ping Me video call' : 'Ping Me voice call') + (d.body && /—/.test(d.body) ? ` ${d.body.slice(d.body.indexOf('—'))}` : ''),
+  await self.registration.showNotification(d.title || 'Ping Me', {
+    body: (d.video ? 'Incoming video call' : 'Incoming voice call') + (d.body && /—/.test(d.body) ? ` ${d.body.slice(d.body.indexOf('—'))}` : ''),
     tag: d.tag,
     renotify: true,
     requireInteraction: true,

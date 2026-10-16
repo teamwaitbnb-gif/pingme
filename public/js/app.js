@@ -136,6 +136,17 @@ export function showInstallGate({ force = false } = {}) {
   });
 }
 
+// Give the service worker everyone's photo now, so notifications show faces even when Ping Me is closed.
+function warmNotificationFaces() {
+  const people = [];
+  for (const c of S.chats.values()) for (const m of c.members || []) {
+    if (m.id === S.me?.id || people.some((p) => p.id === m.id)) continue;
+    const u = user(m.id);
+    people.push({ id: m.id, name: u.name, avatar: u.avatarV ? `/api/avatar/u/${m.id}?v=${u.avatarV}` : null });
+  }
+  navigator.serviceWorker?.ready.then((r) => r.active?.postMessage({ type: 'warm-faces', people })).catch(() => {});
+}
+
 // ─────── portrait only (like WhatsApp) ───────
 // Android installed app: lock the screen to portrait. iPhone has no lock API, so a sideways phone gets
 // a "turn upright" cover instead (calls and the photo/video viewer may still go sideways).
@@ -217,7 +228,7 @@ function startApp() {
     chat: (id) => S.chats.get(id),
     chatTitle, chatAvatar, userAvatar,
   });
-  loadChats().then(() => { handleUrl(); loadSafety(); checkRecovery(); if (S.me.settings?.onboarded) askNotificationsOnce(); });
+  loadChats().then(() => { handleUrl(); loadSafety(); checkRecovery(); if (S.me.settings?.onboarded) askNotificationsOnce(); setTimeout(warmNotificationFaces, 4000); });
   setupPush(false);
   history.replaceState({ root: true }, '');
   if (globalsBound) return;
