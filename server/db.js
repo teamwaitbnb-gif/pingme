@@ -121,6 +121,19 @@ const SCHEMA = [
     data_enc MEDIUMTEXT NOT NULL,
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
   )`,
+  // Buzz impressions: each story a person has seen (so it never comes back) and which part of the
+  // algorithm served it (p personal · m section mix · t trending · x explore · r more-like-this ·
+  // g no profile yet) — the admin portal measures each part against the others.
+  `CREATE TABLE IF NOT EXISTS feed_seen (
+    user_id BIGINT UNSIGNED NOT NULL,
+    item_id CHAR(24) NOT NULL,
+    slot CHAR(1) NOT NULL DEFAULT 'g',
+    topic VARCHAR(20) NULL,
+    source_id VARCHAR(40) NULL,
+    seq INT UNSIGNED NOT NULL DEFAULT 0,
+    seen_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (user_id, item_id), INDEX (seen_at), INDEX (user_id, seen_at)
+  )`,
   `CREATE TABLE IF NOT EXISTS user_devices (
     user_id BIGINT UNSIGNED PRIMARY KEY,
     platform VARCHAR(16) NOT NULL,

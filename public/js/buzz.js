@@ -12,7 +12,15 @@ import { track } from './analytics.js';
 //    scrolling fast — compared with how long the story takes to read, so lingering means interest;
 //  • "skip": flicked past in under a second (a gentle "less of this").
 const seenIds = new Set();
-let seenPending = 0;
+let seenPending = [];
+// Stories already seen on this phone (also known to the server): never shown again, even from the
+// offline copy.
+const SEEN_KEY = 'buzzSeenIds';
+let seenLocal = new Set(store.get(SEEN_KEY, []));
+function rememberSeen(id) {
+  seenLocal.add(id);
+  if (seenLocal.size > 1200) seenLocal = new Set([...seenLocal].slice(-1000));
+}
 const seenTimers = new Map();
 const shownAt = new Map(), skipped = new Set(), readTime = new Map(), readSent = new Map(), inZone = new Set();
 let lastScrollY = 0, lastScrollT = 0, fastUntil = 0;
@@ -23,7 +31,7 @@ const seenObserver = 'IntersectionObserver' in window ? new IntersectionObserver
     if (!id) continue;
     if (e.isIntersecting) {
       shownAt.set(id, performance.now());
-      if (!seenIds.has(id)) seenTimers.set(id, setTimeout(() => { seenIds.add(id); seenPending++; }, 1000));
+      if (!seenIds.has(id)) seenTimers.set(id, setTimeout(() => { seenIds.add(id); rememberSeen(id); seenPending.push([id, e.target.dataset.slot || 'g']); }, 1000));
     } else {
       clearTimeout(seenTimers.get(id)); seenTimers.delete(id);
       const t0 = shownAt.get(id); shownAt.delete(id);
@@ -40,8 +48,14 @@ const zoneObserver = 'IntersectionObserver' in window ? new IntersectionObserver
   for (const e of entries) {
     const id = e.target.dataset.id;
     if (!id) continue;
-    if (e.isIntersecting) inZone.add(id);
-    else { inZone.delete(id); flushRead(e.target); }
+    if (e.isIntersecting) {
+      inZone.add(id);
+      if (e.target._video && autoplayOk()) zoneTimers.set(id, setTimeout(() => { if (inZone.has(id) && !document.hidden) playIn(e.target, false); }, 500));
+    } else {
+      inZone.delete(id); flushRead(e.target);
+      clearTimeout(zoneTimers.get(id)); zoneTimers.delete(id);
+      if (activeVideo === e.target) stopVideo(e.target);
+    }
   }
 }, { rootMargin: '-25% 0px -25% 0px', threshold: 0.3 }) : null;
 function flushRead(el) {
@@ -63,7 +77,49 @@ function noteScroll(pane) {
   if (speed > 900) fastUntil = now + 350;
   lastScrollY = y; lastScrollT = now;
 }
-setInterval(() => { if (seenPending) { track({ t: 'buzz_seen', v: seenPending }); seenPending = 0; } }, 10000);
+function flushSeen() {
+  if (!seenPending.length) return;
+  const s = seenPending.splice(0, 200);
+  track({ t: 'buzz_seen', v: s.length, s });
+  store.set(SEEN_KEY, [...seenLocal]);
+}
+setInterval(flushSeen, 10000);
+document.addEventListener('visibilitychange', () => { if (document.hidden) flushSeen(); });
+
+// ───── videos play right in the feed ─────
+// The video in the middle of the screen plays muted (like Instagram); tap it for sound. Only one plays
+// at a time, and the player is removed once it scrolls away (keeps iPhones light). Data Saver: tap only.
+let activeVideo = null;
+const isYouTube = (u) => /^https:\/\/www\.youtube(-nocookie)?\.com\/embed\//.test(u);
+const autoplayOk = () => !navigator.connection?.saveData && !matchMedia('(prefers-reduced-motion: reduce)').matches;
+function playIn(el, sound) {
+  const box = el?.querySelector('.bz-video');
+  const u = el?._video;
+  if (!box || !u) return;
+  if (activeVideo && activeVideo !== el) stopVideo(activeVideo);
+  activeVideo = el;
+  const mode = sound ? 's' : 'm';
+  if (box.dataset.playing === mode || (box.dataset.playing === 's' && !sound)) return;
+  const old = box.querySelector('iframe, video');
+  if (old && old.tagName === 'VIDEO') { old.muted = !sound; old.play().catch(() => {}); box.dataset.playing = mode; return; }
+  old?.remove();
+  let node;
+  if (isYouTube(u)) {
+    node = h('iframe', { src: `${u}?autoplay=1&mute=${sound ? 0 : 1}&playsinline=1&rel=0&modestbranding=1`, title: 'Video', allow: 'autoplay; encrypted-media; picture-in-picture; fullscreen', allowfullscreen: true, referrerpolicy: 'strict-origin-when-cross-origin' });
+  } else {
+    node = h('video', { src: u, poster: el._poster || undefined, playsinline: true, loop: true, controls: true, preload: 'metadata' });
+    node.muted = !sound;
+    node.play().catch(() => {});
+  }
+  box.dataset.playing = mode;
+  box.append(node);
+}
+function stopVideo(el) {
+  const box = el?.querySelector('.bz-video');
+  if (box) { box.querySelector('iframe, video')?.remove(); delete box.dataset.playing; }
+  if (activeVideo === el) activeVideo = null;
+}
+const zoneTimers = new Map();
 
 const POLL_MS = 5000;
 // Cities come from the server (35+); this short list is only the offline fallback.
@@ -89,7 +145,7 @@ export function initBuzz(ctx) {
   let region = ctx.me()?.settings?.buzzRegion || store.get('buzzRegion', null) || 'india';
   let cards = new Map(); // id → { el, data }
   let order = [];        // ids in display order
-  let version = null, offset = 0, hasMore = false, inFlight = false, timer = null, visible = false;
+  let version = null, hasMore = false, inFlight = false, timer = null, visible = false, fromCache = false;
   let lastCheck = 0, lastNew = 0, offline = false;
 
   function mount(container) {
@@ -120,7 +176,8 @@ export function initBuzz(ctx) {
     }).catch(() => {});
     // Saved stories first (instant, and they survive a lost connection).
     const saved = store.get('buzzCache:' + region, null);
-    if (saved?.items?.length) { renderAll(saved.items); setStatus(`Saved stories · ${ago(saved.at)}`); }
+    const unseen = (saved?.items || []).filter((it) => !seenLocal.has(it.id));
+    if (unseen.length) { renderAll(unseen); fromCache = true; setStatus(`Saved stories · ${ago(saved.at)}`); }
   }
   const nameOf = (r) => (CITIES.find((c) => c[0] === r) || CITIES[CITIES.length - 1])[1].replace('All of India', 'India');
 
@@ -174,7 +231,7 @@ export function initBuzz(ctx) {
     region = r;
     store.set('buzzRegion', r);
     ctx.saveRegion?.(r);
-    cards = new Map(); order = []; version = null; offset = 0;
+    cards = new Map(); order = []; version = null; fromCache = false;
     if (root) mount(root);
     check(true);
   }
@@ -183,14 +240,20 @@ export function initBuzz(ctx) {
 
   // ───── cards (built once, then only patched — a playing video or open state is never rebuilt) ─────
   function card(it) {
+    const host = hostOf(it.canonicalUrl);
+    const social = host === 'x.com' || host === 'youtube.com';
     const link = (cls, ...kids) => h('a', { class: cls, href: it.canonicalUrl, target: '_blank', rel: 'noopener noreferrer' }, ...kids);
     let media;
     if (it.videoUrl) {
-      media = h('button', { class: 'bz-media bz-video', 'aria-label': 'Play video', onclick: (e) => {
-        const v = h('video', { src: it.videoUrl, controls: true, playsinline: true, preload: 'metadata', poster: it.imageUrl || undefined });
-        e.currentTarget.replaceWith(h('div', { class: 'bz-media' }, v));
-        v.play().catch(() => {});
-      } }, it.imageUrl ? h('img', { src: it.imageUrl, alt: '', loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer' }) : null, h('span', { class: 'bz-playic' }, icon('play', 'fill')));
+      media = h('div', { class: 'bz-media bz-video', role: 'button', tabindex: '0', 'aria-label': 'Play video with sound', onclick: (e) => {
+        if (e.target.closest('video')) return; // the video's own controls
+        const card = e.currentTarget.closest('.bz-card');
+        if (card.querySelector('.bz-video').dataset.playing !== 's') track({ t: 'buzz_open', i: it.id });
+        playIn(card, true);
+      } },
+      it.imageUrl ? h('img', { src: it.imageUrl, alt: '', loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer' }) : null,
+      h('span', { class: 'bz-playic' }, icon('play', 'fill')),
+      h('span', { class: 'bz-vtag' }, icon('play', 'fill'), 'Video'));
     } else if (it.imageUrl) {
       const img = h('img', { src: it.imageUrl, alt: '', loading: 'lazy', decoding: 'async', referrerpolicy: 'no-referrer' });
       media = link('bz-media', img);
@@ -201,7 +264,7 @@ export function initBuzz(ctx) {
     const likeBtn = h('button', { class: 'bz-act like' + (it.liked ? ' on' : ''), 'aria-label': 'Like', 'aria-pressed': String(!!it.liked), onclick: () => react(it.id, 'like') }, icon('heart', it.liked ? 'fill' : ''), h('span', null, it.likes || ''));
     const comBtn = h('button', { class: 'bz-act', 'aria-label': 'Comments', onclick: () => openComments(it.id) }, icon('msg'), h('span', null, it.comments || ''));
     const repBtn = h('button', { class: 'bz-act repost' + (it.reposted ? ' on' : ''), 'aria-label': 'Repost', 'aria-pressed': String(!!it.reposted), onclick: () => repost(it.id) }, icon('repost'), h('span', null, it.reposts || ''));
-    const el = h('article', { class: 'bz-card', 'data-id': it.id },
+    const el = h('article', { class: 'bz-card', 'data-id': it.id, 'data-slot': it.slot || 'g' },
       media,
       h('div', { class: 'bz-body' },
         h('div', { class: 'bz-meta' },
@@ -211,13 +274,14 @@ export function initBuzz(ctx) {
         // Only real popularity signals get a label ("Latest" is the default, so it isn't shown).
         it.contentType !== 'latest' ? h('span', { class: 'bz-label k-' + it.contentType }, it.label) : null,
         link('bz-h', it.title),
-        it.description ? h('p', { class: 'bz-d' }, it.description) : h('p', { class: 'bz-d none' }, `Read the full story at ${hostOf(it.canonicalUrl) || it.sourceName}.`),
+        it.description ? h('p', { class: 'bz-d' }, it.description) : social ? null : h('p', { class: 'bz-d none' }, `Read the full story at ${hostOf(it.canonicalUrl) || it.sourceName}.`),
         it.alsoBy?.length ? h('div', { class: 'bz-also' }, `Also covered by ${it.alsoBy.join(', ')}${it.coverage - 1 > it.alsoBy.length ? ` +${it.coverage - 1 - it.alsoBy.length}` : ''}`) : null,
         it.discussUrl && it.discussUrl !== it.canonicalUrl ? h('a', { class: 'bz-discuss', href: it.discussUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Discussion on Hacker News') : null,
         h('div', { class: 'bz-actions' }, likeBtn, comBtn, repBtn,
           h('button', { class: 'bz-act', 'aria-label': 'Send to a chat', onclick: () => shareToChat(it) }, icon('send')),
-          link('bz-read', 'Read', icon('chev')))));
+          link('bz-read', host === 'x.com' ? 'Open on X' : host === 'youtube.com' ? 'YouTube' : 'Read', icon('chev')))));
     el._refs = { likeBtn, comBtn, repBtn };
+    if (it.videoUrl) { el._video = it.videoUrl; el._poster = it.imageUrl; }
     seenObserver?.observe(el);
     zoneObserver?.observe(el);
     el.addEventListener('click', (e) => { if (e.target.closest('a.bz-media, a.bz-h, a.bz-read, a.bz-ph')) track({ t: 'buzz_open', i: it.id }); });
@@ -293,10 +357,10 @@ export function initBuzz(ctx) {
     try {
       const r = await ctx.api('GET', `/api/feed?region=${region}&limit=24`);
       lastCheck = Date.now(); offline = false;
-      if (!cards.size || r.region !== region) { renderAll(r.items); offset = r.items.length; hasMore = r.hasMore; }
-      else if (r.version !== version) { const n = merge(r.items); if (n) lastNew = Date.now(); }
+      // First answer after opening: replace the offline copy with the live, unseen feed.
+      if (!cards.size || r.region !== region || (fromCache && root.scrollTop < 60)) { renderAll(r.items); hasMore = r.hasMore; fromCache = false; }
+      else if (r.version !== version) { fromCache = false; const n = merge(r.items); if (n) lastNew = Date.now(); if (r.hasMore) hasMore = true; }
       else for (const it of r.items) patch(it);
-      if (!offset) { offset = r.items.length; hasMore = r.hasMore; }
       version = r.version;
       store.set('buzzCache:' + region, { at: Date.now(), items: order.slice(0, 48).map((id) => cards.get(id).data) });
       // "Checking" and "new content" are different things: say which one happened.
@@ -312,9 +376,9 @@ export function initBuzz(ctx) {
     if (loadingMore || !hasMore) return;
     loadingMore = true; moreBtn.hidden = false;
     try {
-      const r = await ctx.api('GET', `/api/feed?region=${region}&limit=24&offset=${offset}`);
+      const r = await ctx.api('POST', '/api/feed/more', { region, limit: 24, have: order.slice(-1500) });
       for (const it of r.items) { if (cards.has(it.id)) continue; const el = card(it); cards.set(it.id, { el, data: it }); order.push(it.id); feedEl.append(el); }
-      offset += r.items.length; hasMore = r.hasMore && r.items.length > 0;
+      hasMore = r.hasMore && r.items.length > 0;
     } catch {}
     loadingMore = false; moreBtn.hidden = true;
   }
@@ -408,12 +472,14 @@ export function initBuzz(ctx) {
   // ───── lifecycle ─────
   function show(container) {
     if (root !== container || !feedEl) mount(container);
+    // Back after 10+ minutes: start again from the top with only stories not seen yet.
+    else if (lastCheck && Date.now() - lastCheck > 10 * 60000) { cards = new Map(); order = []; version = null; root.scrollTop = 0; feedEl.replaceChildren(); }
     visible = true;
     check(true);
     clearInterval(timer);
     timer = setInterval(() => { if (!document.hidden) check(); }, POLL_MS);
   }
-  function hide() { visible = false; clearInterval(timer); timer = null; }
+  function hide() { visible = false; clearInterval(timer); timer = null; if (activeVideo) stopVideo(activeVideo); }
   // Catch up immediately when the tab comes back or the connection returns.
   document.addEventListener('visibilitychange', () => { if (!document.hidden && visible) check(true); });
   addEventListener('online', () => { if (visible) check(true); });

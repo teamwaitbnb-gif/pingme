@@ -128,8 +128,39 @@ const SOURCES = [
   { id: 'pinkvilla', name: 'Pinkvilla', site: 'pinkvilla.com', url: 'https://www.pinkvilla.com/rss.xml', region: 'india', topic: 'entertainment', poll: min(12) },
   { id: 'bollywoodhungama', name: 'Bollywood Hungama', site: 'bollywoodhungama.com', url: 'https://www.bollywoodhungama.com/feed/', region: 'india', topic: 'entertainment', poll: min(15) },
   ...trendSources,
+  // ── Video: news channels' own YouTube feeds (no key needed) — they play right inside Buzz ──
+  ...[
+    ['ndtv', 'NDTV', 'UCZFMm1mMw0F81Z37aaEzTUA', 'india', 'india'],
+    ['indiatoday', 'India Today', 'UCYPvAwZP8pZhSMW8qs7cVCw', 'india', 'india'],
+    ['timesnow', 'Times Now', 'UC6RJ7-PaXg6TIH2BzZfTV7w', 'india', 'india'],
+    ['news18', 'CNN-News18', 'UCef1-8eOpJgud7szVPlZQAQ', 'india', 'india'],
+    ['republic', 'Republic World', 'UCwqusr8YDwM-3mEYTDeJHzw', 'india', 'india'],
+    ['tv9telugu', 'TV9 Telugu', 'UCPXTXMecYqnRKNdqdVOGSFg', 'hyderabad', 'local'],
+    ['ntvtelugu', 'NTV Telugu', 'UCumtYpCY26F6Jr3satUgMvA', 'hyderabad', 'local'],
+    ['cnbctv18', 'CNBC-TV18', 'UCmRbHAgG2k2vDUvb3xsEunQ', 'india', 'business'],
+    ['icc', 'ICC', 'UCt2JXOLNxqry7B_4rRZME3Q', 'world', 'sports'],
+    ['mkbhd', 'Marques Brownlee', 'UCBJycsmduvYEL83R_U4JriQ', 'world', 'tech'],
+    ['wion', 'WION', 'UC_gUM8rL-Lrg6O3adPW9K1g', 'world', 'world'],
+    ['firstpost', 'Firstpost', 'UCz8QaiQxApLq8sLNcszYyJw', 'world', 'world'],
+    ['bbc', 'BBC News', 'UC16niRr50-MSBwiO3YDb3RA', 'world', 'world'],
+    ['aljazeera', 'Al Jazeera English', 'UCNye-wNBqNL5ZzHSJj3l8Bg', 'world', 'world'],
+    ['reuters', 'Reuters', 'UChqUTb7kYRX8-EiaN3XFrSQ', 'world', 'world'],
+    ['dw', 'DW News', 'UCknLrEdhRCp1aegoMqRaCZg', 'world', 'world'],
+  ].map(([id, name, ch, region, topic]) => ({ id: 'yt-' + id, name: `${name} · YouTube`, site: 'youtube.com', url: `https://www.youtube.com/feeds/videos.xml?channel_id=${ch}`, region, topic, poll: min(15), social: true, video: true })),
+  // ── X (Twitter): the most engaging recent posts near the reader and worldwide. Official API only —
+  // off until X_BEARER_TOKEN is set (X has no free read access). Polled gently to stay inside the plan.
+  ...[
+    ['india', 'India', 'india', 'india', '(India OR #India) lang:en'],
+    ['world', 'World', 'world', 'world', '(breaking OR viral OR world) lang:en is:verified'],
+    ['hyderabad', 'Hyderabad', 'hyderabad', 'local', '(Hyderabad OR #Hyderabad OR Telangana)'],
+    ['bengaluru', 'Bengaluru', 'bengaluru', 'local', '(Bengaluru OR Bangalore OR #Bengaluru)'],
+    ['mumbai', 'Mumbai', 'mumbai', 'local', '(Mumbai OR #Mumbai)'],
+    ['delhi', 'Delhi', 'delhi', 'local', '(Delhi OR #Delhi OR NCR)'],
+    ['chennai', 'Chennai', 'chennai', 'local', '(Chennai OR #Chennai)'],
+  ].map(([id, name, region, topic, q]) => ({ id: 'x-' + id, name: `X · Popular in ${name}`, site: 'x.com', url: 'https://api.x.com/2/tweets/search/recent', adapter: 'x',
+    query: `${q} -is:retweet -is:reply has:media`, max: 10, region, topic, poll: min(Number(process.env.X_POLL_MINUTES) || 120), social: true, credentials: 'X_BEARER_TOKEN' })),
   // ── Optional platforms: need documented API access, so off until credentials are configured ──
-  { id: 'youtube-in', name: 'YouTube · Popular in India', site: 'youtube.com', url: 'https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=IN&maxResults=20', adapter: 'youtube', region: 'india', topic: 'video', poll: min(30), credentials: 'YOUTUBE_API_KEY' },
+  { id: 'youtube-in', name: 'YouTube · Popular in India', site: 'youtube.com', url: 'https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=IN&maxResults=20', adapter: 'youtube', region: 'india', topic: 'video', poll: min(30), social: true, video: true, credentials: 'YOUTUBE_API_KEY' },
   { id: 'reddit-india', name: 'Reddit · r/india', site: 'reddit.com', url: 'https://oauth.reddit.com/r/india/hot?limit=25', adapter: 'reddit', region: 'india', topic: 'india', poll: min(15), credentials: 'REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET' },
 ].map((s) => ({ adapter: 'rss', timeout: 9000, ...s, enabled: s.credentials ? s.credentials.split(' + ').every((k) => !!process.env[k]) : true }));
 

@@ -124,7 +124,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
         const src = byId(r.source_id);
         let got = null;
         // Google News links are redirects we can't follow; Trends links go straight to the article.
-        if (src && (!src.aggregator || src.trends)) { try { got = await enrich(r.url, src.site, { anySite: !!src.trends }); } catch {} }
+        if (src && !src.social && (!src.aggregator || src.trends)) { try { got = await enrich(r.url, src.site, { anySite: !!src.trends }); } catch {} }
         // Better image found → use it. Otherwise keep a small real photo, but drop icons/placeholders.
         const junk = /(android-chrome|apple-touch|favicon|site-?icon|logo|placeholder|default|og-image|cropped-)/i.test(r.image_url || '');
         const img = got?.image && (N.lowRes(r.image_url) || !r.image_url) ? got.image : (junk || (N.lowRes(r.image_url) && !/^https:/.test(r.image_url || '')) ? null : r.image_url);
@@ -154,7 +154,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     rows.sort((a, b) => top.indexOf(a.id) - top.indexOf(b.id));
     for (const r of rows.slice(0, 2)) {
       const src = byId(r.source_id);
-      if (!src || (src.aggregator && !src.trends)) { await db.q('UPDATE feed_items SET ai_tries=9 WHERE id=?', [r.id]); continue; }
+      if (!src || src.social || (src.aggregator && !src.trends)) { await db.q('UPDATE feed_items SET ai_tries=9 WHERE id=?', [r.id]); continue; }
       let page = null;
       try { page = await enrich(r.url, src.site, { anySite: !!src.trends }); } catch {}
       if (!page?.fullText || page.fullText.length < 300) { await db.q('UPDATE feed_items SET ai_tries=ai_tries+1 WHERE id=?', [r.id]); continue; }
@@ -216,6 +216,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
   }
 
   const AREA = STATE_OF;
+  const compact = (v) => (v >= 1e7 ? (v / 1e6).toFixed(0) + 'M' : v >= 1e6 ? (v / 1e6).toFixed(1).replace(/\.0$/, '') + 'M' : v >= 1e4 ? Math.round(v / 1e3) + 'K' : v >= 1e3 ? (v / 1e3).toFixed(1).replace(/\.0$/, '') + 'K' : String(v));
   function score(row, eng, region) {
     const src = byId(row.source_id);
     const t = row.published_at ? ms(row.published_at) : ms(row.fetched_at);
@@ -228,6 +229,12 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     if (e?.platform === 'Google Trends') {
       viral = Math.min(1, 0.35 + Math.log10((e.searchesN || 0) + 1) / 6);
       label = { kind: 'trending', text: `Trending in ${e.area || 'India'}${e.searches ? ` · ${e.searches} searches` : ''}` };
+    } else if (e?.platform === 'YouTube') {
+      viral = Math.min(0.9, Math.log10((e.views || 0) + 1) / 6.5);
+      if (e.views >= 20000) label = { kind: 'trending', text: `${compact(e.views)} views on YouTube` };
+    } else if (e?.platform === 'X') {
+      viral = Math.min(1, Math.log10((e.likes || 0) + 2 * (e.reposts || 0) + (e.replies || 0) + 1) / 4.5);
+      if (e.likes >= 300) label = { kind: 'trending', text: `${compact(e.likes)} likes · ${compact(e.reposts)} reposts on X` };
     } else if (e?.points != null) {
       viral = Math.min(1, Math.log10(e.points + 1) / 3);
       label = { kind: 'trending', text: `${e.points} points · ${e.comments} comments on Hacker News` };
@@ -242,6 +249,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       viral += Math.min(1, Math.log2(1 + inApp) / 5);
       if (inApp >= 3) label = { kind: 'buzzing', text: 'Buzzing on Ping Me' };
     }
+    if (row.video_url) viral += 0.06; // a playable video is worth a little more
     return { score: 0.55 * recency + 0.45 * viral, label, ts: t };
   }
 
@@ -273,6 +281,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       // Lead: has a photo + summary, not an aggregator, then the highest score.
       const lead = [...cl.items].sort((a, b) => (!!b.row.image_url - !!a.row.image_url) || (!!b.row.summary - !!a.row.summary) || ((!byId(a.row.source_id)?.aggregator) ? -1 : 1) || b.score - a.score)[0];
       for (const x of cl.items) if (x !== lead) x.hiddenBy = lead.row.id;
+      lead.members = cl.items.map((x) => x.row.id); // seeing any version of the story counts as seeing it
       const n = outlets.size;
       lead.coverage = n;
       lead.alsoBy = [...outlets.keys()].filter((k) => k !== (lead.row.via || byId(lead.row.source_id)?.name?.split(' · ')[0])).slice(0, 4);
@@ -280,6 +289,19 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       if (n >= 3 && lead.label.kind === 'latest') lead.label = { kind: 'top', text: `Covered by ${n} outlets` };
       if (!lead.row.engagement && cl.items.some((x) => x.row.engagement)) lead.extraEngagement = cl.items.find((x) => x.row.engagement)?.row.engagement;
     }
+  }
+
+  // Videos are spread out: at most one in any five stories, so the feed stays a news feed.
+  function spaceVideos(list, gap = 5) {
+    const out = [], held = [];
+    let last = -gap;
+    for (const x of list) {
+      if (held.length && out.length - last >= gap) { out.push(held.shift()); last = out.length - 1; }
+      if (!x.row.video_url) { out.push(x); continue; }
+      if (out.length - last >= gap) { out.push(x); last = out.length - 1; } else held.push(x);
+    }
+    for (const x of held) out.push(x);
+    return out;
   }
 
   const cache = new Map(); // region → { at, version, list }
@@ -329,8 +351,9 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       lastSource = x.row.source_id;
       out.push(x);
     }
-    const version = require('crypto').createHash('sha1').update(out.slice(0, 60).map((x) => x.row.id).join(',')).digest('hex').slice(0, 16);
-    const entry = { at: Date.now(), version, list: out };
+    const spaced = spaceVideos(out);
+    const version = require('crypto').createHash('sha1').update(spaced.slice(0, 60).map((x) => x.row.id).join(',')).digest('hex').slice(0, 16);
+    const entry = { at: Date.now(), version, list: spaced };
     cache.set(region, entry);
     dirty = false;
     return entry;
@@ -356,11 +379,15 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       const w = r.type === 'buzz_open' ? 1.5 : r.type === 'buzz_dwell' ? Math.min(1.8, ((Number(r.value) || 0) / 100) * 1.2) : -0.25;
       sig.push({ id: r.id, w, t: ms(r.created_at) });
     }
-    const p = { topics: {}, sources: {}, words: {}, n: sig.length };
+    // Impressions: every story this person was shown, with its topic and publisher (kept even after
+    // the story itself expires), so the profile can tell "likes cricket" from "was shown lots of cricket".
+    const imp = await db.q('SELECT item_id, topic, source_id FROM feed_seen WHERE user_id=? AND seen_at > ? ORDER BY seen_at DESC LIMIT 4000', [uid, since]).catch(() => []);
+    const impOf = new Map(imp.map((r) => [r.item_id, r]));
+    const p = { topics: {}, sources: {}, words: {}, n: sig.length, imp: imp.length, impTopics: {}, topicLift: {}, sourceLift: {} };
     if (sig.length) {
       const items = new Map((await db.q('SELECT id, title, topic, source_id, via FROM feed_items WHERE id IN (?)', [[...new Set(sig.map((x) => x.id))]])).map((r) => [r.id, r]));
       for (const x of sig) {
-        const it = items.get(x.id);
+        const it = items.get(x.id) || (impOf.has(x.id) ? { title: '', topic: impOf.get(x.id).topic, source_id: impOf.get(x.id).source_id } : null);
         if (!it) continue;
         const w = x.w * Math.exp(-(Date.now() - x.t) / (10 * 86400e3));
         p.topics[it.topic] = (p.topics[it.topic] || 0) + w;
@@ -374,6 +401,24 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
         return Object.fromEntries(top.map(([k, v]) => [k, v / max]));
       };
       p.topics = norm(p.topics, 10); p.sources = norm(p.sources, 25); p.words = norm(p.words, 80);
+    }
+    // Engagement rate per topic and publisher vs this person's average (1 = average): a topic shown
+    // 40 times and never opened sinks; one opened every time rises. Smoothed so a few stories don't swing it.
+    if (imp.length >= 20) {
+      const engaged = new Set(sig.filter((x) => x.w >= 0.7).map((x) => x.id));
+      const T = {}, S = {};
+      let pos = 0;
+      for (const r of imp) {
+        const e = engaged.has(r.item_id) ? 1 : 0;
+        pos += e;
+        (T[r.topic] ||= [0, 0]); T[r.topic][0]++; T[r.topic][1] += e;
+        if (r.source_id) { (S[r.source_id] ||= [0, 0]); S[r.source_id][0]++; S[r.source_id][1] += e; }
+      }
+      const avg = (pos + 1) / (imp.length + 5);
+      const lift = ([n, k]) => ((k + 8 * avg) / (n + 8)) / avg;
+      for (const [t, v] of Object.entries(T)) { p.impTopics[t] = v[0]; p.topicLift[t] = lift(v); }
+      for (const [t, v] of Object.entries(S)) if (v[0] >= 5) p.sourceLift[t] = lift(v);
+      p.n += 1;
     }
     // Topics from the person's own chats (only if they turned it on): keywords, never messages.
     const chat = await chatInterests(uid);
@@ -422,67 +467,141 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
   }
   async function forgetChatInterests(uid) { await db.q('DELETE FROM user_interests WHERE user_id=?', [uid]); profiles.delete(uid); }
 
+  const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+  // How much someone cares about a section: what they engaged with, adjusted by how often they engage
+  // when it's shown (0 = neutral; negative = keeps being shown, keeps being ignored).
+  const topicScore = (p, t) => 0.65 * (p.topics[t] || 0) + 0.35 * (clamp(p.topicLift[t] ?? 1, 0, 2) - 1);
   function affinity(x, p) {
     const r = x.row;
-    const t = p.topics[r.topic] || 0;
-    const s = p.sources[r.via || r.source_id] || 0;
+    const t = topicScore(p, r.topic);
+    const s = (p.sources[r.via || r.source_id] || 0) + 0.3 * (clamp(p.sourceLift[r.source_id] ?? 1, 0, 2) - 1);
     let k = 0;
     for (const w of tokens(r.title)) k += p.words[w] || 0;
     return 0.3 * t + 0.2 * s + 0.5 * Math.min(1, k / 1.2);
   }
 
-  const personalCache = new Map(); // uid:region → { at, base, entry }
+  // ───── seen stories never come back ─────
+  // The app reports every story that was really on screen (half visible for a second). Those — and any
+  // other outlet's version of the same story — are left out of that person's feed from then on.
+  const seenCache = new Map(); // uid → { at, set, ver }
+  async function seenOf(uid) {
+    const hit = seenCache.get(uid);
+    if (hit && Date.now() - hit.at < 10 * 60000) return hit;
+    const rows = await db.q('SELECT item_id FROM feed_seen WHERE user_id=? AND seen_at > ?', [uid, new Date(Date.now() - 5 * 86400e3)]).catch(() => []);
+    const entry = { at: Date.now(), set: new Set(rows.map((r) => r.item_id)), ver: (hit?.ver || 0) + 1 };
+    seenCache.set(uid, entry);
+    return entry;
+  }
+  const SLOTS = new Set(['p', 'm', 't', 'x', 'r', 'g']);
+  // pairs: [[itemId, slot], …] → { added, repeats } (a repeat = shown again in a later session; should be 0).
+  async function markSeen(uid, pairs) {
+    const want = new Map();
+    for (const [id, slot] of pairs) { const k = String(id || '').replace(/[^a-f0-9]/gi, '').slice(0, 24); if (k.length === 24) want.set(k, SLOTS.has(slot) ? slot : 'g'); }
+    if (!want.size) return { added: 0, repeats: 0 };
+    const ids = [...want.keys()];
+    const already = new Set((await db.q('SELECT item_id FROM feed_seen WHERE user_id=? AND item_id IN (?)', [uid, ids])).map((r) => r.item_id));
+    const fresh = ids.filter((id) => !already.has(id));
+    if (fresh.length) {
+      const meta = new Map((await db.q('SELECT id, topic, source_id FROM feed_items WHERE id IN (?)', [fresh])).map((r) => [r.id, r]));
+      const [{ c }] = await db.q('SELECT COUNT(*) c FROM feed_seen WHERE user_id=?', [uid]);
+      let seq = Number(c);
+      await db.q('INSERT IGNORE INTO feed_seen (user_id, item_id, slot, topic, source_id, seq) VALUES ?',
+        [fresh.map((id) => [uid, id, want.get(id), meta.get(id)?.topic || null, meta.get(id)?.source_id || null, ++seq])]);
+    }
+    const sc = seenCache.get(uid);
+    if (sc) { for (const id of ids) sc.set.add(id); sc.ver++; }
+    if (fresh.length >= 10) profiles.delete(uid);
+    return { added: fresh.length, repeats: already.size };
+  }
+  const isSeen = (x, seen) => seen.has(x.row.id) || (x.members ? x.members.some((id) => seen.has(id)) : false);
+
+  // ───── the personal feed ─────
+  // Repeating pattern of 8 slots:
+  //   p personal best · m section mix · p · t trending · p · m · p · x explore
+  // Half is what this person likes, a quarter keeps the city/section balance, one in eight is purely
+  // what's big right now, and one in eight tries a section they rarely see (so tastes can grow and
+  // nobody is stuck in a bubble). Every story carries its slot so the admin portal can measure each part.
+  const PATTERN = ['p', 'm', 'p', 't', 'p', 'm', 'p', 'x'];
+  const personalCache = new Map(); // uid:region → { at, key, entry }
   async function personalized(region, uid) {
     const base = await ranked(region);
-    const p = await interests(uid);
-    if (!p.n) return base;
+    const [p, seen] = [await interests(uid), await seenOf(uid)];
     const key = uid + ':' + region;
+    const want = base.version + ':' + seen.ver + ':' + p.n;
     const hit = personalCache.get(key);
-    if (hit && hit.base === base.version && Date.now() - hit.at < 15000) return hit.entry;
+    if (hit && hit.key === want && Date.now() - hit.at < 15000) return hit.entry;
+    const pool = base.list.filter((x) => !isSeen(x, seen.set));
+    let out;
+    if (!p.n) out = pool.map((x) => ({ ...x, slot: 'g' }));
+    else out = spaceVideos(arrange(pool, p, region));
+    const version = require('crypto').createHash('sha1').update(out.slice(0, 60).map((x) => x.row.id).join(',')).digest('hex').slice(0, 16);
+    const entry = { at: Date.now(), version, list: out };
+    personalCache.set(key, { at: Date.now(), key: want, entry });
+    if (personalCache.size > 5000) personalCache.delete(personalCache.keys().next().value);
+    return entry;
+  }
+
+  function arrange(pool, p, region) {
     const mix = region === 'india' ? MIX_INDIA : MIX_CITY;
     const buckets = new Map(mix.map(([b]) => [b, []]));
-    const general = [...base.list];
-    for (const x of base.list) {
+    for (const x of pool) {
       const b = bucketOf(x.row, region);
       if (buckets.has(b)) buckets.get(b).push({ ...x, pscore: x.score + 0.7 * affinity(x, p) });
     }
     for (const list of buckets.values()) list.sort((a, b) => b.pscore - a.pscore);
-    // Sections the person enjoys get a bigger share (local news keeps its place).
-    const weights = new Map(mix.map(([b, w]) => [b, w * (1 + 3 * (p.topics[b === 'local' ? 'local' : b] || 0))]));
+    // Sections the person enjoys get a bigger share; ignored ones shrink (never to nothing).
+    const weights = new Map(mix.map(([b, w]) => [b, w * (1 + 3 * Math.max(-0.25, topicScore(p, b)))]));
     const total = [...weights.values()].reduce((a, b) => a + b, 0);
     const credit = new Map(mix.map(([b]) => [b, 0]));
-    // Pattern per 4 stories: personal best · section mix · personal best · trending. Half the feed is
-    // what this person likes, a quarter keeps the city/section mix, a quarter is purely what's big.
-    const personal = base.list.map((x) => ({ x, a: affinity(x, p) })).filter((y) => y.a > 0.12)
+    const personal = pool.map((x) => ({ x, a: affinity(x, p) })).filter((y) => y.a > 0.12)
       .sort((u, v) => (v.a + 0.6 * v.x.score) - (u.a + 0.6 * u.x.score));
-    const out = [], used = new Set();
+    const general = [...pool];
+    // Explore: sections this person has seen least compared with their normal share.
+    const impTotal = Object.values(p.impTopics).reduce((a, b) => a + b, 0) || 1;
+    const mixTotal = mix.reduce((a, [, w]) => a + w, 0);
+    const exploreOrder = mix.map(([b, w]) => [b, ((p.impTopics[b] || 0) / impTotal) / (w / mixTotal)]).sort((a, b) => a[1] - b[1]).map(([b]) => b);
+    const out = [], used = new Set(), recent = [];
     let lastSource = null;
-    const takeFrom = (arr, get = (y) => y) => {
-      let k = arr.findIndex((y) => !used.has(get(y).row.id) && get(y).row.source_id !== lastSource);
+    // Variety: skip a story that's nearly the same as one of the last few (unless nothing else is left).
+    const tooSimilar = (x) => { const tk = tokens(x.row.title); return recent.some((r) => { let n = 0; for (const w of tk) if (r.has(w)) n++; return n >= 3; }); };
+    const takeFrom = (arr, get = (y) => y, varied = false) => {
+      let k = -1;
+      for (let i = 0; i < arr.length && i < 40; i++) {
+        const x = get(arr[i]);
+        if (used.has(x.row.id) || x.row.source_id === lastSource) continue;
+        if (varied && tooSimilar(x)) continue;
+        k = i; break;
+      }
       if (k < 0) k = arr.findIndex((y) => !used.has(get(y).row.id));
       return k < 0 ? null : get(arr.splice(k, 1)[0]);
     };
-    while (out.length < base.list.length) {
-      const slot = out.length % 4;
-      let x = null;
-      if (slot === 0 || slot === 2) x = takeFrom(personal, (y) => y.x);
-      if (!x && slot === 3) x = takeFrom(general);
+    let ex = 0;
+    while (out.length < pool.length) {
+      let slot = PATTERN[out.length % PATTERN.length], x = null;
+      if (slot === 'p') x = takeFrom(personal, (y) => y.x, true);
+      else if (slot === 't') x = takeFrom(general);
+      else if (slot === 'x') {
+        for (let i = 0; i < exploreOrder.length && !x; i++) {
+          const b = exploreOrder[(ex + i) % exploreOrder.length];
+          const list = buckets.get(b).filter((y) => !used.has(y.row.id)).sort((u, v) => v.score - u.score);
+          if (list.length) { x = list[0]; ex++; }
+        }
+      }
       if (!x) {
+        slot = 'm';
         for (const [b, w] of weights) credit.set(b, credit.get(b) + w / total);
         const pick = [...credit.entries()].filter(([b]) => buckets.get(b).some((y) => !used.has(y.row.id))).sort((a, b) => b[1] - a[1])[0];
-        if (pick) { x = takeFrom(buckets.get(pick[0])); credit.set(pick[0], pick[1] - 1); }
+        if (pick) { x = takeFrom(buckets.get(pick[0]), undefined, true); credit.set(pick[0], pick[1] - 1); }
       }
-      if (!x) x = takeFrom(general);
+      if (!x) { x = takeFrom(general); slot = 't'; }
       if (!x) break;
       if (used.has(x.row.id)) continue;
       used.add(x.row.id);
       lastSource = x.row.source_id;
-      out.push(x);
+      recent.push(tokens(x.row.title)); if (recent.length > 4) recent.shift();
+      out.push({ ...x, slot });
     }
-    const version = require('crypto').createHash('sha1').update(out.slice(0, 60).map((x) => x.row.id).join(',')).digest('hex').slice(0, 16);
-    const entry = { at: Date.now(), version, list: out };
-    personalCache.set(key, { at: Date.now(), base: base.version, entry });
-    return entry;
+    return out;
   }
 
   // "More like this": stories closest to the one just liked (shared title words, same topic/publisher).
@@ -491,9 +610,10 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     if (!it) return [];
     const tk = tokens(it.title);
     const base = await ranked(region);
+    const seen = uid ? (await seenOf(uid)).set : new Set();
     const scored = [];
     for (const x of base.list) {
-      if (x.row.id === itemId || exclude.has(x.row.id)) continue;
+      if (x.row.id === itemId || exclude.has(x.row.id) || isSeen(x, seen)) continue;
       let n = 0;
       for (const w of tokens(x.row.title)) if (tk.has(w)) n++;
       const sc = n * 1.0 + (x.row.topic === it.topic ? 0.6 : 0) + (x.row.source_id === it.source_id ? 0.2 : 0) + x.score * 0.3;
@@ -503,7 +623,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     const pick = scored.filter((s) => s.n >= 1).slice(0, 4);
     if (pick.length < 4) pick.push(...scored.filter((s) => s.n === 0).slice(0, 4 - pick.length));
     const eng = await engagementFor(pick.map((s) => s.x.row.id), uid);
-    return pick.map((s) => present(s.x, eng.get(s.x.row.id)));
+    return pick.map((s) => present({ ...s.x, slot: 'r' }, eng.get(s.x.row.id)));
   }
 
   function present(x, e) {
@@ -516,7 +636,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       mediaType: r.video_url ? 'video' : r.image_url ? 'image' : 'none',
       publishedAt: r.published_at ? ms(r.published_at) : null, fetchedAt: ms(r.fetched_at), topic: r.topic,
       contentType: x.label.kind, label: x.label.text, engagementMetrics: r.engagement ? JSON.parse(r.engagement) : null,
-      coverage: x.coverage || 1, alsoBy: x.alsoBy || [],
+      coverage: x.coverage || 1, alsoBy: x.alsoBy || [], slot: x.slot || 'g',
       likes: e.likes, comments: e.comments, reposts: e.reposts, liked: e.liked, reposted: e.reposted,
     };
   }
@@ -534,6 +654,19 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       region, regionName: regionName(region), version: r.version, checkedAt: Date.now(), collectedAt: lastOk || null,
       items: page.map((x) => present(x, eng.get(x.row.id))), hasMore: offset + limit < r.list.length, total: r.list.length,
     });
+  }));
+
+  // The next stories for the endless feed: everything after what the app already shows (it sends the
+  // ids it has), so stories never repeat or get skipped while the ranking moves underneath.
+  app.post('/api/feed/more', auth, wrap(async (req, res) => {
+    const region = REGIONS.has(String(req.body?.region)) ? String(req.body.region) : 'india';
+    const limit = Math.min(48, Math.max(1, toInt(req.body?.limit) || 24));
+    const have = new Set((Array.isArray(req.body?.have) ? req.body.have : []).slice(0, 1500).map(String));
+    const r = await personalized(region, req.uid);
+    const rest = r.list.filter((x) => !have.has(x.row.id));
+    const page = rest.slice(0, limit);
+    const eng = await engagementFor(page.map((x) => x.row.id), req.uid);
+    res.json({ region, items: page.map((x) => present(x, eng.get(x.row.id))), hasMore: rest.length > limit });
   }));
 
   // Cities people can pick (and the coordinates used to find the nearest one).
@@ -615,5 +748,5 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     if (process.env.BUZZ_COLLECT === 'off') return;
     loadState().then(() => { tick(); setInterval(tick, 20000).unref(); setInterval(cleanup, 3600e3).unref(); }).catch((e) => console.error('buzz start', e.message));
   }
-  return { start, tick, ranked, REGIONS, CITIES, learnFromChat, forgetChatInterests, aiStatus: AI.status };
+  return { start, tick, ranked, REGIONS, CITIES, learnFromChat, forgetChatInterests, markSeen, aiStatus: AI.status };
 };

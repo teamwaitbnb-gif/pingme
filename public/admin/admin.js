@@ -69,9 +69,9 @@ const heat = (v) => {
 // ───── dashboard ─────
 async function dashboard() {
   root.replaceChildren(el('div', { class: 'loading' }, 'Loading dashboard…'));
-  const [ov, ts, ret, scr, bz, live, users] = await Promise.all([
+  const [ov, ts, ret, scr, bz, live, users, algo] = await Promise.all([
     api('/api/admin/overview'), api(`/api/admin/timeseries?days=${range}`), api('/api/admin/retention'),
-    api(`/api/admin/screens?days=${range}`), api(`/api/admin/buzz?days=${range}`), api('/api/admin/live'), api('/api/admin/users'),
+    api(`/api/admin/screens?days=${range}`), api(`/api/admin/buzz?days=${range}`), api('/api/admin/live'), api('/api/admin/users'), api(`/api/admin/algo?days=${range}`),
   ]).catch((e) => { if (e.status === 401) { boot(); return []; } root.replaceChildren(el('div', { class: 'loading' }, e.message)); return []; });
   if (!ov) return;
   const seg = el('div', { class: 'seg' }, [7, 30, 90].map((d) => el('button', { class: d === range ? 'on' : '', onclick: () => { range = d; localStorage.setItem('pmAdminRange', d); dashboard(); } }, `${d} days`)));
@@ -124,6 +124,8 @@ async function dashboard() {
         bz.top.map((t) => el('tr', null, el('td', { class: 'title-cell', title: t.title }, t.title), el('td', null, t.source), el('td', { class: 'num' }, fmt(t.opens)), el('td', { class: 'num' }, fmt(t.likes)), el('td', { class: 'num' }, fmt(t.comments)), el('td', { class: 'num' }, fmt(t.reposts))))))
         : el('div', { class: 'empty' }, 'No story activity yet')),
 
+    ...algoSection(algo, kpi),
+
     el('h2', null, 'Users', el('small', null, 'most recently active first')),
     el('div', { class: 'card' }, el('div', { class: 'tablewrap' }, el('table', null,
       el('tr', null, el('th', null, ''), el('th', null, 'Name'), el('th', null, 'Username'), el('th', null, 'Last active'), el('th', { class: 'num' }, 'Active days (30d)'), el('th', { class: 'num' }, 'Minutes (7d)'), el('th', { class: 'num' }, 'Messages (7d)'), el('th', { class: 'num' }, 'Buzz days'), el('th', null, 'Device')),
@@ -135,6 +137,55 @@ async function dashboard() {
   renderLive(liveBox, live);
   clearInterval(liveTimer);
   liveTimer = setInterval(async () => { try { renderLive(liveBox, await api('/api/admin/live')); } catch {} }, 10000);
+}
+
+// ───── suggestion algorithm ─────
+const P = (v) => (v == null ? '—' : v + '%');
+const delta = (v) => (v == null ? el('span', { style: 'color:var(--text2)' }, '—') : el('b', { class: v > 0 ? 'up' : v < 0 ? 'down' : '' }, (v > 0 ? '+' : '') + v + ' pts'));
+function algoSection(a, kpi) {
+  const s = a.summary;
+  const liftCls = s.lift == null ? '' : s.lift >= 1.1 ? 'good' : s.lift >= 0.9 ? '' : 'bad';
+  return [
+    el('h2', null, 'Suggestion algorithm', el('small', null, `how well For You is working · last ${range} days`)),
+    el('div', { class: 'card verdict' }, el('h3', null, 'How it’s doing'),
+      a.notes.length && s.impressions ? el('ul', null, a.notes.map((t) => el('li', null, t))) : el('div', { class: 'empty' }, 'No Buzz impressions recorded yet — numbers appear once people scroll Buzz on the new version.')),
+    el('div', { class: 'kpis', style: 'margin-top:14px' },
+      kpi('Engagement rate', P(s.engagedRate), `of ${fmt(s.impressions)} stories seen by ${fmt(s.users)} people`),
+      kpi('Personal picks', P(s.personalRate), 'engaged when chosen for the person'),
+      kpi('Trending picks', P(s.trendingRate), 'engaged when chosen by popularity'),
+      kpi('Personalisation lift', s.lift == null ? '—' : s.lift + '×', 'personal ÷ trending (above 1 = it works)', liftCls),
+      kpi('Skip rate', P(s.skipRate), 'flicked past in under a second'),
+      kpi('Avg reading', s.avgRead == null ? '—' : s.avgRead + '%', 'of a story’s reading time'),
+      kpi('Repeats', fmt(s.repeats), s.repeats ? `${s.repeatRate}% shown twice` : 'no story shown twice', s.repeats ? 'bad' : 'good'),
+      kpi('Learn from chats', fmt(s.chatOptIn), 'people opted in')),
+    el('div', { class: 'grid2', style: 'margin-top:14px' },
+      el('div', { class: 'card' }, el('h3', null, 'Engagement per day'), el('div', { class: 'hint' }, '% of seen stories people engaged with (opened, liked, commented, reposted or read 60%+)'),
+        chart(a.daily, [{ key: 'personal', label: 'personal picks %', color: 'var(--accent)' }, { key: 'trending', label: 'trending picks %', color: 'var(--orange)' }, { key: 'skip', label: 'skip %', color: 'var(--pink)' }])),
+      el('div', { class: 'card' }, el('h3', null, 'Learning curve'), el('div', { class: 'hint' }, 'Engagement by how many stories a person has already seen — rising bars mean suggestions get better the more someone uses Buzz'),
+        a.curve.length ? curveBars(a.curve) : el('div', { class: 'empty' }, 'Not enough data yet'))),
+    el('div', { class: 'card', style: 'margin-top:14px' }, el('h3', null, 'Each part of the algorithm'), el('div', { class: 'hint' }, 'Every story is chosen by one part; this is how each part performs'),
+      a.slots.length ? el('div', { class: 'tablewrap' }, el('table', null,
+        el('tr', null, el('th', null, 'Part'), el('th', { class: 'num' }, 'Share of feed'), el('th', { class: 'num' }, 'Seen'), el('th', { class: 'num' }, 'Engaged'), el('th', { class: 'num' }, 'Opened'), el('th', { class: 'num' }, 'Liked'), el('th', { class: 'num' }, 'Skipped'), el('th', { class: 'num' }, 'Avg reading')),
+        a.slots.map((r) => el('tr', null, el('td', null, r.name), el('td', { class: 'num' }, P(r.share)), el('td', { class: 'num' }, fmt(r.impressions)), el('td', { class: 'num' }, heat(r.engagedRate == null ? null : Math.round(r.engagedRate))), el('td', { class: 'num' }, P(r.openRate)), el('td', { class: 'num' }, P(r.likeRate)), el('td', { class: 'num' }, P(r.skipRate)), el('td', { class: 'num' }, r.avgRead == null ? '—' : r.avgRead + '%')))))
+        : el('div', { class: 'empty' }, 'No data yet')),
+    el('div', { class: 'grid2', style: 'margin-top:14px' },
+      el('div', { class: 'card' }, el('h3', null, 'Topics: shown vs loved'), el('div', { class: 'hint' }, 'If a topic’s share of engagement is bigger than its share of the feed, people want more of it'),
+        a.topics.length ? el('div', { class: 'tablewrap' }, el('table', null,
+          el('tr', null, el('th', null, 'Topic'), el('th', { class: 'num' }, 'Share shown'), el('th', { class: 'num' }, 'Share engaged'), el('th', { class: 'num' }, 'Engaged')),
+          a.topics.map((t) => el('tr', null, el('td', null, t.topic[0].toUpperCase() + t.topic.slice(1)), el('td', { class: 'num' }, P(t.share)), el('td', { class: 'num' }, el('b', { class: t.engagedShare > t.share + 2 ? 'up' : t.engagedShare < t.share - 2 ? 'down' : '' }, P(t.engagedShare))), el('td', { class: 'num' }, P(t.engagedRate))))))
+          : el('div', { class: 'empty' }, 'No data yet')),
+      el('div', { class: 'card' }, el('h3', null, 'Per person'), el('div', { class: 'hint' }, 'Engagement in their first 50 stories vs their latest 50'),
+        a.users.length ? el('div', { class: 'tablewrap' }, el('table', null,
+          el('tr', null, el('th', null, 'Person'), el('th', { class: 'num' }, 'Seen'), el('th', { class: 'num' }, 'Engaged'), el('th', { class: 'num' }, 'First → latest'), el('th', null, 'Loves')),
+          a.users.map((u) => el('tr', null, el('td', null, u.name), el('td', { class: 'num' }, fmt(u.impressions)), el('td', { class: 'num' }, P(u.engagedRate)),
+            el('td', { class: 'num' }, u.early == null ? el('span', { style: 'color:var(--text2)' }, 'needs 60+') : el('span', null, `${u.early}% → ${u.recent}% `, delta(u.change))), el('td', null, u.loves.join(', ') || '—')))))
+          : el('div', { class: 'empty' }, 'No data yet'))),
+  ];
+}
+function curveBars(rows) {
+  const max = Math.max(1, ...rows.map((r) => r.engagedRate || 0));
+  return el('div', { class: 'bars', style: 'margin-top:10px' }, rows.map((r) => el('div', { class: 'bar' }, el('span', null, r.bucket),
+    el('div', { class: 'track' }, el('i', { style: `width:${((r.engagedRate || 0) / max) * 100}%` })), el('span', { class: 'val', title: `${r.users} people · ${r.impressions} stories · skip ${r.skipRate}%` }, P(r.engagedRate)))));
 }
 
 function renderLive(box, live) {

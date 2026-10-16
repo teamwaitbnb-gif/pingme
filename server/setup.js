@@ -32,6 +32,7 @@ const defaults = {
   REDDIT_CLIENT_SECRET: '',
   BUZZ_COLLECT: '',
   GROQ_API_KEY: '',
+  X_BEARER_TOKEN: '',
   ADMIN_KEY: crypto.randomBytes(24).toString('base64url'),
   PUBLIC_URL: '',
   GOOGLE_CLIENT_ID: '',

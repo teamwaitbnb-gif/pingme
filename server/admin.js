@@ -13,7 +13,8 @@ const IST = 5.5 * 3600e3;
 const istDay = (t = Date.now()) => new Date(t + IST).toISOString().slice(0, 10);
 const DAYSQL = (col) => `DATE(CONVERT_TZ(${col}, '+00:00', '+05:30'))`;
 
-module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online }) {
+module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online, buzz }) {
+  const buzzMod = buzz;
   // ───── collection ─────
   app.post('/api/t', auth, wrap(async (req, res) => {
     rateLimit('t:' + req.uid, 120, 60000);
@@ -37,8 +38,15 @@ module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, pu
         secs += v;
         if (screen === 'buzz') { buzzSecs += v; buzz = 1; }
       } else if (type === 'buzz_seen') {
-        const v = Math.max(0, Math.min(500, Math.round(Number(e.v) || 0)));
+        // New apps send the stories themselves ([id, slot] pairs): they're never shown again, and each
+        // impression is credited to the part of the algorithm that chose it.
+        const pairs = Array.isArray(e.s) ? e.s.slice(0, 200).filter(Array.isArray) : [];
+        const v = Math.max(0, Math.min(500, pairs.length || Math.round(Number(e.v) || 0)));
         if (v) { rows.push([req.uid, sid, 'buzz_seen', 'buzz', null, v]); buzz = 1; }
+        if (pairs.length && buzzMod) {
+          const r = await buzzMod.markSeen(req.uid, pairs).catch(() => null);
+          if (r?.repeats) rows.push([req.uid, sid, 'buzz_repeat', 'buzz', null, r.repeats]);
+        }
       } else if (type === 'buzz_dwell' || type === 'buzz_skip') {
         const item = String(e.i || '').replace(/[^a-f0-9]/gi, '').slice(0, 24);
         // Reading: store how much of the story's expected reading time was spent (100 = read it fully).
@@ -212,6 +220,92 @@ module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, pu
       sources: sources.map((s) => ({ source: srcName(s.source_id), opens: n(s.opens) })), regions });
   }));
 
+  // ───── suggestion algorithm performance ─────
+  // Every story a person really saw (feed_seen) is matched with what they did with it. "Engaged" =
+  // opened it, liked / commented / reposted, or spent at least 60% of its reading time on it. Each
+  // impression is credited to the slot that chose it, so personal picks can be compared with trending
+  // ones (the lift), and impressions are ordered per person so we can see if suggestions get better
+  // the longer someone uses Buzz (the learning curve).
+  const SLOT_NAMES = { p: 'For you (personal)', m: 'Section mix', t: 'Trending', x: 'Explore', r: 'More like this', g: 'New reader (no profile yet)' };
+  app.get('/api/admin/algo', adminOnly, wrap(async (req, res) => {
+    const days = Math.min(90, Math.max(1, Number(req.query.days) || 30));
+    const since = new Date(Date.now() - days * 86400e3);
+    const imps = await db.q('SELECT user_id, item_id, slot, topic, seq, seen_at FROM feed_seen WHERE seen_at >= ? ORDER BY seen_at LIMIT 300000', [since]);
+    const act = new Map(); // uid:item → { o, d, s, l, c, r }
+    const get = (u, i) => { const k = u + ':' + i; let a = act.get(k); if (!a) act.set(k, (a = { o: 0, d: 0, s: 0, l: 0, c: 0, r: 0 })); return a; };
+    for (const r of await db.q(`SELECT user_id, item, type, SUM(value) v FROM analytics_events WHERE created_at >= ? AND type IN ('buzz_open','buzz_dwell','buzz_skip') GROUP BY user_id, item, type`, [since])) {
+      const a = get(r.user_id, r.item);
+      if (r.type === 'buzz_open') a.o = 1; else if (r.type === 'buzz_dwell') a.d = n(r.v); else a.s = 1;
+    }
+    for (const [t, k] of [['feed_likes', 'l'], ['feed_comments', 'c'], ['feed_reposts', 'r']]) for (const r of await db.q(`SELECT DISTINCT user_id, item_id FROM ${t} WHERE created_at >= ?`, [since])) get(r.user_id, r.item_id)[k] = 1;
+    const empty = () => ({ imp: 0, eng: 0, open: 0, skip: 0, like: 0, readN: 0, readSum: 0 });
+    const add = (b, a) => {
+      b.imp++;
+      if (!a) return;
+      const engaged = a.o || a.l || a.c || a.r || a.d >= 60;
+      if (engaged) b.eng++;
+      if (a.o) b.open++;
+      if (a.l) b.like++;
+      if (a.s && !engaged) b.skip++;
+      if (a.d) { b.readN++; b.readSum += Math.min(150, a.d); }
+    };
+    const pct = (k, nn) => (nn ? Math.round((k / nn) * 1000) / 10 : null);
+    const view = (b) => ({ impressions: b.imp, engagedRate: pct(b.eng, b.imp), openRate: pct(b.open, b.imp), skipRate: pct(b.skip, b.imp), likeRate: pct(b.like, b.imp), avgRead: b.readN ? Math.round(b.readSum / b.readN) : null });
+    const all = empty(), slots = {}, daily = new Map(), topics = {}, users = new Map();
+    const CURVE = [[1, 25, 'First 25 stories'], [26, 100, '26 – 100'], [101, 300, '101 – 300'], [301, 1000, '301 – 1,000'], [1001, 1e12, '1,000+']];
+    const curve = CURVE.map(() => ({ ...empty(), users: new Set() }));
+    for (let k = days - 1; k >= 0; k--) daily.set(daysAgo(k), { all: empty(), p: empty(), t: empty() });
+    for (const s0 of imps) {
+      const a = act.get(s0.user_id + ':' + s0.item_id);
+      add(all, a);
+      add((slots[s0.slot] ||= empty()), a);
+      const d = daily.get(istDay(new Date(s0.seen_at).getTime()));
+      if (d) { add(d.all, a); if (s0.slot === 'p') add(d.p, a); if (s0.slot === 't' || s0.slot === 'g') add(d.t, a); }
+      add((topics[s0.topic || 'other'] ||= empty()), a);
+      const ci = CURVE.findIndex(([lo, hi]) => s0.seq >= lo && s0.seq <= hi);
+      if (ci >= 0) { add(curve[ci], a); curve[ci].users.add(s0.user_id); }
+      let u = users.get(s0.user_id);
+      if (!u) users.set(s0.user_id, (u = { all: empty(), list: [], topics: {} }));
+      add(u.all, a);
+      u.list.push(a ? (a.o || a.l || a.c || a.r || a.d >= 60 ? 1 : 0) : 0);
+      if (a && (a.o || a.l || a.c || a.r || a.d >= 60)) u.topics[s0.topic] = (u.topics[s0.topic] || 0) + 1;
+    }
+    const pRate = pct(slots.p?.eng || 0, slots.p?.imp || 0), tRate = pct((slots.t?.eng || 0) + (slots.g?.eng || 0), (slots.t?.imp || 0) + (slots.g?.imp || 0));
+    // Lift with light smoothing so a small sample (or zero trending engagement) still gives a fair number.
+    const pe = slots.p?.eng || 0, pi = slots.p?.imp || 0, te = (slots.t?.eng || 0) + (slots.g?.eng || 0), ti = (slots.t?.imp || 0) + (slots.g?.imp || 0);
+    const lift = pi >= 10 && ti >= 10 ? Math.round((((pe + 1) / (pi + 4)) / ((te + 1) / (ti + 4))) * 100) / 100 : null;
+    const [rep] = await db.q('SELECT COALESCE(SUM(value),0) r FROM analytics_events WHERE type=\'buzz_repeat\' AND created_at >= ?', [since]);
+    const [opt] = await db.q('SELECT COUNT(*) c FROM user_interests');
+    const curveOut = curve.map((b, i) => ({ bucket: CURVE[i][2], users: b.users.size, ...view(b) })).filter((b) => b.impressions);
+    // Per person: first 50 stories they saw vs their latest 50 — is it getting better for them?
+    const rate = (arr) => (arr.length ? Math.round((arr.reduce((x, y) => x + y, 0) / arr.length) * 1000) / 10 : null);
+    const userRows = [];
+    for (const [uid, u] of [...users.entries()].sort((a, b) => b[1].all.imp - a[1].all.imp).slice(0, 60)) {
+      const pu = await publicUser(Number(uid));
+      const early = u.list.length >= 60 ? rate(u.list.slice(0, 50)) : null, recent = u.list.length >= 60 ? rate(u.list.slice(-50)) : null;
+      userRows.push({ name: pu.name, username: pu.username, ...view(u.all), early, recent, change: early != null ? Math.round((recent - early) * 10) / 10 : null,
+        loves: Object.entries(u.topics).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([t]) => t) });
+    }
+    const totalImp = all.imp || 1, totalEng = all.eng || 1;
+    // Plain-language verdict for the owner.
+    const notes = [];
+    if (lift != null) notes.push(lift >= 1.1 ? `Personal picks get engagement ${lift}× as often as trending stories — the algorithm is learning what people like.` : lift >= 0.9 ? `Personal picks perform about the same as trending (${lift}×) — it needs more signals (likes, reading) to pull ahead.` : `Personal picks are doing worse than trending (${lift}×) — tastes may have shifted; explore slots will help it relearn.`);
+    if (curveOut.length >= 2) { const f = curveOut[0], l = curveOut[curveOut.length - 1]; if (f.engagedRate != null && l.engagedRate != null) notes.push(l.engagedRate > f.engagedRate ? `Suggestions improve with use: ${f.engagedRate}% engaged in someone's first stories → ${l.engagedRate}% after ${l.bucket.toLowerCase()} stories.` : `Engagement doesn't rise with use yet (${f.engagedRate}% → ${l.engagedRate}%).`); }
+    if (slots.r?.imp) notes.push(`"More like this" stories: ${pct(slots.r.eng, slots.r.imp)}% engaged.`);
+    if (slots.x?.imp) { const xr = pct(slots.x.eng, slots.x.imp); notes.push(`Explore picks: ${xr}% engaged — ${xr > 0 && xr >= (tRate || 0) ? 'people are discovering new interests' : 'mostly ignored so far, which is normal for discovery'}.`); }
+    if (lift == null && pi + ti > 0) notes.unshift(`Still collecting data: ${pi} personal and ${ti} trending stories seen so far (needs 10+ of each to compare).`);
+    notes.push(n(rep.r) ? `${n(rep.r)} stories were shown again to someone who had already seen them (${pct(n(rep.r), all.imp + n(rep.r))}%).` : 'No story was shown twice to the same person.');
+    res.json({
+      summary: { ...view(all), users: users.size, personalRate: pRate, trendingRate: tRate, lift, repeats: n(rep.r), repeatRate: pct(n(rep.r), all.imp + n(rep.r)), chatOptIn: n(opt.c) },
+      notes,
+      slots: Object.entries(slots).map(([k, b]) => ({ slot: k, name: SLOT_NAMES[k] || k, share: pct(b.imp, totalImp), ...view(b) })).sort((a, b) => b.impressions - a.impressions),
+      daily: [...daily.entries()].map(([day, d]) => ({ day, overall: pct(d.all.eng, d.all.imp) || 0, personal: pct(d.p.eng, d.p.imp) || 0, trending: pct(d.t.eng, d.t.imp) || 0, skip: pct(d.all.skip, d.all.imp) || 0, impressions: d.all.imp })),
+      curve: curveOut,
+      topics: Object.entries(topics).map(([t, b]) => ({ topic: t, share: pct(b.imp, totalImp), engagedShare: pct(b.eng, totalEng), ...view(b) })).sort((a, b) => b.impressions - a.impressions),
+      users: userRows,
+    });
+  }));
+
   app.get('/api/admin/live', adminOnly, wrap(async (req, res) => {
     const byUser = new Map();
     for (const [, s] of io.sockets.sockets) {
@@ -246,7 +340,10 @@ module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, pu
   }));
 
   // Keep raw events for 120 days (the daily summaries stay).
-  setInterval(() => { db.q('DELETE FROM analytics_events WHERE created_at < ?', [new Date(Date.now() - 120 * 86400e3)]).catch(() => {}); }, 6 * 3600e3).unref();
+  setInterval(() => {
+    db.q('DELETE FROM analytics_events WHERE created_at < ?', [new Date(Date.now() - 120 * 86400e3)]).catch(() => {});
+    db.q('DELETE FROM feed_seen WHERE seen_at < ?', [new Date(Date.now() - 120 * 86400e3)]).catch(() => {});
+  }, 6 * 3600e3).unref();
 
   return { isAdmin };
 };

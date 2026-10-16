@@ -40,13 +40,14 @@ async function assertPublic(url) {
 class FetchError extends Error { constructor(msg, status, retryAfter) { super(msg); this.status = status; this.retryAfter = retryAfter; } }
 
 // GET with timeout, size cap, manual redirects (http/https only, max 3) and conditional headers.
-async function safeGet(url, { timeout = 9000, maxBytes = MAX_FEED_BYTES, etag, lastModified, accept, ua = UA } = {}) {
+async function safeGet(url, { timeout = 9000, maxBytes = MAX_FEED_BYTES, etag, lastModified, accept, ua = UA, auth } = {}) {
   let current = url;
   for (let hop = 0; hop < 4; hop++) {
     await assertPublic(current);
     const headers = { 'user-agent': ua, accept: accept || 'application/rss+xml, application/atom+xml, application/xml, text/xml, application/json;q=0.9, */*;q=0.5' };
     if (hop === 0 && etag) headers['if-none-match'] = etag;
     if (hop === 0 && lastModified) headers['if-modified-since'] = lastModified;
+    if (hop === 0 && auth) headers.authorization = auth; // API keys never follow a redirect
     const r = await fetch(current, { headers, redirect: 'manual', signal: AbortSignal.timeout(timeout) });
     if (r.status >= 300 && r.status < 400 && r.status !== 304) {
       const loc = r.headers.get('location');
@@ -125,6 +126,20 @@ function parseFeed(xml, src) {
       const s = it.source; sourceName = N.text(s) || null;
       if (sourceName && title.endsWith(' - ' + sourceName)) title = title.slice(0, -(sourceName.length + 3));
     }
+    // YouTube channel feeds: the video plays right in Buzz (privacy-enhanced embed).
+    const yt = it['yt:videoId'] ? String(it['yt:videoId']).replace(/[^\w-]/g, '') : null;
+    if (yt) {
+      const g = arr(it['media:group'])[0] || {};
+      const views = Number(attr(g['media:community']?.['media:statistics'], 'views')) || 0;
+      // First paragraph only (channels append links, hashtags and "about us" text).
+      const first = String(N.text(g['media:description']) || '').split(/\n\s*\n/)[0].replace(/https?:\/\/\S+|#\S+/g, ' ');
+      return {
+        title, url: `https://www.youtube.com/watch?v=${yt}`, description: N.summarize(first, title),
+        image: `https://i.ytimg.com/vi/${yt}/hqdefault.jpg`, video: `https://www.youtube-nocookie.com/embed/${yt}`,
+        publishedAt: N.date(it.published ?? it.updated), via: null, rank,
+        engagement: views ? { platform: 'YouTube', views } : null,
+      };
+    }
     const { image, video } = mediaOf(it, base);
     const desc = it.description ?? it.summary ?? it['content:encoded'] ?? it.content;
     return {
@@ -191,8 +206,56 @@ function parseTrends(xml, src) {
   return out;
 }
 
+// YouTube "Popular in India" (official Data API, free key): trending videos with real view counts.
+async function collectYouTube(src) {
+  const r = await safeGet(`${src.url}&key=${encodeURIComponent(process.env.YOUTUBE_API_KEY)}`, { timeout: src.timeout, accept: 'application/json' });
+  const d = JSON.parse(r.body);
+  return (d.items || []).map((v, rank) => {
+    const id = String(v.id || '').replace(/[^\w-]/g, '');
+    const sn = v.snippet || {}, th = sn.thumbnails || {};
+    return {
+      title: N.text(sn.title), url: `https://www.youtube.com/watch?v=${id}`, via: sn.channelTitle ? `${sn.channelTitle} · YouTube` : null,
+      description: N.summarize(String(sn.description || '').split(/\n\s*\n/)[0].replace(/https?:\/\/\S+|#\S+/g, ' '), sn.title),
+      image: (th.maxres || th.standard || th.high || th.medium || {}).url || null, video: `https://www.youtube-nocookie.com/embed/${id}`,
+      publishedAt: N.date(sn.publishedAt), rank, engagement: { platform: 'YouTube', views: Number(v.statistics?.viewCount) || 0, likes: Number(v.statistics?.likeCount) || 0 },
+    };
+  }).filter((x) => x.title && x.url);
+}
+
+// X (Twitter) — official API v2 with a bearer token (X_BEARER_TOKEN). The most engaging recent posts
+// for a place (or worldwide), with photos and videos; likes/reposts/views are real numbers from X.
+async function collectX(src, state) {
+  const q = new URLSearchParams({
+    query: src.query, max_results: String(src.max || 10), sort_order: 'relevancy',
+    'tweet.fields': 'created_at,public_metrics,entities,attachments,lang,possibly_sensitive', expansions: 'author_id,attachments.media_keys',
+    'user.fields': 'name,username,verified', 'media.fields': 'type,url,preview_image_url,variants,width,height',
+  });
+  const r = await safeGet(`https://api.x.com/2/tweets/search/recent?${q}`, { timeout: src.timeout, accept: 'application/json', auth: `Bearer ${process.env.X_BEARER_TOKEN}` });
+  const d = JSON.parse(r.body);
+  const users = new Map((d.includes?.users || []).map((u) => [u.id, u]));
+  const media = new Map((d.includes?.media || []).map((m) => [m.media_key, m]));
+  return (d.data || []).filter((t) => !t.possibly_sensitive).map((t, rank) => {
+    const u = users.get(t.author_id) || {};
+    const ms = (t.attachments?.media_keys || []).map((k) => media.get(k)).filter(Boolean);
+    const photo = ms.find((m) => m.type === 'photo');
+    const vid = ms.find((m) => m.type === 'video' || m.type === 'animated_gif');
+    const mp4 = vid ? (vid.variants || []).filter((v) => v.content_type === 'video/mp4' && /^https:\/\/video\.twimg\.com\//.test(v.url)).sort((a, b) => (b.bit_rate || 0) - (a.bit_rate || 0)).find((v) => (v.bit_rate || 0) <= 2200000) : null;
+    const pm = t.public_metrics || {};
+    const text = N.text(String(t.text || '').replace(/https:\/\/t\.co\/\w+/g, '')).replace(/\s+/g, ' ').trim();
+    return {
+      title: text.slice(0, 280), url: `https://x.com/${encodeURIComponent(u.username || 'i')}/status/${t.id}`,
+      via: u.name ? `${u.name} (@${u.username}) · X` : null, description: null,
+      image: photo?.url ? photo.url + '?name=large' : vid?.preview_image_url || null, video: mp4?.url || null,
+      publishedAt: N.date(t.created_at), rank,
+      engagement: { platform: 'X', likes: pm.like_count || 0, reposts: (pm.retweet_count || 0) + (pm.quote_count || 0), replies: pm.reply_count || 0, views: pm.impression_count || 0 },
+    };
+  }).filter((x) => x.title.length >= 20);
+}
+
 async function collect(src, state = {}) {
   if (src.adapter === 'hn') return { items: await collectHN(src) };
+  if (src.adapter === 'youtube') return { items: await collectYouTube(src) };
+  if (src.adapter === 'x') return { items: await collectX(src, state) };
   if (src.adapter === 'trends') {
     const r = await safeGet(src.url, { timeout: src.timeout, etag: state.etag, lastModified: state.lastModified });
     if (r.notModified) return { notModified: true };

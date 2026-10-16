@@ -42,6 +42,8 @@ Also set `PUBLIC_URL=https://YOUR-LIVE-URL` in `.env` once deployed. New Google 
 | `TURN_URLS / TURN_USERNAME / TURN_CREDENTIAL` | TURN relay so calls connect on strict mobile/office networks |
 | `GROQ_API_KEY` | Optional. Buzz descriptions written by AI after reading the full article (without it, the publisher's own sentences are used) |
 | `ADMIN_KEY` | Password for the owner-only `/admin` portal |
+| `YOUTUBE_API_KEY` | Optional, free (Google Cloud → YouTube Data API v3). Adds “YouTube · Popular in India” |
+| `X_BEARER_TOKEN` | Optional, paid X API plan. Adds the most engaging X posts for India, the world and big cities (polled every `X_POLL_MINUTES`, default 120) |
 
 ## What's inside
 
@@ -96,6 +98,10 @@ Architecture: publisher RSS/Atom feeds + Hacker News API → server collectors (
 - **For You:** each reader's feed is ranked by what they actually engage with — likes, comments, reposts, opens, and how long a story sits in the middle of the screen (the reading zone) compared with its expected reading time; quick flicks past a story count as a skip. Signals fade over 10 days. Liking a story slides a few related stories in right below it, and new stories are added below the reader's position as they scroll, so the feed never ends and never jumps.
 - **From chats (opt-in, off by default):** Settings → Privacy → *Personalise Buzz from my chats*. Only topic keywords mentioned at least twice are kept, encrypted, and fade over 14 days; message text is never stored. Turning it off deletes them. Secret, eyes-only and ink messages are never used.
 - **AI descriptions:** with `GROQ_API_KEY` set, the server reads each top story's full article and writes a 2–3 sentence factual summary (paced to stay inside Groq's free tier, ~900/day; it backs off on rate limits). Off-topic answers are rejected and the publisher's own lead paragraphs are used instead.
+- **Never the same story twice:** every story that was really on screen (half visible for a second) is recorded in `feed_seen` and left out of that person's feed from then on — including other outlets' versions of the same story and the offline copy.
+- **Videos:** news channels' own YouTube feeds (NDTV, India Today, TV9 Telugu, NTV Telugu, BBC, Reuters, ICC, …, no key needed) play inside Buzz — the video in the middle of the screen plays muted, tap for sound, one at a time; at most one video in five stories. X videos play the same way.
+- **X (Twitter):** with `X_BEARER_TOKEN`, the most engaging recent posts (photos/videos, real likes/reposts) for India, the world, Hyderabad, Bengaluru, Mumbai, Delhi and Chennai. X has no free read access; the default 120-minute polling keeps it to roughly 800 posts a day.
+- **Algorithm monitoring (admin → Suggestion algorithm):** every story carries the part of the algorithm that chose it (personal, section mix, trending, explore, more-like-this). The portal shows engagement per part, personalisation lift (personal ÷ trending), the learning curve (engagement after 25 / 100 / 300 / 1,000 stories), topics shown vs loved, each person's first-50 vs latest-50 engagement, skip rate, reading depth and repeats, with a plain-language verdict.
 - Sources: The Hindu, Times of India and Google News for 35 cities, Google Trends for 19 states, plus ~45 national, tech, business, world, sports and entertainment publishers (158 in `server/buzz/sources.js`).
 - Known source status: Moneycontrol returns HTTP 403 to servers and Ars Technica blocks logo requests (both handled gracefully).
 
