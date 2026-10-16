@@ -111,7 +111,7 @@ export function openSettings() {
       h('div', { class: 'group-label' }, 'Chats'),
       h('div', { class: 'group' },
         cell({ icon: 'send', label: 'Enter key sends', right: toggle(p.enterSend, (v) => store.set('enterSend', v)) }),
-        cell({ icon: 'image', color: '#34c759', label: 'Send photos in HD by default', right: toggle(store.get('sendHD', false), (v) => store.set('sendHD', v)) })),
+        cell({ icon: 'image', color: '#34c759', label: 'Send photos in original quality', sub: 'Off = smaller, faster photos', right: toggle(store.get('sendHD', true), (v) => store.set('sendHD', v)) })),
 
       h('div', { class: 'group-label' }, 'Security'),
       h('div', { class: 'group' },

@@ -96,6 +96,12 @@ const SCHEMA = [
     option_idx INT NOT NULL,
     PRIMARY KEY (message_id, user_id, option_idx)
   )`,
+  `CREATE TABLE IF NOT EXISTS attachment_chunks (
+    att_id BIGINT UNSIGNED NOT NULL,
+    idx INT UNSIGNED NOT NULL,
+    data LONGBLOB NOT NULL,
+    PRIMARY KEY (att_id, idx)
+  )`,
   `CREATE TABLE IF NOT EXISTS attachments (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     chat_id BIGINT UNSIGNED NOT NULL,
@@ -237,6 +243,11 @@ async function migrate(dbName) {
   const [[kindCol]] = await pool.query("SELECT COLUMN_TYPE t FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='messages' AND COLUMN_NAME='kind'", [dbName]);
   if (!kindCol.t.includes("'letter'")) {
     await pool.query("ALTER TABLE messages MODIFY kind ENUM('text','image','video','audio','file','location','poll','call','system','ping','letter') NOT NULL");
+  }
+  const atts = await cols('attachments');
+  if (!atts.has('chunks')) {
+    // Large files are stored in encrypted 8 MiB pieces (see media.js); 0 = whole file in `data`.
+    await pool.query("ALTER TABLE attachments ADD COLUMN chunks INT UNSIGNED NOT NULL DEFAULT 0, ADD COLUMN store VARCHAR(8) NOT NULL DEFAULT 'db', ADD COLUMN complete TINYINT NOT NULL DEFAULT 1, MODIFY data LONGBLOB NULL");
   }
   const sessions = await cols('sessions');
   if (!sessions.has('device_hash')) await pool.query('ALTER TABLE sessions ADD COLUMN device_hash CHAR(64) NULL AFTER ua_enc');

@@ -8,6 +8,7 @@ const { Server } = require('socket.io');
 const db = require('./db');
 const C = require('./crypto');
 const push = require('./push');
+const media = require('./media');
 const oauth = require('./oauth');
 const U = require('./usernames');
 
@@ -426,7 +427,7 @@ async function buildBody(chatId, senderId, input) {
   if (['image', 'video', 'audio', 'file'].includes(kind)) {
     attachmentId = toInt(input.attachmentId);
     if (!attachmentId) throw bad('Missing attachment');
-    const a = await db.one('SELECT id, chat_id, uploader_id, meta_enc, size FROM attachments WHERE id=?', [attachmentId]);
+    const a = await db.one('SELECT id, chat_id, uploader_id, meta_enc, size FROM attachments WHERE id=? AND complete=1', [attachmentId]);
     if (!a) throw bad('Attachment not found');
     // Forwarding re-uses an attachment from another chat the sender can see.
     if (Number(a.chat_id) !== chatId || Number(a.uploader_id) !== senderId) {
@@ -590,6 +591,7 @@ async function deleteAttachmentIfUnused(attId) {
   if (!attId) return;
   const used = await db.one('SELECT 1 x FROM messages WHERE attachment_id=? AND deleted=0 LIMIT 1', [attId]);
   if (!used) {
+    await media.removeChunks(await db.q('SELECT id, chunks, store FROM attachments WHERE id=?', [attId]));
     await db.q('DELETE FROM attachments WHERE id=?', [attId]);
     fileCache.delete(attId);
   }
@@ -1225,7 +1227,7 @@ app.get('/api/config', (req, res) => {
     iceServers: [{ urls: ['stun:stun.l.google.com:19302', 'stun:stun1.l.google.com:19302'] }],
     relay: !!process.env.TURN_URLS || !!(cfIce.list && hasRelay(cfIce.list)), // true only once Cloudflare accepted the keys
     vapidPublicKey: push.enabled ? process.env.VAPID_PUBLIC_KEY : null,
-    maxUpload: MAX_UPLOAD,
+    maxUpload: media.MAX_FILE,
     googleClientId: oauth.enabled('google') ? process.env.GOOGLE_CLIENT_ID.split(',')[0].trim() : null,
     inviteOnly: inviteOnly(),
     features: FEATURES,
@@ -1529,10 +1531,55 @@ app.post('/api/upload', auth, express.raw({ type: () => true, limit: MAX_UPLOAD 
   res.json({ id: Number(r.insertId), name, mime, size: req.body.length });
 }));
 
+// Original-quality uploads of any size (up to 2 GiB): start → pieces (8 MiB each) → finish.
+// The bytes are stored exactly as the phone recorded them — nothing is re-encoded.
+app.post('/api/upload/start', auth, wrap(async (req, res) => {
+  rateLimit('upstart:' + req.uid, 60, 60000);
+  const chatId = toInt(req.body.chatId);
+  await requireMember(chatId, req.uid);
+  const size = toInt(req.body.size);
+  if (!size || size < 1) throw bad('Empty file');
+  if (size > media.MAX_FILE) throw bad('Files can be up to 2 GB');
+  const name = clampStr(String(req.body.name || 'file'), 200).replace(/[\\/\r\n]/g, '_');
+  const mime = clampStr(String(req.body.mime || 'application/octet-stream'), 100).split(';')[0];
+  const chunks = Math.ceil(size / media.CHUNK);
+  const r = await db.q('INSERT INTO attachments (chat_id, uploader_id, meta_enc, size, data, chunks, store, complete) VALUES (?,?,?,?,NULL,?,?,0)',
+    [chatId, req.uid, C.enc({ name, mime }), size, chunks, media.bucket() ? 'gcs' : 'db']);
+  res.json({ id: Number(r.insertId), chunkSize: media.CHUNK, chunks });
+}));
+
+async function ownUpload(req) {
+  const a = await db.one('SELECT id, uploader_id, size, chunks, store, complete, meta_enc FROM attachments WHERE id=?', [toInt(req.params.id)]);
+  if (!a || Number(a.uploader_id) !== req.uid || !a.chunks) throw notFound();
+  return a;
+}
+
+app.put('/api/upload/:id/:idx', auth, express.raw({ type: () => true, limit: media.CHUNK + 1024 }), wrap(async (req, res) => {
+  const a = await ownUpload(req);
+  if (a.complete) throw bad('Upload already finished');
+  const idx = Number(req.params.idx);
+  if (!Number.isInteger(idx) || idx < 0 || idx >= a.chunks) throw bad('Bad piece number');
+  const expected = idx === a.chunks - 1 ? Number(a.size) - idx * media.CHUNK : media.CHUNK;
+  if (!Buffer.isBuffer(req.body) || req.body.length !== expected) throw bad('Piece size mismatch');
+  await media.putChunk(Number(a.id), idx, req.body);
+  res.json({ ok: true });
+}));
+
+app.post('/api/upload/:id/finish', auth, wrap(async (req, res) => {
+  const a = await ownUpload(req);
+  if (!a.complete) {
+    const have = await media.chunkCount(Number(a.id), a.store);
+    if (have !== Number(a.chunks)) throw bad(`Upload incomplete (${have}/${a.chunks})`);
+    await db.q('UPDATE attachments SET complete=1 WHERE id=?', [a.id]);
+  }
+  const meta = C.decJson(a.meta_enc, {});
+  res.json({ id: Number(a.id), name: meta.name, mime: meta.mime, size: Number(a.size) });
+}));
+
 // Small LRU of decrypted files so video seeking (Range requests) stays fast.
 const fileCache = new Map();
 let fileCacheBytes = 0;
-const FILE_CACHE_MAX = 256 * 1024 * 1024;
+const FILE_CACHE_MAX = 160 * 1024 * 1024;
 function cachePut(id, entry) {
   fileCache.set(id, entry);
   fileCacheBytes += entry.data.length;
@@ -1548,10 +1595,12 @@ app.get('/api/files/:id', auth, wrap(async (req, res) => {
   let entry = fileCache.get(id);
   if (entry) { fileCache.delete(id); fileCache.set(id, entry); }
   else {
-    const a = await db.one('SELECT chat_id, meta_enc, data FROM attachments WHERE id=?', [id]);
-    if (!a) throw notFound();
-    entry = { chatId: Number(a.chat_id), meta: C.decJson(a.meta_enc, {}), data: C.decBuf(a.data) };
-    cachePut(id, entry);
+    const a = await db.one('SELECT chat_id, meta_enc, size, chunks, store, complete, IF(chunks=0, data, NULL) data FROM attachments WHERE id=?', [id]);
+    if (!a || !a.complete) throw notFound();
+    entry = a.chunks
+      ? { chatId: Number(a.chat_id), meta: C.decJson(a.meta_enc, {}), chunked: { id, chunks: Number(a.chunks), store: a.store, size: Number(a.size) } }
+      : { chatId: Number(a.chat_id), meta: C.decJson(a.meta_enc, {}), data: C.decBuf(a.data) };
+    if (a.chunks) fileCache.set(id, entry); else cachePut(id, entry);
   }
   // Must be a member of the chat it was uploaded to, or of any chat it was forwarded into.
   if (!(await membership(entry.chatId, req.uid))) {
@@ -1561,7 +1610,7 @@ app.get('/api/files/:id', auth, wrap(async (req, res) => {
     );
     if (!fwd) throw forbidden();
   }
-  const { data, meta } = entry;
+  const { meta } = entry;
   const safeMime = /^(image\/(png|jpeg|gif|webp|heic|heif|avif)|video\/|audio\/)/.test(meta.mime) && meta.mime !== 'image/svg+xml' ? meta.mime : 'application/octet-stream';
   res.setHeader('Content-Type', safeMime);
   res.setHeader('Accept-Ranges', 'bytes');
@@ -1571,19 +1620,20 @@ app.get('/api/files/:id', auth, wrap(async (req, res) => {
   const disp = req.query.dl ? 'attachment' : 'inline';
   res.setHeader('Content-Disposition', `${disp}; filename*=UTF-8''${encodeURIComponent(meta.name || 'file')}`);
 
+  const total = entry.chunked ? entry.chunked.size : entry.data.length;
   const range = /^bytes=(\d*)-(\d*)$/.exec(req.headers.range || '');
+  let start = 0, end = total - 1;
   if (range) {
-    let start = range[1] === '' ? data.length - Number(range[2]) : Number(range[1]);
-    let end = range[1] === '' || range[2] === '' ? data.length - 1 : Number(range[2]);
-    start = Math.max(0, start); end = Math.min(end, data.length - 1);
-    if (start > end) { res.status(416).setHeader('Content-Range', `bytes */${data.length}`); return res.end(); }
+    start = range[1] === '' ? total - Number(range[2]) : Number(range[1]);
+    end = range[1] === '' || range[2] === '' ? total - 1 : Number(range[2]);
+    start = Math.max(0, start); end = Math.min(end, total - 1);
+    if (start > end) { res.status(416).setHeader('Content-Range', `bytes */${total}`); return res.end(); }
     res.status(206);
-    res.setHeader('Content-Range', `bytes ${start}-${end}/${data.length}`);
-    res.setHeader('Content-Length', end - start + 1);
-    return res.end(data.subarray(start, end + 1));
+    res.setHeader('Content-Range', `bytes ${start}-${end}/${total}`);
   }
-  res.setHeader('Content-Length', data.length);
-  res.end(data);
+  res.setHeader('Content-Length', end - start + 1);
+  if (entry.chunked) return media.stream(res, entry.chunked, start, end);
+  res.end(range ? entry.data.subarray(start, end + 1) : entry.data);
 }));
 
 app.post('/api/push/subscribe', auth, wrap(async (req, res) => {
@@ -2091,7 +2141,10 @@ async function runCleanup() {
        AND NOT EXISTS (SELECT 1 FROM scheduled_messages s WHERE s.chat_id=a.chat_id) LIMIT 200`,
     [new Date(Date.now() - 24 * 3600 * 1000)]
   );
-  if (stale.length) await db.q('DELETE FROM attachments WHERE id IN (?)', [stale.map((s) => s.id)]);
+  if (stale.length) {
+    await media.removeChunks(await db.q('SELECT id, chunks, store FROM attachments WHERE id IN (?)', [stale.map((s) => s.id)])).catch(() => {});
+    await db.q('DELETE FROM attachments WHERE id IN (?)', [stale.map((s) => s.id)]);
+  }
   await db.q('DELETE FROM sessions WHERE last_used < ?', [new Date(Date.now() - 400 * 86400000)]);
 }
 

@@ -1,5 +1,5 @@
 // Ping Me service worker: app-shell caching + app-style notifications.
-const VERSION = 'pm-v17';
+const VERSION = 'pm-v18';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/manifest.webmanifest',
   '/js/video-recorder.js', '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',

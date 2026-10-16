@@ -1633,9 +1633,9 @@ async function plusMenu() {
     actions: [
       chat.type === 'direct' && feature('ping') ? { label: 'Send a Ping', icon: 'hand', value: 'ping' } : null,
       chat.type === 'direct' && feature('usSpace') ? { label: 'Write an open-when letter', icon: 'mail', value: 'letter' } : null,
-      window.MediaRecorder && navigator.mediaDevices?.getUserMedia ? { label: 'Record video', icon: 'video', value: 'record-video' } : null,
+      isMobile() || (window.MediaRecorder && navigator.mediaDevices?.getUserMedia) ? { label: 'Record video', icon: 'video', value: 'record-video' } : null,
       { label: 'Photos & Videos', icon: 'image', value: 'media' },
-      isMobile() ? { label: 'Camera', icon: 'camera', value: 'camera' } : null,
+      isMobile() ? { label: 'Take photo', icon: 'camera', value: 'camera' } : null,
       feature('verifiedCamera') ? { label: 'Verified Real photo', icon: 'shield', value: 'vr' } : null,
       { label: 'Document', icon: 'file', value: 'file' },
       { label: 'Location', icon: 'map', value: 'loc' },
@@ -1650,6 +1650,10 @@ async function plusMenu() {
   const fi = els.fileInput;
   fi.removeAttribute('capture');
   fi.multiple = r !== 'camera';
+  // Phones: open the phone's own camera app in video mode — full quality, stabilisation, HDR — and send
+  // the file exactly as recorded. (Browser recording can't match the camera app.) Computers use the
+  // in-app recorder.
+  if (r === 'record-video' && isMobile()) { fi.accept = 'video/*'; fi.setAttribute('capture', 'environment'); fi.multiple = false; return fi.click(); }
   if (r === 'record-video') {
     if (S.calls.active()) return toast('Finish your call before recording a video');
     return openVideoRecorder({ maxBytes: S.config.maxUpload, onChoose: (file) => {
@@ -1658,7 +1662,7 @@ async function plusMenu() {
     } });
   }
   if (r === 'media') { fi.accept = 'image/*,video/*'; fi.click(); }
-  if (r === 'camera') { fi.accept = 'image/*,video/*'; fi.setAttribute('capture', 'environment'); fi.click(); }
+  if (r === 'camera') { fi.accept = 'image/*'; fi.setAttribute('capture', 'environment'); fi.click(); }
   if (r === 'file') { fi.accept = ''; fi.click(); }
   if (r === 'loc') sendLocation(chat.id, conv.reply?.id);
   if (r === 'poll') openPoll(chat.id);
@@ -1696,7 +1700,7 @@ function renderTray() {
     ...conv.tray.map((t) => h('div', { class: 'ti' },
       t.file.type.startsWith('image/') ? h('img', { src: t.url, alt: '' }) : t.file.type.startsWith('video/') ? h('video', { src: t.url, muted: true, playsinline: true }) : h('span', null, t.file.name),
       h('button', { class: 'rm', 'aria-label': 'Remove', onclick: () => { URL.revokeObjectURL(t.url); conv.tray = conv.tray.filter((x) => x !== t); renderTray(); updateSendBtn(); } }, icon('x')))),
-    hasImage ? h('button', { class: 'hd' + (store.get('sendHD', false) ? ' on' : ''), title: 'Send photos in original quality', onclick: () => { store.set('sendHD', !store.get('sendHD', false)); renderTray(); } }, 'HD') : '');
+    hasImage ? h('button', { class: 'hd' + (store.get('sendHD', true) ? ' on' : ''), title: 'Send photos in original quality', onclick: () => { store.set('sendHD', !store.get('sendHD', true)); renderTray(); } }, 'HD') : '');
 }
 
 // ─────── sending ───────
@@ -1777,14 +1781,14 @@ async function sendFile(chatId, file, base, localUrl) {
   if (!base.sendAt && st) { st.list.push(pending); if (S.current === chatId) { renderMessages(); scrollToBottom(true); } }
   let blob = file, media = {};
   try {
-    if (kind === 'image' && !store.get('sendHD', false)) {
+    if (kind === 'image' && !store.get('sendHD', true)) {
       const r = await compressImage(file);
       blob = r.blob; media = { w: r.w, h: r.h };
       pending.att.w = r.w; pending.att.h = r.h;
     } else if (kind === 'image') {
-      const r = await compressImage(file, { maxEdge: 8192, quality: 0.95 });
-      media = { w: r.w, h: r.h };
-      if (r.blob.size < file.size) blob = r.blob;
+      // HD = the original file, byte for byte (only its size is read for the layout).
+      const bmp = await createImageBitmap(file).catch(() => null);
+      if (bmp) { media = { w: bmp.width, h: bmp.height }; pending.att.w = bmp.width; pending.att.h = bmp.height; bmp.close?.(); }
     } else if (kind === 'video') {
       media = await videoMeta(file);
       Object.assign(pending.att, media);

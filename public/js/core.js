@@ -3,7 +3,7 @@ import { store } from './ui.js';
 
 export const S = {
   me: null,
-  config: { iceServers: [], vapidPublicKey: null, maxUpload: 45 * 1024 * 1024 },
+  config: { iceServers: [], vapidPublicKey: null, maxUpload: 2 * 1024 * 1024 * 1024 },
   users: new Map(),
   chats: new Map(),
   blocked: new Set(),
@@ -34,7 +34,54 @@ export async function api(method, path, body) {
   return data;
 }
 
+// Files over 8 MiB (original-quality videos) go up in 8 MiB pieces: works past Cloud Run's 32 MiB
+// request limit, retries a failed piece instead of the whole file, and never re-encodes anything.
+const PIECE = 8 * 1024 * 1024;
 export function upload(chatId, blob, name, onProgress) {
+  return blob.size > PIECE ? uploadInPieces(chatId, blob, name, onProgress) : uploadWhole(chatId, blob, name, onProgress);
+}
+
+function sendPiece(url, body, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('PUT', url);
+    xhr.withCredentials = true;
+    xhr.setRequestHeader('x-pingme', '1');
+    xhr.setRequestHeader('content-type', 'application/octet-stream');
+    xhr.upload.onprogress = (e) => e.lengthComputable && onProgress(e.loaded);
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) return resolve();
+      let data = {};
+      try { data = JSON.parse(xhr.responseText); } catch {}
+      reject(new ApiError(data.error || 'Upload failed', xhr.status));
+    };
+    xhr.onerror = () => reject(new ApiError('Upload failed — check your connection', 0));
+    xhr.send(body);
+  });
+}
+
+async function uploadInPieces(chatId, blob, name, onProgress) {
+  const { id, chunkSize, chunks } = await api('POST', '/api/upload/start', { chatId, name: name || 'file', mime: blob.type || 'application/octet-stream', size: blob.size });
+  let done = 0;
+  for (let i = 0; i < chunks; i++) {
+    const piece = blob.slice(i * chunkSize, Math.min(blob.size, (i + 1) * chunkSize));
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await sendPiece(`/api/upload/${id}/${i}`, piece, (loaded) => onProgress?.(Math.min(0.99, (done + loaded) / blob.size)));
+        break;
+      } catch (e) {
+        if (attempt >= 4 || (e.status >= 400 && e.status < 500)) throw e;
+        await new Promise((r) => setTimeout(r, 1000 * (attempt + 1))); // weak network: wait and retry this piece
+      }
+    }
+    done += piece.size;
+  }
+  const r = await api('POST', `/api/upload/${id}/finish`);
+  onProgress?.(1);
+  return r;
+}
+
+function uploadWhole(chatId, blob, name, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/upload');
