@@ -1,6 +1,7 @@
 import { openCamera } from './camera.js';
 import { mountPet, petHidden } from './pet.js';
 import { initBuzz } from './buzz.js';
+import { initAnalytics, setSocket, setScreen, pushScreen, popScreen } from './analytics.js';
 import {
   h, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, handleLayerPop, whenHistorySettled, longPress, richText, emojiCount,
   fmtTime, fmtListTime, fmtDay, fmtDur, fmtSize, lastSeenText, isIOS, isMobile, isStandalone, store,
@@ -250,7 +251,12 @@ function startApp() {
   renderMeBtn();
   renderEmptyConv();
   connectSocket();
+  initAnalytics({ api, socket: S.socket });
+  setSocket(S.socket);
+  setScreen(sessionStorage.getItem('pm:tab') === 'buzz' ? 'buzz' : 'chats');
   S.calls = initCalls({
+    onCallStart: () => pushScreen('call'),
+    onCallChange: (c) => { if (!c) popScreen('call'); },
     socket: S.socket,
     config: () => S.config,
     me: () => S.me,
@@ -737,6 +743,7 @@ export function openChat(id, { around = null, push = true } = {}) {
   if (push) whenHistorySettled(() => { if (history.state?.chat !== id) history.pushState({ chat: id }, ''); });
   els.main.classList.add('show-conv');
   if (S.tab === 'buzz' && innerWidth > 760) setTab('chats'); // on computers the chat replaces Buzz
+  setScreen(chat.type === 'group' ? 'group' : 'chat');
   if (switching || !els.msgs) buildConv(chat);
   renderList();
   const st = S.msgs.get(id);
@@ -751,6 +758,7 @@ export function openChat(id, { around = null, push = true } = {}) {
 
 export function closeChat() {
   saveDraft();
+  setScreen(S.tab === 'buzz' ? 'buzz' : 'chats');
   S.pet?.destroy(); S.pet = null;
   S.current = null;
   els.main?.classList.remove('show-conv');
@@ -771,6 +779,7 @@ function setTab(t) {
   els.main?.classList.toggle('buzz-mode', t === 'buzz');
   if (els.buzz) els.buzz.hidden = t !== 'buzz';
   if (t === 'buzz') S.buzz?.show(els.buzz); else S.buzz?.hide();
+  if (!S.current || innerWidth > 760) setScreen(t === 'buzz' ? 'buzz' : S.current ? (S.chats.get(S.current)?.type === 'group' ? 'group' : 'chat') : 'chats');
 }
 
 // The group pet lives in the open group chat.
@@ -1799,7 +1808,9 @@ async function pickIntent() {
 // WhatsApp-style camera: shoot, review, send — the file goes out exactly as captured.
 function openChatCamera(chat) {
   if (S.calls?.active()) return toast('Finish your call before using the camera');
+  pushScreen('camera');
   openCamera({
+    onClose: () => popScreen('camera'),
     maxBytes: S.config.maxUpload,
     onSend: (file) => {
       if (S.current !== chat.id) return toast('Chat changed — please take it again in the right chat');

@@ -1711,6 +1711,8 @@ const advanced = require('./features')({
 
 // Buzz: the live news feed tab.
 const buzz = require('./buzz')({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, rateLimit, publicUser, ms });
+// Usage analytics + the owner's admin portal (/admin, unlocked with ADMIN_KEY).
+require('./admin')({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online });
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 

@@ -9,7 +9,7 @@ import { VideoRecorder } from './video-recorder.js';
 
 const HOLD_MS = 280;
 
-export async function openCamera({ maxBytes, onSend, onGallery }) {
+export async function openCamera({ maxBytes, onSend, onGallery, onClose }) {
   if (!(await ensurePermission(['camera', 'microphone'], 'To take photos and record videos with sound.'))) return;
   let recorder = null, stream = null, facing = 'environment', torch = false, closed = false;
   let mode = 'photo', recording = false, holdTimer = null, tick = null, startedAt = 0, zoom = null;
@@ -47,6 +47,7 @@ export async function openCamera({ maxBytes, onSend, onGallery }) {
   function close() {
     if (closed) return;
     closed = true;
+    onClose?.();
     unregister();
     clearInterval(tick); clearTimeout(holdTimer);
     recorder?.cancel();

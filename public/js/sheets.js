@@ -19,6 +19,7 @@ import { installApp } from './install.js';
 import { openMyCode, openScanner } from './qr.js';
 import { applyVideoEdits, clipPlayer } from './editor.js';
 import { petHidden, showPetAgain } from './pet.js';
+import { pushScreen, popScreen } from './analytics.js';
 import { ensurePermission } from './perm.js';
 import { INTENTS } from './smart.js';
 
@@ -41,7 +42,8 @@ const pickFile = (accept) => new Promise((res) => {
 export function openSettings() {
   const onMe = () => draw();
   addEventListener('mm:me-changed', onMe);
-  const s = openSheet({ title: 'Settings', full: true, left: { label: 'Done' }, onClose: () => removeEventListener('mm:me-changed', onMe) });
+  pushScreen('settings');
+  const s = openSheet({ title: 'Settings', full: true, left: { label: 'Done' }, onClose: () => { removeEventListener('mm:me-changed', onMe); popScreen('settings'); } });
   const draw = () => {
     const me = S.me;
     const p = prefs();

@@ -808,6 +808,7 @@ export function initCalls(ctx) {
   // ───────── UI ─────────
 
   function buildUI() {
+    ctx.onCallStart?.();
     const root = h('div', { class: 'call' });
     const bg = h('div', { class: 'bgblur grad' });
     const stage = h('div', { class: 'stage n1' });

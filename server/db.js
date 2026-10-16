@@ -96,6 +96,32 @@ const SCHEMA = [
     option_idx INT NOT NULL,
     PRIMARY KEY (message_id, user_id, option_idx)
   )`,
+  `CREATE TABLE IF NOT EXISTS analytics_events (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT UNSIGNED NOT NULL,
+    sid CHAR(16) NULL,
+    type VARCHAR(24) NOT NULL,
+    screen VARCHAR(24) NULL,
+    item VARCHAR(40) NULL,
+    value INT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX (created_at), INDEX (type, created_at), INDEX (user_id, created_at)
+  )`,
+  `CREATE TABLE IF NOT EXISTS user_days (
+    user_id BIGINT UNSIGNED NOT NULL,
+    day DATE NOT NULL,
+    secs INT NOT NULL DEFAULT 0,
+    buzz TINYINT NOT NULL DEFAULT 0,
+    buzz_secs INT NOT NULL DEFAULT 0,
+    opens INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (user_id, day), INDEX (day)
+  )`,
+  `CREATE TABLE IF NOT EXISTS user_devices (
+    user_id BIGINT UNSIGNED PRIMARY KEY,
+    platform VARCHAR(16) NOT NULL,
+    standalone TINYINT NOT NULL DEFAULT 0,
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+  )`,
   `CREATE TABLE IF NOT EXISTS feed_sources (
     id VARCHAR(40) PRIMARY KEY,
     etag VARCHAR(255) NULL,

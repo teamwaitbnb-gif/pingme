@@ -2,6 +2,22 @@
 // India, tech, business, world, cricket and cinema. Our server collects the publisher feeds; the app
 // checks /api/feed every 5 seconds while Buzz is on screen and merges new stories in place.
 import { h, icon, toast, avatar, openSheet, store, fmtListTime } from './ui.js';
+import { track } from './analytics.js';
+
+// Analytics: a story counts as "seen" after being at least half on screen for a second; opens are
+// taps on its photo, headline or Read link.
+const seenIds = new Set();
+let seenPending = 0;
+const seenTimers = new Map();
+const seenObserver = 'IntersectionObserver' in window ? new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    const id = e.target.dataset.id;
+    if (!id || seenIds.has(id)) continue;
+    if (e.isIntersecting) seenTimers.set(id, setTimeout(() => { seenIds.add(id); seenPending++; seenObserver.unobserve(e.target); }, 1000));
+    else { clearTimeout(seenTimers.get(id)); seenTimers.delete(id); }
+  }
+}, { threshold: 0.5 }) : null;
+setInterval(() => { if (seenPending) { track({ t: 'buzz_seen', v: seenPending }); seenPending = 0; } }, 10000);
 
 const POLL_MS = 5000;
 const CITIES = [['hyderabad', 'Hyderabad'], ['bengaluru', 'Bengaluru'], ['mumbai', 'Mumbai'], ['delhi', 'Delhi'], ['chennai', 'Chennai'], ['kolkata', 'Kolkata'], ['pune', 'Pune'], ['india', 'All of India']];
@@ -136,6 +152,8 @@ export function initBuzz(ctx) {
           h('button', { class: 'bz-act', 'aria-label': 'Send to a chat', onclick: () => shareToChat(it) }, icon('send')),
           link('bz-read', 'Read', icon('chev')))));
     el._refs = { likeBtn, comBtn, repBtn };
+    seenObserver?.observe(el);
+    el.addEventListener('click', (e) => { if (e.target.closest('a.bz-media, a.bz-h, a.bz-read, a.bz-ph')) track({ t: 'buzz_open', i: it.id }); });
     el.querySelector('.bz-h').addEventListener('auxclick', (e) => e.stopPropagation());
     return el;
   }

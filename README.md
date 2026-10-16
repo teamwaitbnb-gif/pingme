@@ -92,3 +92,11 @@ Architecture: publisher RSS/Atom feeds + Hacker News API → server collectors (
 - Google Trends (India + each city's state) adds what people are searching for right now, with real search volumes; the same story covered by several outlets is grouped into one card ("Covered by N outlets") and ranked higher.
 - Publisher logos are fetched once from each publisher's own site and stored in the database (`/api/feed/logo/:id`).
 - Known source status: 43 feeds working; Moneycontrol returns HTTP 403 to servers and Ars Technica blocks logo requests (both handled gracefully).
+
+## Admin portal (owner only)
+
+Open **/admin** (e.g. `https://<your-app>/admin`) and enter `ADMIN_KEY` from `.env` (at least 16 characters). It is separate from Ping Me sign-in, so using it on a laptop never signs your phone out (one-device rule). The key sets a 30-day admin cookie; login attempts are rate-limited.
+
+It shows: total / new users, daily / weekly / monthly active users, stickiness, who is online right now and which screen they're on, time by screen, weekly retention cohorts (day 1, week 2, month 2) for the app and for Buzz, devices (iPhone / Android / computer, installed app vs browser), messages and calls per day, and Buzz stats (readers, stories seen/opened, open rate, likes/comments/reposts, top stories, top sources, cities).
+
+Privacy: only activity is recorded (screen + duration, app opens, Buzz story ids seen/opened). Message text and calls are never recorded. Raw events are kept 120 days (`analytics_events`); daily summaries (`user_days`) and device type (`user_devices`) stay.
