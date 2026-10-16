@@ -106,7 +106,10 @@ const SCHEMA = [
     fails INT NOT NULL DEFAULT 0,
     status VARCHAR(20) NOT NULL DEFAULT 'pending',
     error VARCHAR(300) NULL,
-    items INT NOT NULL DEFAULT 0
+    items INT NOT NULL DEFAULT 0,
+    logo MEDIUMBLOB NULL,
+    logo_type VARCHAR(60) NULL,
+    logo_at DATETIME(3) NULL
   )`,
   `CREATE TABLE IF NOT EXISTS feed_items (
     id CHAR(24) PRIMARY KEY,
@@ -303,6 +306,8 @@ async function migrate(dbName) {
   }
   const sessions = await cols('sessions');
   if (!sessions.has('device_hash')) await pool.query('ALTER TABLE sessions ADD COLUMN device_hash CHAR(64) NULL AFTER ua_enc');
+  const fsrc = await cols('feed_sources');
+  if (fsrc.size && !fsrc.has('logo')) await pool.query('ALTER TABLE feed_sources ADD COLUMN logo MEDIUMBLOB NULL, ADD COLUMN logo_type VARCHAR(60) NULL, ADD COLUMN logo_at DATETIME(3) NULL');
   const members = await cols('chat_members');
   if (!members.has('removed')) {
     // "Deleted" conversations used to be parked in Archived; give them their own hidden state.

@@ -59,6 +59,12 @@ const SOURCES = [
   // ── Sports & entertainment ──
   { id: 'cricinfo', name: 'ESPNcricinfo', site: 'espncricinfo.com', url: 'https://www.espncricinfo.com/rss/content/story/feeds/0.xml', region: 'india', topic: 'sports', poll: min(6) },
   { id: 'ht-entertainment', name: 'Hindustan Times · Entertainment', site: 'hindustantimes.com', url: 'https://www.hindustantimes.com/feeds/rss/entertainment/rssfeed.xml', region: 'india', topic: 'entertainment', poll: min(8) },
+  // ── Google Trends: what people in each state are searching for right now (real search volume) ──
+  ...[['india', 'IN', 'India'], ['hyderabad', 'IN-TG', 'Telangana'], ['bengaluru', 'IN-KA', 'Karnataka'], ['mumbai', 'IN-MH', 'Maharashtra'],
+    ['delhi', 'IN-DL', 'Delhi'], ['chennai', 'IN-TN', 'Tamil Nadu'], ['kolkata', 'IN-WB', 'West Bengal']].map(([region, geo, area]) => ({
+    id: 'trends-' + geo.toLowerCase(), name: `Google Trends · ${area}`, site: 'trends.google.com', url: `https://trends.google.com/trending/rss?geo=${geo}`,
+    adapter: 'trends', region, topic: region === 'india' ? 'india' : 'local', area, poll: min(10), aggregator: true, trends: true,
+  })),
   // ── Optional platforms: need documented API access, so off until credentials are configured ──
   { id: 'youtube-in', name: 'YouTube · Popular in India', site: 'youtube.com', url: 'https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics&chart=mostPopular&regionCode=IN&maxResults=20', adapter: 'youtube', region: 'india', topic: 'video', poll: min(30), credentials: 'YOUTUBE_API_KEY' },
   { id: 'reddit-india', name: 'Reddit · r/india', site: 'reddit.com', url: 'https://oauth.reddit.com/r/india/hot?limit=25', adapter: 'reddit', region: 'india', topic: 'india', poll: min(15), credentials: 'REDDIT_CLIENT_ID + REDDIT_CLIENT_SECRET' },

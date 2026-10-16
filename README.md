@@ -89,4 +89,6 @@ Architecture: publisher RSS/Atom feeds + Hacker News API → server collectors (
 - Popularity labels use real signals only: Hacker News points/comments, Google News top-story position, and likes/comments/reposts on Ping Me. Nothing is claimed to be "the most viral on the internet".
 - Missing images/summaries are read from the article's Open Graph tags, only on the publisher's own site. Summaries are the publisher's own sentences, never invented.
 - Optional, disabled until credentials are set: YouTube popular videos (`YOUTUBE_API_KEY`) and Reddit (`REDDIT_CLIENT_ID` + `REDDIT_CLIENT_SECRET`). These adapters are stubs until those keys exist.
-- Known source status at launch: 36 feeds working; Moneycontrol returns HTTP 403 to servers (kept, marked unavailable, retried with backoff).
+- Google Trends (India + each city's state) adds what people are searching for right now, with real search volumes; the same story covered by several outlets is grouped into one card ("Covered by N outlets") and ranked higher.
+- Publisher logos are fetched once from each publisher's own site and stored in the database (`/api/feed/logo/:id`).
+- Known source status: 43 feeds working; Moneycontrol returns HTTP 403 to servers and Ars Technica blocks logo requests (both handled gracefully).

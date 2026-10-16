@@ -5,7 +5,7 @@ import {
   h, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, handleLayerPop, whenHistorySettled, longPress, richText, emojiCount,
   fmtTime, fmtListTime, fmtDay, fmtDur, fmtSize, lastSeenText, isIOS, isMobile, isStandalone, store,
 } from './ui.js';
-import { compressImage, videoMeta, VoiceRecorder, player, playScreenEffect, sounds, SCREEN_EFFECTS, BUBBLE_EFFECTS } from './media.js';
+import { compressImage, videoMeta, VoiceRecorder, player, playScreenEffect, sounds, SCREEN_EFFECTS, BUBBLE_EFFECTS, makeThumb, lazyThumb } from './media.js';
 import { initCalls } from './call.js';
 import { showAuth as renderAuth, showChooseUsername, setSignedInHandler, showJoin, askTakeover } from './auth.js';
 import {
@@ -46,7 +46,7 @@ if (window.visualViewport) {
 
 // Keep the app pinned like a native app: no page rubber-banding, no pinch / double-tap zoom.
 // Only real scroll areas (lists, chats, sheets) move.
-const SCROLLERS = '.msgs, .sb-list, .sheet-body, .onboard-in, .actions .grp, .ctx .menu, .tray, .people-row, .story-strip, .emoji-grid, .eo-content, textarea, .tabs, .chips, .opts-bar, .sugg-row, .stats, .gate, .auth, .vb, .st-text, .lockscreen, .wrapped';
+const SCROLLERS = '.msgs, .sb-list, .sheet-body, .onboard-in, .actions .grp, .ctx .menu, .tray, .people-row, .story-strip, .emoji-grid, .eo-content, textarea, .tabs, .chips, .opts-bar, .sugg-row, .stats, .gate, .auth, .vb, .st-text, .lockscreen, .wrapped, .buzz-pane, .ed-options, .ed-tools, .cam-tools, .bz-src-list';
 document.addEventListener('touchmove', (e) => {
   if (e.touches.length > 1) { if (!e.target.closest('.vb')) e.preventDefault(); return; }
   if (!e.target.closest(SCROLLERS)) e.preventDefault();
@@ -1177,7 +1177,7 @@ export function renderMessages() {
     const first = !sameGroup(prev, m) || (prev && m.createdAt - prev.createdAt > 3600000);
     const last = !sameGroup(m, next) || (next && next.createdAt - m.createdAt > 3600000);
     const status = i === lastMineIdx ? receiptStatus(m, chat) : '';
-    const key = [m.id, m.editedAt, m.deleted, m.pinned, first, last, status, m.progress, m.failed, JSON.stringify(m.reactions || []), JSON.stringify(m.poll?.votes || {}), user(m.senderId).avatarV, user(m.senderId).name, m.replyTo?.preview, m.att?.id, m.expiresAt, m.readTtl, m.vr?.sig, scamV, m.intent].join('|');
+    const key = [m.id, m.editedAt, m.deleted, m.pinned, first, last, status, m.progress, m.failed, JSON.stringify(m.reactions || []), JSON.stringify(m.poll?.votes || {}), user(m.senderId).avatarV, user(m.senderId).name, m.replyTo?.preview, m.att?.id, m.thumbUrl, m.att?.thumbId, m.expiresAt, m.readTtl, m.vr?.sig, scamV, m.intent].join('|');
     nodes.push(getNode('m' + (m.clientId || m.id), key, () => {
       // One message that can't be drawn must never blank the whole chat.
       try { return buildMessage(m, { first, last, status, chat }); } catch (e) {
@@ -1400,7 +1400,7 @@ async function renderUsBar() {
 function openEyes(m, mine) {
   const render = () => {
     if (m.kind === 'text') return h('div', { class: 'eo-text' }, m.text);
-    if (m.kind === 'image') return h('img', { src: fileUrl(m.att), alt: '' });
+    if (m.kind === 'image' || m.kind === 'video') { const t = thumbSrc(m); return t ? h('img', { src: t, alt: '' }) : h('span', { class: 'q-media' }, icon(m.kind === 'video' ? 'video' : 'image')); }
     return h('video', { src: fileUrl(m.att), controls: true, playsinline: true, autoplay: true });
   };
   if (mine) { // the sender can always re-read what they sent
@@ -1444,26 +1444,29 @@ function tickCountdowns() {
   if (expired) renderMessages();
 }
 
+// Bubbles show a small preview only (never the full 4K photo or a live <video>): the full file opens
+// in the viewer. Big images/videos in the list made iPhone Safari stop drawing the chat.
+const thumbSrc = (m) => m.thumbUrl || (m.att?.thumbId ? fileUrl({ id: m.att.thumbId }) : null);
 function mediaBox(m) {
   const w = m.att?.w || 4, hh = m.att?.h || 3;
   const maxW = Math.min(300, innerWidth * 0.7);
   const ratio = Math.min(1.6, Math.max(0.5, hh / w));
-  const box = h('div', { class: 'media-box', style: { width: maxW + 'px', height: Math.round(maxW * ratio) + 'px' } });
-  const src = m.localUrl || fileUrl(m.att);
-  if (m.kind === 'image') {
-    const img = h('img', { src, alt: m.att?.name || 'Photo', loading: 'lazy', decoding: 'async' });
-    box.append(img);
-    // A photo of someone's Ping Me QR code gets an "Add" button right on it.
-    if (!m.pending && m.id > 0) {
-      scanChatImage(m.id, img, (username) => box.append(h('button', { class: 'qr-chip', onclick: (e) => { e.stopPropagation(); addFromCode(username); } }, icon('qr'), `Add @${username}`)));
-    }
+  const box = h('div', { class: 'media-box' + (m.kind === 'video' ? ' is-video' : ''), style: { width: maxW + 'px', height: Math.round(maxW * ratio) + 'px' } });
+  const img = h('img', { alt: m.kind === 'video' ? 'Video' : m.att?.name || 'Photo', decoding: 'async', hidden: true });
+  img.onload = () => { img.hidden = false; };
+  const show = (u) => { img.src = u; };
+  box.append(img);
+  const trim = Array.isArray(m.att?.trim) ? m.att.trim : null;
+  const ready = thumbSrc(m);
+  if (ready) show(ready);
+  else if (!m.pending && m.att?.id) lazyThumb(box, { key: m.att.id + (trim ? ':' + trim[0] : ''), url: fileUrl(m.att), kind: m.kind, at: trim ? trim[0] : 0.1, onReady: show });
+  if (m.kind === 'image' && !m.pending && m.id > 0) {
+    // A photo of someone's Ping Me QR code gets an "Add" button right on it (scanned from the preview).
+    scanChatImage(m.id, img, (username) => box.append(h('button', { class: 'qr-chip', onclick: (e) => { e.stopPropagation(); addFromCode(username); } }, icon('qr'), `Add @${username}`)));
   }
-  else {
-    const trim = Array.isArray(m.att?.trim) ? m.att.trim : null;
-    const v = h('video', { src: src + (src.startsWith('blob:') ? '' : `#t=${trim ? trim[0] : 0.1}`), preload: 'metadata', muted: true, playsinline: true });
-    v.muted = true;
+  if (m.kind === 'video') {
     const shown = trim ? trim[1] - trim[0] : m.att?.dur;
-    box.append(v, h('div', { class: 'play' }, h('span', null, icon('play', 'fill'))), shown ? h('span', { class: 'dur' }, fmtDur(shown)) : null);
+    box.append(h('div', { class: 'play' }, h('span', null, icon('play', 'fill'))), shown ? h('span', { class: 'dur' }, fmtDur(shown)) : null);
   }
   if (m.pending) box.append(h('div', { class: 'progress' }, m.failed ? 'Failed' : `${Math.round((m.progress || 0) * 100)}%`));
   else box.addEventListener('click', (e) => { e.stopPropagation(); if (m.effect === 'ink' && !m._revealed) return; openViewer(m); });
@@ -1956,6 +1959,15 @@ async function sendFile(chatId, file, base, localUrl) {
       if (file.pmMeta?.trim) media.trim = file.pmMeta.trim;
       if (file.pmMeta?.muted) media.muted = true;
       Object.assign(pending.att, media);
+    }
+    if (kind === 'image' || kind === 'video') {
+      // Small preview for chat bubbles (the original stays untouched and opens in the viewer).
+      const thumb = await makeThumb(kind === 'image' ? blob : file, kind, { at: media.trim ? media.trim[0] : 0.1 });
+      if (thumb) {
+        pending.thumbUrl = URL.createObjectURL(thumb);
+        if (S.current === chatId) renderMessages();
+        try { const tu = await upload(chatId, thumb, 'preview.jpg'); media.thumbId = tu.id; S.localMedia.set(tu.id, pending.thumbUrl); } catch {}
+      }
     }
     let lastRender = 0;
     const up = await upload(chatId, blob, file.name.replace(/\.(heic|heif|png|jpe?g)$/i, blob.type === 'image/webp' ? '.webp' : blob.type === 'image/jpeg' ? '.jpg' : '$&'), (p) => {

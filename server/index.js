@@ -279,6 +279,14 @@ async function streaksFor(chatIds) {
   return out;
 }
 
+// The small preview image uploaded with a photo/video (same sender, same chat, finished upload).
+async function previewId(raw, chatId, senderId) {
+  const id = toInt(raw);
+  if (!id) return undefined;
+  const a = await db.one('SELECT chat_id, uploader_id, size FROM attachments WHERE id=? AND complete=1', [id]);
+  return a && Number(a.chat_id) === chatId && Number(a.uploader_id) === senderId && Number(a.size) <= 2 * 1024 * 1024 ? id : undefined;
+}
+
 // Notification text: says plainly what kind of message it is.
 function notifyText(m) {
   const dur = (s) => { s = Math.round(s || 0); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; };
@@ -449,6 +457,7 @@ async function buildBody(chatId, senderId, input) {
       trim: Array.isArray(extra.trim) && extra.trim.length === 2 && extra.trim.every((x) => Number.isFinite(Number(x)) && Number(x) >= 0) && Number(extra.trim[1]) > Number(extra.trim[0])
         ? [Math.round(Number(extra.trim[0]) * 100) / 100, Math.round(Number(extra.trim[1]) * 100) / 100] : undefined,
       muted: extra.muted === true ? true : undefined,
+      thumbId: await previewId(extra.thumbId, chatId, senderId),
     };
   } else if (kind === 'location') {
     const lat = Number(input.loc?.lat), lng = Number(input.loc?.lng);

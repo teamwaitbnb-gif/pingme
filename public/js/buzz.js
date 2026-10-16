@@ -40,7 +40,7 @@ export function initBuzz(ctx) {
     sourcesEl.addEventListener('toggle', () => { if (sourcesEl.open) loadSources(); });
     root.replaceChildren(
       h('header', { class: 'bz-head' },
-        h('div', { class: 'bz-title' }, h('b', null, 'Buzz'), h('span', { class: 'bz-live' }, h('i'), 'Live')),
+        h('div', { class: 'bz-title' }, h('b', null, 'Buzz'), h('span', { class: 'bz-live', title: 'Live' }, h('i'))),
         chip),
       h('div', { class: 'bz-sub' }, statusEl),
       region === 'india' && !store.get('buzzAskedCity') ? cityPrompt() : null,
@@ -121,19 +121,30 @@ export function initBuzz(ctx) {
       media,
       h('div', { class: 'bz-body' },
         h('div', { class: 'bz-meta' },
-          media ? null : h('span', { class: 'bz-badge', style: { '--h': hue(it.sourceId) } }, initials(it.sourceName)),
+          logo(it),
           h('span', { class: 'bz-src' }, it.sourceName),
-          it.publishedAt ? h('time', { datetime: new Date(it.publishedAt).toISOString() }, ago(it.publishedAt)) : null,
-          h('span', { class: 'bz-label k-' + it.contentType }, it.label)),
+          it.publishedAt ? h('time', { datetime: new Date(it.publishedAt).toISOString() }, ago(it.publishedAt)) : null),
+        // Only real popularity signals get a label ("Latest" is the default, so it isn't shown).
+        it.contentType !== 'latest' ? h('span', { class: 'bz-label k-' + it.contentType }, it.label) : null,
         link('bz-h', it.title),
         it.description ? h('p', { class: 'bz-d' }, it.description) : h('p', { class: 'bz-d none' }, `Read the full story at ${hostOf(it.canonicalUrl) || it.sourceName}.`),
+        it.alsoBy?.length ? h('div', { class: 'bz-also' }, `Also covered by ${it.alsoBy.join(', ')}${it.coverage - 1 > it.alsoBy.length ? ` +${it.coverage - 1 - it.alsoBy.length}` : ''}`) : null,
         it.discussUrl && it.discussUrl !== it.canonicalUrl ? h('a', { class: 'bz-discuss', href: it.discussUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Discussion on Hacker News') : null,
         h('div', { class: 'bz-actions' }, likeBtn, comBtn, repBtn,
           h('button', { class: 'bz-act', 'aria-label': 'Send to a chat', onclick: () => shareToChat(it) }, icon('send')),
-          link('bz-read', 'Read at source', icon('external')))));
+          link('bz-read', 'Read', icon('chev')))));
     el._refs = { likeBtn, comBtn, repBtn };
     el.querySelector('.bz-h').addEventListener('auxclick', (e) => e.stopPropagation());
     return el;
+  }
+
+  // The publisher's own logo (fetched by our server from their site); a neat initial badge otherwise.
+  function logo(it) {
+    const badge = () => h('span', { class: 'bz-badge', style: { '--h': hue(it.sourceId) } }, initials(it.sourceName));
+    if (!it.logoUrl) return badge();
+    const img = h('img', { class: 'bz-logo', src: it.logoUrl, alt: '', width: 18, height: 18, loading: 'lazy' });
+    img.addEventListener('error', () => img.replaceWith(badge()));
+    return img;
   }
 
   function placeholder(it) {
@@ -152,7 +163,7 @@ export function initBuzz(ctx) {
     r.comBtn.lastChild.textContent = it.comments || '';
     r.repBtn.classList.toggle('on', !!it.reposted); r.repBtn.lastChild.textContent = it.reposts || '';
     const lab = c.el.querySelector('.bz-label');
-    if (lab && lab.textContent !== it.label) { lab.textContent = it.label; lab.className = 'bz-label k-' + it.contentType; }
+    if (lab && it.contentType !== 'latest' && lab.textContent !== it.label) { lab.textContent = it.label; lab.className = 'bz-label k-' + it.contentType; }
     const t = c.el.querySelector('time');
     if (t && it.publishedAt) t.textContent = ago(it.publishedAt);
   }
@@ -238,26 +249,49 @@ export function initBuzz(ctx) {
     try { const r = await ctx.api('POST', `/api/feed/${id}/repost`); patch({ ...cards.get(id).data, ...r }); toast(r.reposted ? 'Reposted — it now counts toward what’s buzzing' : 'Repost removed', { timeout: 1800 }); } catch (e) { patch(d); toast(e.message, { error: true }); }
   }
 
+  // Comments: the story on top, a clean list, and a simple input at the bottom.
   function openComments(id) {
     const it = cards.get(id)?.data; if (!it) return;
-    const list = h('div', { class: 'bz-comments' }, h('div', { class: 'spinner' }));
-    const input = h('textarea', { class: 'field', rows: 2, maxlength: 1000, placeholder: 'Add a comment…' });
-    const s = openSheet({ title: 'Comments', left: { label: 'Close' }, full: true });
-    const post = async () => {
+    const list = h('div', { class: 'cm-list' }, h('div', { class: 'spinner' }));
+    const input = h('textarea', { class: 'cm-input', rows: 1, maxlength: 1000, placeholder: 'Add a comment…', 'aria-label': 'Write a comment', enterkeyhint: 'send' });
+    const send = h('button', { class: 'cm-send', 'aria-label': 'Post comment', disabled: true, onclick: () => post() }, icon('up'));
+    const s = openSheet({ title: 'Comments', left: { label: 'Done' }, full: true, className: 'cm-sheet' });
+    const grow = () => { input.style.height = 'auto'; input.style.height = Math.min(120, input.scrollHeight) + 'px'; send.disabled = !input.value.trim(); };
+    input.addEventListener('input', grow);
+    input.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey && !matchMedia('(pointer: coarse)').matches) { e.preventDefault(); post(); } });
+    const empty = () => h('div', { class: 'cm-empty' }, icon('msg'), h('b', null, 'No comments yet'), h('span', null, 'Start the conversation.'));
+    async function post() {
       const text = input.value.trim(); if (!text) return;
-      try { const r = await ctx.api('POST', `/api/feed/${id}/comments`, { text }); input.value = ''; list.querySelector('.bz-empty')?.remove(); list.append(row(r.comment, null)); patch({ ...cards.get(id).data, ...r.counts }); list.lastChild.scrollIntoView({ block: 'nearest' }); } catch (e) { toast(e.message, { error: true }); }
-    };
-    const row = (cm, users) => {
+      send.disabled = true;
+      try {
+        const r = await ctx.api('POST', `/api/feed/${id}/comments`, { text });
+        input.value = ''; grow();
+        list.querySelector('.cm-empty')?.remove();
+        const el = row(r.comment, null); el.classList.add('cm-new');
+        list.append(el); el.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        patch({ ...cards.get(id).data, ...r.counts });
+      } catch (e) { toast(e.message, { error: true }); send.disabled = false; }
+    }
+    function row(cm, users) {
       const u = users?.find((x) => x.id === cm.userId) || (cm.mine ? ctx.me() : { id: cm.userId, name: 'Someone' });
-      return h('div', { class: 'bz-cm' }, avatar({ id: u.id, name: u.name, src: ctx.userAvatar(u.id), size: 32 }),
-        h('div', null, h('div', { class: 'bz-cm-h' }, h('b', null, u.name), h('span', null, ago(cm.createdAt)),
-          cm.mine ? h('button', { class: 'link small', onclick: async (e) => { const el = e.currentTarget.closest('.bz-cm'); try { const r = await ctx.api('DELETE', `/api/feed/comments/${cm.id}`); el.remove(); patch({ ...cards.get(id).data, ...r.counts }); } catch (er) { toast(er.message, { error: true }); } } }, 'Delete') : null),
-          h('p', null, cm.text)));
-    };
-    s.body.append(h('div', { class: 'bz-cm-story' }, h('b', null, it.title), h('span', null, it.sourceName)), list,
-      h('div', { class: 'bz-cm-input' }, input, h('button', { class: 'btn', onclick: post }, 'Post')));
+      const el = h('div', { class: 'cm-row' },
+        avatar({ id: u.id, name: u.name, src: ctx.userAvatar(u.id), size: 34 }),
+        h('div', { class: 'cm-main' },
+          h('div', { class: 'cm-top' }, h('b', null, cm.mine ? 'You' : u.name), h('span', null, ago(cm.createdAt))),
+          h('p', null, cm.text),
+          cm.mine ? h('button', { class: 'cm-del', onclick: async () => {
+            try { const r = await ctx.api('DELETE', `/api/feed/comments/${cm.id}`); el.remove(); patch({ ...cards.get(id).data, ...r.counts }); if (!list.querySelector('.cm-row')) list.append(empty()); } catch (er) { toast(er.message, { error: true }); }
+          } }, 'Delete') : null));
+      return el;
+    }
+    s.body.append(
+      h('a', { class: 'cm-story', href: it.canonicalUrl, target: '_blank', rel: 'noopener noreferrer' },
+        it.imageUrl ? h('img', { src: it.imageUrl, alt: '', referrerpolicy: 'no-referrer' }) : logo(it),
+        h('div', null, h('b', null, it.title), h('span', null, it.sourceName))),
+      list,
+      h('div', { class: 'cm-bar' }, avatar({ id: ctx.me()?.id, name: ctx.me()?.name, src: ctx.userAvatar(ctx.me()?.id), size: 32 }), h('div', { class: 'cm-field' }, input, send)));
     ctx.api('GET', `/api/feed/${id}/comments`).then(({ comments, users }) => {
-      list.replaceChildren(...(comments.length ? comments.map((cm) => row(cm, users)) : [h('div', { class: 'bz-empty' }, 'No comments yet — start the conversation.')]));
+      list.replaceChildren(...(comments.length ? comments.map((cm) => row(cm, users)) : [empty()]));
     }).catch((e) => { list.textContent = e.message; });
   }
 

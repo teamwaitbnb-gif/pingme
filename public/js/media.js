@@ -396,3 +396,70 @@ export const sounds = {
   join() { play('join', { volume: 0.6 }); },
   received() { this.message(); },
 };
+
+// ───── small previews for chat bubbles ─────
+// Bubbles show a ~480px preview; the full photo/video loads only in the viewer. Full-size 4K/12MP
+// images and live <video> elements in a long chat use so much graphics memory that iPhone Safari
+// stops drawing parts of the chat (it looked blank and flickered while scrolling).
+const THUMB = 480;
+function drawThumb(src, w, hgt) {
+  const k = Math.min(1, THUMB / Math.max(w, hgt));
+  const c = document.createElement('canvas');
+  c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(hgt * k));
+  c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+  return new Promise((r) => c.toBlob((b) => { c.width = c.height = 0; r(b); }, 'image/jpeg', 0.72));
+}
+
+export async function makeThumb(blob, kind, { at = 0.1 } = {}) {
+  try {
+    if (kind === 'image') {
+      const bmp = await createImageBitmap(blob);
+      try { return await drawThumb(bmp, bmp.width, bmp.height); } finally { bmp.close?.(); }
+    }
+    if (kind === 'video') {
+      // A string is a server URL: the video element streams just the start (range requests).
+      const own = typeof blob !== 'string';
+      const url = own ? URL.createObjectURL(blob) : blob;
+      const v = document.createElement('video');
+      v.muted = true; v.playsInline = true; v.preload = 'auto';
+      try {
+        await new Promise((res, rej) => {
+          const t = setTimeout(() => rej(new Error('timeout')), 8000);
+          v.onloadeddata = () => { v.currentTime = Math.min(at, Math.max(0, (v.duration || 1) - 0.1)); };
+          v.onseeked = () => { clearTimeout(t); res(); };
+          v.onerror = () => { clearTimeout(t); rej(new Error('video')); };
+          v.src = url;
+        });
+        return await drawThumb(v, v.videoWidth, v.videoHeight);
+      } finally { v.removeAttribute('src'); v.load(); if (own) URL.revokeObjectURL(url); }
+    }
+  } catch {}
+  return null;
+}
+
+// Previews for older messages that were sent without one: made on this phone, one at a time,
+// only when the bubble scrolls near the screen.
+const thumbCache = new Map(); // key → object URL
+let thumbQueue = Promise.resolve();
+const io = 'IntersectionObserver' in window ? new IntersectionObserver((entries) => {
+  for (const e of entries) if (e.isIntersecting) { io.unobserve(e.target); e.target._makeThumb?.(); }
+}, { rootMargin: '400px 0px' }) : null;
+
+export function lazyThumb(el, { key, url, kind, at, onReady }) {
+  if (thumbCache.has(key)) { onReady(thumbCache.get(key)); return; }
+  el._makeThumb = () => {
+    thumbQueue = thumbQueue.then(async () => {
+      if (thumbCache.has(key)) return onReady(thumbCache.get(key));
+      if (!el.isConnected) return;
+      try {
+        const src = kind === 'video' ? url : await (await fetch(url, { credentials: 'same-origin' })).blob();
+        const t = await makeThumb(src, kind, { at });
+        if (!t) return;
+        const u = URL.createObjectURL(t);
+        thumbCache.set(key, u);
+        onReady(u);
+      } catch {}
+    });
+  };
+  if (io) io.observe(el); else el._makeThumb();
+}

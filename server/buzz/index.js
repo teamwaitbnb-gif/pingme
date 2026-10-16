@@ -3,7 +3,7 @@
 // Publisher feeds → server collectors (scheduled, per-source polling, backoff) → normalised rows in our
 // database (durable, shared by everyone) → ranked per region → GET /api/feed → the app checks every 5s.
 const { SOURCES, CITIES, byId } = require('./sources');
-const { collect, enrich } = require('./collect');
+const { collect, enrich, fetchLogo } = require('./collect');
 const N = require('./normalize');
 
 module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, rateLimit, publicUser, ms }) {
@@ -32,11 +32,15 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     for (const it of items) {
       const url = N.canonical(it.url);
       if (!url) continue;
+      // Aggregators mix languages; keep the feed readable (English headlines from them).
+      if (src.aggregator && !mostlyLatin(it.title)) continue;
       const id = N.idFor(url);
       await db.q(`INSERT INTO feed_items (id, source_id, region, topic, url, title, summary, image_url, video_url, via, discuss_url, engagement, src_rank, published_at)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         ON DUPLICATE KEY UPDATE title=VALUES(title), summary=COALESCE(VALUES(summary), summary), image_url=COALESCE(VALUES(image_url), image_url),
-          video_url=COALESCE(VALUES(video_url), video_url), engagement=VALUES(engagement), src_rank=VALUES(src_rank),
+          video_url=COALESCE(VALUES(video_url), video_url),
+          engagement=IF(source_id = VALUES(source_id), VALUES(engagement), COALESCE(engagement, VALUES(engagement))),
+          src_rank=IF(source_id = VALUES(source_id), VALUES(src_rank), src_rank),
           published_at=COALESCE(published_at, VALUES(published_at))`,
       [id, src.id, src.region, src.topic, url, clampStr(it.title, 590), it.description || null, it.image || null, it.video || null,
         it.via ? clampStr(it.via, 150) : null, it.discussUrl || null, it.engagement ? JSON.stringify(it.engagement) : null,
@@ -44,6 +48,12 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       n++;
     }
     return n;
+  }
+
+  function mostlyLatin(t) {
+    const letters = String(t).match(/\p{L}/gu) || [];
+    if (!letters.length) return false;
+    return letters.filter((c) => /[A-Za-z\u00C0-\u024F]/.test(c)).length / letters.length >= 0.6;
   }
 
   async function runSource(src) {
@@ -72,6 +82,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       let i = 0; // bounded concurrency: 4 sources at a time
       await Promise.all(Array.from({ length: 4 }, async () => { while (i < due.length) await runSource(due[i++]); }));
       await enrichSome();
+      await logosSome();
     } catch (e) { console.error('buzz tick', e.message); }
     ticking = false;
   }
@@ -93,6 +104,39 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     }));
   }
 
+  // Publisher logos (one per website), refreshed weekly, stored in the database.
+  const logoReady = new Set();
+  async function logosSome() {
+    const rows = await db.q('SELECT id, logo_at, logo IS NOT NULL has FROM feed_sources');
+    const seen = new Map(rows.map((r) => [r.id, r]));
+    const bySite = new Map();
+    for (const s of SOURCES) if (s.enabled && !s.aggregator) bySite.set(s.site, [...(bySite.get(s.site) || []), s.id]);
+    let done = 0;
+    for (const [site, ids] of bySite) {
+      const r = seen.get(ids[0]);
+      if (r?.has) { ids.forEach((id) => logoReady.add(id)); }
+      if (r?.logo_at && Date.now() - ms(r.logo_at) < 7 * 86400e3) continue;
+      if (!r || done >= 6) continue; // a few per tick; the source row must exist first
+      done++;
+      const logo = await fetchLogo(site).catch(() => null);
+      await db.q('UPDATE feed_sources SET logo=COALESCE(?, logo), logo_type=COALESCE(?, logo_type), logo_at=? WHERE id IN (?)', [logo?.data || null, logo?.type || null, new Date(), ids]);
+      if (logo) { ids.forEach((id) => logoReady.add(id)); dirty = true; }
+    }
+  }
+
+  app.get('/api/feed/logo/:id', wrap(async (req, res) => {
+    const src = byId(String(req.params.id));
+    if (!src) return res.status(404).end();
+    // Every source on the same website shares one logo.
+    const ids = SOURCES.filter((s) => s.site === src.site).map((s) => s.id);
+    const r = await db.one('SELECT logo, logo_type FROM feed_sources WHERE id IN (?) AND logo IS NOT NULL LIMIT 1', [ids]);
+    if (!r) return res.status(404).end();
+    res.setHeader('Content-Type', /^image\//.test(r.logo_type) ? r.logo_type : 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.end(r.logo);
+  }));
+
   async function cleanup() {
     await db.q(`DELETE FROM feed_items WHERE fetched_at < ? AND NOT EXISTS (SELECT 1 FROM feed_likes l WHERE l.item_id=feed_items.id)
       AND NOT EXISTS (SELECT 1 FROM feed_comments c WHERE c.item_id=feed_items.id) AND NOT EXISTS (SELECT 1 FROM feed_reposts p WHERE p.item_id=feed_items.id)`,
@@ -110,14 +154,20 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     return row.topic === 'video' ? 'entertainment' : row.topic;
   }
 
-  function score(row, eng) {
+  const AREA = { hyderabad: 'Telangana', bengaluru: 'Karnataka', mumbai: 'Maharashtra', pune: 'Maharashtra', delhi: 'Delhi', chennai: 'Tamil Nadu', kolkata: 'West Bengal' };
+  function score(row, eng, region) {
     const src = byId(row.source_id);
     const t = row.published_at ? ms(row.published_at) : ms(row.fetched_at);
     const ageH = Math.max(0, (Date.now() - t) / 3600e3);
     const recency = Math.exp(-ageH / 10);
     let viral = 0, label = { kind: 'latest', text: 'Latest' };
-    const e = row.engagement ? JSON.parse(row.engagement) : null;
-    if (e?.points != null) {
+    let e = row.engagement ? JSON.parse(row.engagement) : null;
+    // A trend from another state isn't a signal for this reader (all-India trends always count).
+    if (e?.platform === 'Google Trends' && e.area && e.area !== 'India' && e.area !== AREA[region]) e = null;
+    if (e?.platform === 'Google Trends') {
+      viral = Math.min(1, 0.35 + Math.log10((e.searchesN || 0) + 1) / 6);
+      label = { kind: 'trending', text: `Trending in ${e.area || 'India'}${e.searches ? ` · ${e.searches} searches` : ''}` };
+    } else if (e?.points != null) {
       viral = Math.min(1, Math.log10(e.points + 1) / 3);
       label = { kind: 'trending', text: `${e.points} points · ${e.comments} comments on Hacker News` };
     } else if (src?.topList && row.src_rank != null) {
@@ -132,6 +182,43 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       if (inApp >= 3) label = { kind: 'buzzing', text: 'Buzzing on Ping Me' };
     }
     return { score: 0.55 * recency + 0.45 * viral, label, ts: t };
+  }
+
+  // The same story reported by several outlets is a real "this is big" signal: group it into one card
+  // (best photo/summary first), name the other outlets, and rank it higher.
+  const STOP = new Set('that this with from have will after over into about says said their they them what when where which while would could should been being than then also just more most into amid after year years news live updates update today india indian'.split(' '));
+  const tokens = (t) => new Set(String(t).toLowerCase().normalize('NFKD').replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/).filter((w) => w.length >= 4 && !STOP.has(w)));
+  function clusterStories(all) {
+    const index = new Map(); // token → cluster ids
+    const clusters = [];
+    for (const x of all.sort((a, b) => b.ts - a.ts)) {
+      const tk = tokens(x.row.title);
+      if (tk.size < 3) continue;
+      const counts = new Map();
+      for (const t of tk) for (const c of index.get(t) || []) counts.set(c, (counts.get(c) || 0) + 1);
+      let best = null;
+      for (const [c, n] of counts) {
+        const cl = clusters[c];
+        const sim = n / (tk.size + cl.tk.size - n);
+        if ((sim >= 0.42 || n >= 5) && Math.abs(cl.ts - x.ts) < 30 * 3600e3 && (!best || sim > best.sim)) best = { c, sim };
+      }
+      if (best) clusters[best.c].items.push(x);
+      else { const id = clusters.length; clusters.push({ tk, ts: x.ts, items: [x] }); for (const t of tk) index.set(t, [...(index.get(t) || []), id]); }
+    }
+    for (const cl of clusters) {
+      const outlets = new Map();
+      for (const x of cl.items) { const name = x.row.via || byId(x.row.source_id)?.name?.split(' · ')[0] || x.row.source_id; if (!outlets.has(name)) outlets.set(name, x); }
+      if (outlets.size < 2) continue;
+      // Lead: has a photo + summary, not an aggregator, then the highest score.
+      const lead = [...cl.items].sort((a, b) => (!!b.row.image_url - !!a.row.image_url) || (!!b.row.summary - !!a.row.summary) || ((!byId(a.row.source_id)?.aggregator) ? -1 : 1) || b.score - a.score)[0];
+      for (const x of cl.items) if (x !== lead) x.hiddenBy = lead.row.id;
+      const n = outlets.size;
+      lead.coverage = n;
+      lead.alsoBy = [...outlets.keys()].filter((k) => k !== (lead.row.via || byId(lead.row.source_id)?.name?.split(' · ')[0])).slice(0, 4);
+      lead.score += Math.min(0.5, 0.18 * Math.log2(n));
+      if (n >= 3 && lead.label.kind === 'latest') lead.label = { kind: 'top', text: `Covered by ${n} outlets` };
+      if (!lead.row.engagement && cl.items.some((x) => x.row.engagement)) lead.extraEngagement = cl.items.find((x) => x.row.engagement)?.row.engagement;
+    }
   }
 
   const cache = new Map(); // region → { at, version, list }
@@ -161,9 +248,10 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     for (const r of rows) {
       const b = bucketOf(r, region);
       if (!buckets.has(b)) continue;
-      buckets.get(b).push({ row: r, ...score(r, eng.get(r.id)) });
+      buckets.get(b).push({ row: r, ...score(r, eng.get(r.id), region) });
     }
-    for (const list of buckets.values()) list.sort((a, b) => b.score - a.score);
+    clusterStories([...buckets.values()].flat());
+    for (const [b, list] of buckets) buckets.set(b, list.filter((x) => !x.hiddenBy).sort((a, b2) => b2.score - a.score));
     // Weighted round-robin across buckets; avoid the same publisher twice in a row.
     const out = [], credit = new Map(mix.map(([b]) => [b, 0]));
     const total = mix.reduce((s, [, w]) => s + w, 0);
@@ -192,10 +280,12 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     return {
       id: r.id, sourceId: r.source_id, sourceName: r.via ? r.via : src?.name || r.source_id, via: r.via ? src?.name : null,
       sourceUrl: src ? `https://${src.site}` : null, canonicalUrl: r.url, discussUrl: r.discuss_url || null,
+      logoUrl: !r.via && src && SOURCES.some((s) => s.site === src.site && logoReady.has(s.id)) ? `/api/feed/logo/${src.id}` : null,
       title: r.title, description: r.summary || null, imageUrl: r.image_url || null, videoUrl: r.video_url || null,
       mediaType: r.video_url ? 'video' : r.image_url ? 'image' : 'none',
       publishedAt: r.published_at ? ms(r.published_at) : null, fetchedAt: ms(r.fetched_at), topic: r.topic,
       contentType: x.label.kind, label: x.label.text, engagementMetrics: r.engagement ? JSON.parse(r.engagement) : null,
+      coverage: x.coverage || 1, alsoBy: x.alsoBy || [],
       likes: e.likes, comments: e.comments, reposts: e.reposts, liked: e.liked, reposted: e.reposted,
     };
   }
