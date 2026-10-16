@@ -96,6 +96,13 @@ const SCHEMA = [
     option_idx INT NOT NULL,
     PRIMARY KEY (message_id, user_id, option_idx)
   )`,
+  `CREATE TABLE IF NOT EXISTS chat_pets (
+    chat_id BIGINT UNSIGNED PRIMARY KEY,
+    caged TINYINT NOT NULL DEFAULT 0,
+    caged_by BIGINT UNSIGNED NULL,
+    fed_at DATETIME(3) NULL,
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+  )`,
   `CREATE TABLE IF NOT EXISTS attachment_chunks (
     att_id BIGINT UNSIGNED NOT NULL,
     idx INT UNSIGNED NOT NULL,

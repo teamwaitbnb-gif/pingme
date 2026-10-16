@@ -355,10 +355,10 @@ module.exports = function features(x) {
   // ───────────────────── stats: Chat Wrapped + Group Pet ─────────────────────
 
   const PETS = [
-    { emoji: '🐱', name: 'Mochi', rarity: 'Common', w: 22 }, { emoji: '🐶', name: 'Biscuit', rarity: 'Common', w: 22 },
-    { emoji: '🐰', name: 'Puff', rarity: 'Common', w: 18 }, { emoji: '🦊', name: 'Ember', rarity: 'Rare', w: 12 },
-    { emoji: '🐼', name: 'Bao', rarity: 'Rare', w: 10 }, { emoji: '🦉', name: 'Sage', rarity: 'Epic', w: 8 },
-    { emoji: '🐉', name: 'Drako', rarity: 'Epic', w: 6 }, { emoji: '🦄', name: 'Nova', rarity: 'Legendary', w: 2 },
+    { emoji: '🐱', kind: 'cat', name: 'Mochi', rarity: 'Common', w: 22 }, { emoji: '🐶', kind: 'dog', name: 'Biscuit', rarity: 'Common', w: 22 },
+    { emoji: '🐰', kind: 'bunny', name: 'Puff', rarity: 'Common', w: 18 }, { emoji: '🦊', kind: 'fox', name: 'Ember', rarity: 'Rare', w: 12 },
+    { emoji: '🐼', kind: 'panda', name: 'Bao', rarity: 'Rare', w: 10 }, { emoji: '🦉', kind: 'owl', name: 'Sage', rarity: 'Epic', w: 8 },
+    { emoji: '🐉', kind: 'dragon', name: 'Drako', rarity: 'Epic', w: 6 }, { emoji: '🦄', kind: 'unicorn', name: 'Nova', rarity: 'Legendary', w: 2 },
   ];
   const STAGES = [[0, 'Egg', '🥚'], [20, 'Hatchling'], [120, 'Kid'], [500, 'Teen'], [1500, 'Adult'], [5000, 'Legend']];
   const STOP = new Set('the a an and or but to of in on at for is are was were be i you he she it we they me my your our this that ok okay yes no hi hey hmm lol so just not have has do did will can its im u r ya na ha haha hahaha'.split(' '));
@@ -428,6 +428,41 @@ module.exports = function features(x) {
       topWord: top(words), topEmoji: top(emojis), users,
       pet: petFor(chatId, Number(allTime.n), ms(allTime.last)),
     });
+  }));
+
+  // ───────────────────── the pet that lives inside group chats ─────────────────────
+  // Light-weight state for the roaming pet: who it is, how grown/happy, and whether someone caged it.
+  async function petState(chatId) {
+    const all = await db.one("SELECT COUNT(*) n, MAX(created_at) last FROM messages WHERE chat_id=? AND deleted=0 AND kind<>'system'", [chatId]);
+    const row = await db.one('SELECT caged, caged_by, fed_at FROM chat_pets WHERE chat_id=?', [chatId]);
+    const p = petFor(chatId, Number(all.n), ms(all.last));
+    return { ...p, caged: !!row?.caged, cagedBy: row?.caged_by ? Number(row.caged_by) : null, fedAt: row?.fed_at ? ms(row.fed_at) : null };
+  }
+
+  app.get('/api/chats/:id/pet', auth, wrap(async (req, res) => {
+    const chatId = toInt(req.params.id);
+    await requireMember(chatId, req.uid);
+    const chat = await db.one('SELECT type FROM chats WHERE id=?', [chatId]);
+    if (chat?.type !== 'group') throw notFound();
+    res.json({ pet: await petState(chatId) });
+  }));
+
+  // cage / release / feed are shared with the whole group; poke just makes it react for everyone.
+  app.post('/api/chats/:id/pet', auth, wrap(async (req, res) => {
+    const chatId = toInt(req.params.id);
+    await requireMember(chatId, req.uid);
+    rateLimit('pet:' + req.uid, 40, 60000);
+    const action = String(req.body.action || '');
+    if (!['cage', 'release', 'feed', 'poke'].includes(action)) throw bad('Unknown action');
+    if (action === 'cage' || action === 'release') {
+      await db.q('INSERT INTO chat_pets (chat_id, caged, caged_by) VALUES (?,?,?) ON DUPLICATE KEY UPDATE caged=VALUES(caged), caged_by=VALUES(caged_by), updated_at=CURRENT_TIMESTAMP(3)',
+        [chatId, action === 'cage' ? 1 : 0, action === 'cage' ? req.uid : null]);
+    } else if (action === 'feed') {
+      await db.q('INSERT INTO chat_pets (chat_id, fed_at) VALUES (?, CURRENT_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE fed_at=CURRENT_TIMESTAMP(3)', [chatId]);
+    }
+    const pet = await petState(chatId);
+    io.to('c:' + chatId).emit('pet:event', { chatId, action, by: req.uid, pet, at: Date.now() });
+    res.json({ pet });
   }));
 
   // ───────────────────── reply without installing (guest links) ─────────────────────

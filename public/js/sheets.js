@@ -18,6 +18,7 @@ import { signPhoto } from './keys.js';
 import { installApp } from './install.js';
 import { openMyCode, openScanner } from './qr.js';
 import { applyVideoEdits } from './editor.js';
+import { petHidden, showPetAgain } from './pet.js';
 import { ensurePermission } from './perm.js';
 import { INTENTS } from './smart.js';
 
@@ -1122,7 +1123,8 @@ function petCard(chat) {
         h('b', null, `${p.name} the ${p.level === 0 ? 'Egg' : p.stage}`),
         h('span', { class: 'pet-r r-' + p.rarity.toLowerCase() }, p.rarity),
         h('div', { class: 'pet-bar' }, h('i', { style: { width: pct + '%' } })),
-        h('small', null, `${p.mood} · ${p.next ? `${p.next - p.xp} messages to grow` : 'Fully grown legend'}${st.topWord ? ` · knows “${st.topWord[0]}”` : ''}`)));
+        h('small', null, `${p.mood} · ${p.next ? `${p.next - p.xp} messages to grow` : 'Fully grown legend'}${st.topWord ? ` · knows “${st.topWord[0]}”` : ''}`),
+        petHidden(chat.id) ? h('button', { class: 'link small', onclick: (e) => { showPetAgain(chat.id); e.currentTarget.remove(); dispatchEvent(new CustomEvent('pm:pet-show', { detail: chat.id })); toast(`${p.name} is back in the chat`); } }, 'Show pet in chat') : null));
   }).catch(() => box.remove());
   return box;
 }

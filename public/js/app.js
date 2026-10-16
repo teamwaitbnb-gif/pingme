@@ -1,4 +1,5 @@
 import { openCamera } from './camera.js';
+import { mountPet, petHidden } from './pet.js';
 import {
   h, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, handleLayerPop, whenHistorySettled, longPress, richText, emojiCount,
   fmtTime, fmtListTime, fmtDay, fmtDur, fmtSize, lastSeenText, isIOS, isMobile, isStandalone, store,
@@ -164,6 +165,8 @@ if (isMobile()) {
   document.body.append(h('div', { class: 'rotate-back', 'aria-hidden': 'true' },
     h('div', { class: 'rb-phone' }), h('b', null, 'Turn your phone upright'), h('span', null, 'Ping Me works in portrait')));
 }
+
+addEventListener('pm:pet-show', (e) => { const c = S.chats.get(S.current); if (c && c.id === e.detail && els.msgs) startPet(c); });
 
 // From a scanned / shared Ping Me QR code.
 addEventListener('pm:add-user', async (e) => {
@@ -334,6 +337,7 @@ function connectSocket() {
   setInterval(checkInstance, 60000);
   document.addEventListener('visibilitychange', checkInstance);
   socket.on('msg:new', onNewMessage);
+  socket.on('pet:event', (ev) => S.pet?.onEvent(ev));
   socket.on('msg:update', (m) => { upsertMessage(m); updateChatPreview(m.chatId, m); });
   socket.on('msg:remove', ({ chatId, id }) => {
     const st = S.msgs.get(chatId);
@@ -715,6 +719,7 @@ export function openChat(id, { around = null, push = true } = {}) {
 
 export function closeChat() {
   saveDraft();
+  S.pet?.destroy(); S.pet = null;
   S.current = null;
   els.main?.classList.remove('show-conv');
   setTimeout(() => { if (!S.current) { els.msgs = null; renderEmptyConv(); } }, innerWidth <= 760 ? 340 : 0);
@@ -724,6 +729,16 @@ export function closeChat() {
 function onPopState(e) {
   if (handleLayerPop()) return;          // Back closed a sheet / menu / viewer
   if (S.current && !e.state?.chat) closeChat();
+}
+
+// The group pet lives in the open group chat.
+function startPet(chat) {
+  S.pet?.destroy(); S.pet = null;
+  if (chat.type !== 'group' || !feature('groupPets') || petHidden(chat.id)) return;
+  S.pet = mountPet({
+    conv: els.conv, msgs: els.msgs, chatId: chat.id, api,
+    me: () => S.me?.id, userName: (id) => user(id).name.split(' ')[0], sounds: () => prefs().sounds,
+  });
 }
 
 function buildConv(chat) {
@@ -750,6 +765,7 @@ function buildConv(chat) {
   renderUsBar();
   renderComposer();
   renderTyping();
+  startPet(chat);
 }
 
 export function renderHeader() {
@@ -896,6 +912,7 @@ function setTyping(chatId, userId, on) {
   const m = S.typing.get(chatId);
   clearTimeout(m.get(userId));
   if (on) m.set(userId, setTimeout(() => setTyping(chatId, userId, false), 6000));
+  if (on && S.pet && S.current === chatId) S.pet.onTyping();
   else m.delete(userId);
   renderList();
   if (S.current === chatId) { renderHeader(); renderTyping(); }
@@ -923,6 +940,7 @@ async function onNewMessage(m) {
     fresh = true; // server already counted this message as unread
   }
   const mine = m.senderId === S.me.id;
+  if (S.pet && S.current === m.chatId && m.kind !== 'system') S.pet.onMessage(m);
   const st = S.msgs.get(m.chatId);
   if (st && st.loaded && !st.gapAfter) upsertMessage(m, false);
   if (chat) {
