@@ -1,8 +1,8 @@
 // Ping Me service worker: app-shell caching + app-style notifications.
-const VERSION = 'pm-v14';
+const VERSION = 'pm-v15';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/manifest.webmanifest',
-  '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',
+  '/js/video-recorder.js', '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',
   '/js/onboarding.js', '/js/lock.js', '/js/keys.js', '/js/secure.js', '/js/smart.js', '/js/stories.js', '/js/perm.js', '/js/install.js', '/js/qr.js',
   '/icons/icon.svg', '/icons/logo.svg', '/icons/logo-h.svg', '/icons/hand.svg', '/icons/icon-192.png', '/icons/icon-512.png', '/icons/apple-touch-icon.png', '/icons/badge-96.png',
   '/sounds/message.mp3', '/sounds/tick.wav', '/sounds/sent.wav', '/sounds/ringtone.wav', '/sounds/ringback.wav', '/sounds/join.wav', '/sounds/end.wav', '/sounds/ping.wav',
@@ -98,7 +98,7 @@ async function face(from) {
   try {
     const S = 192, c = new OffscreenCanvas(S, S), x = c.getContext('2d');
     x.beginPath(); x.arc(S / 2, S / 2, S / 2, 0, Math.PI * 2); x.clip();
-    const bmp = from.avatar ? await withTimeout(loadBitmap(from.avatar), 2500) : null;
+    const bmp = from.avatar ? await withTimeout(loadBitmap(from.avatar), 500) : null;
     if (bmp) {
       const k = Math.max(S / bmp.width, S / bmp.height);
       x.drawImage(bmp, (S - bmp.width * k) / 2, (S - bmp.height * k) / 2, bmp.width * k, bmp.height * k);
@@ -120,7 +120,7 @@ async function face(from) {
 async function picture(url) {
   if (!url || !canDraw) return undefined;
   try {
-    const bmp = await withTimeout(loadBitmap(url), 3500);
+    const bmp = await withTimeout(loadBitmap(url), 700);
     if (!bmp) return undefined;
     const k = Math.min(1, 720 / Math.max(bmp.width, bmp.height));
     const c = new OffscreenCanvas(Math.round(bmp.width * k), Math.round(bmp.height * k));
@@ -129,7 +129,16 @@ async function picture(url) {
   } catch { return undefined; }
 }
 
-async function showMessage(d) {
+// Serialize per chat so simultaneous pushes retain every unread line and count.
+const messageQueues = new Map();
+function showMessage(d) {
+  const key = d.tag || 'ping-me';
+  const next = (messageQueues.get(key) || Promise.resolve()).catch(() => {}).then(() => renderMessage({ ...d, tag: key }));
+  messageQueues.set(key, next);
+  return next.finally(() => { if (messageQueues.get(key) === next) messageQueues.delete(key); });
+}
+
+async function renderMessage(d) {
   // One notification per chat that stacks the latest lines, like a native app.
   const existing = (await self.registration.getNotifications({ tag: d.tag }))[0];
   const prev = existing?.data?.lines || [];
@@ -138,7 +147,7 @@ async function showMessage(d) {
   const count = (existing?.data?.count || 0) + 1;
   const [icon, image] = await Promise.all([face(d.from), picture(d.image)]);
   existing?.close();
-  const title = count > 1 ? `${d.title} · ${count} new messages` : d.title;
+  const title = `${d.urgent ? 'URGENT · ' : d.ping ? '👋 Ping · ' : ''}${d.title || 'Ping Me'}${count > 1 ? ` · ${count} new messages` : ''}`;
   await self.registration.showNotification(title, {
     body: count > 1 ? lines.join('\n') : line,
     tag: d.tag,
@@ -156,7 +165,7 @@ async function showMessage(d) {
 }
 
 async function showCall(d) {
-  await self.registration.showNotification(d.title || 'Ping Me', {
+  await self.registration.showNotification(`${d.video ? '📹 Video call' : '☎ Incoming call'} · ${d.title || 'Ping Me'}`, {
     body: (d.video ? 'Ping Me video call' : 'Ping Me voice call') + (d.body && /—/.test(d.body) ? ` ${d.body.slice(d.body.indexOf('—'))}` : ''),
     tag: d.tag,
     renotify: true,

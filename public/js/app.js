@@ -1,3 +1,4 @@
+import { openVideoRecorder } from './video-recorder.js';
 import {
   h, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, handleLayerPop, whenHistorySettled, longPress, richText, emojiCount,
   fmtTime, fmtListTime, fmtDay, fmtDur, fmtSize, lastSeenText, isIOS, isMobile, isStandalone, store,
@@ -1614,6 +1615,7 @@ async function plusMenu() {
     actions: [
       chat.type === 'direct' && feature('ping') ? { label: 'Send a Ping', icon: 'hand', value: 'ping' } : null,
       chat.type === 'direct' && feature('usSpace') ? { label: 'Write an open-when letter', icon: 'mail', value: 'letter' } : null,
+      window.MediaRecorder && navigator.mediaDevices?.getUserMedia ? { label: 'Record video', icon: 'video', value: 'record-video' } : null,
       { label: 'Photos & Videos', icon: 'image', value: 'media' },
       isMobile() ? { label: 'Camera', icon: 'camera', value: 'camera' } : null,
       feature('verifiedCamera') ? { label: 'Verified Real photo', icon: 'shield', value: 'vr' } : null,
@@ -1629,6 +1631,14 @@ async function plusMenu() {
   els.plus.classList.remove('open');
   const fi = els.fileInput;
   fi.removeAttribute('capture');
+  fi.multiple = r !== 'camera';
+  if (r === 'record-video') {
+    if (S.calls.active()) return toast('Finish your call before recording a video');
+    return openVideoRecorder({ maxBytes: S.config.maxUpload, onChoose: (file) => {
+      if (S.current === chat.id) addFiles([file]);
+      else toast('Chat changed. Please record again in the intended chat.');
+    } });
+  }
   if (r === 'media') { fi.accept = 'image/*,video/*'; fi.click(); }
   if (r === 'camera') { fi.accept = 'image/*,video/*'; fi.setAttribute('capture', 'environment'); fi.click(); }
   if (r === 'file') { fi.accept = ''; fi.click(); }

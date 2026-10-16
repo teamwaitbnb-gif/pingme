@@ -1251,3 +1251,8 @@ html, body { touch-action: manipulation; overscroll-behavior: none; -webkit-text
 .chat-item { padding-left: 8px; }
 .chat-item .ub-dot { position: absolute; left: -5px; top: 50%; width: 8px; height: 8px; margin-top: -4px; }
 .sb-head { padding-right: calc(16px + var(--sar, 0px)); }
+
+/* Camera recording uses the captured aspect ratio without cropping the preview. */
+.record-preview { display: block; width: 100%; max-height: 55dvh; object-fit: contain; background: #000; border-radius: 16px; }
+.record-controls { display: flex; flex-wrap: wrap; gap: 12px; }
+.record-controls .btn { flex: 1; }

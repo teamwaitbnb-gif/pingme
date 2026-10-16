@@ -1,13 +1,6 @@
 // HD audio/video calls over WebRTC (peer-to-peer mesh, up to 8 people).
-// Quality strategy:
-//  • Capture up to 4K (3840×2160) at 30fps when the camera supports it, with echo cancellation /
-//    noise suppression. The bitrate ceiling follows the resolution the camera actually delivers.
-//  • Codec preference: VP9 → AV1 → H.264 (High) → VP8 on Chrome/Android; H.264 first on Apple
-//    devices (hardware encoder = cool phone + long battery). User can override (AV1 = best compression).
-//  • Opus tuned for wideband: in-band FEC (survives packet loss), stereo, 128 kbps ceiling, 10ms frames.
-//  • Per-sender bitrate caps scaled by participant count; the browser's congestion control (GCC)
-//    adapts within that ceiling. Screen share keeps resolution (text stays sharp), camera stays fluid.
-//  • ICE restart on network changes (Wi-Fi ↔ cellular) to recover without hanging up.
+// Auto uses 1080p/30fps and the browser's codec order to avoid expensive software encoding.
+// Explicit 4K and codec choices remain available. Congestion control adapts each sender.
 import { h, icon, avatar, toast, actionSheet, promptDialog, fmtDur, isIOS, isMobile, store } from './ui.js';
 import { sounds } from './media.js';
 import { feature, api } from './core.js';
@@ -38,8 +31,8 @@ function bpsForHeight(h) {
 
 function profile() {
   const q = store.get('callQuality', 'auto');
-  if (q === 'auto') return PROFILES.uhd; // ask for 4K; cameras that can't simply give their best
-  return PROFILES[q] || PROFILES.uhd;
+  if (q === 'auto') return PROFILES.fhd;
+  return PROFILES[q] || PROFILES.fhd;
 }
 
 function codecOrder() {
@@ -51,6 +44,7 @@ function codecOrder() {
 }
 
 function sortedVideoCodecs() {
+  if (store.get('callCodec', 'auto') === 'auto') return null; // Keep the browser's device-specific order.
   const caps = window.RTCRtpReceiver?.getCapabilities?.('video');
   if (!caps) return null;
   const order = codecOrder();
@@ -83,7 +77,7 @@ function tuneOpus(sdp) {
   const m = sdp.match(/a=rtpmap:(\d+) opus\/48000\/2/i);
   if (!m) return sdp;
   const pt = m[1];
-  const want = { minptime: '10', useinbandfec: '1', stereo: '1', 'sprop-stereo': '1', maxaveragebitrate: '128000', usedtx: '0', cbr: '0' };
+  const want = { minptime: '10', useinbandfec: '1', stereo: '0', 'sprop-stereo': '0', maxaveragebitrate: '64000', usedtx: '0', cbr: '0' };
   const re = new RegExp(`a=fmtp:${pt} ([^\\r\\n]*)`);
   if (re.test(sdp)) {
     return sdp.replace(re, (_, p) => {
@@ -104,6 +98,7 @@ export function initCalls(ctx) {
   const { socket } = ctx;
   let call = null;
   let incoming = null;
+  let opening = false;
   let wakeLock = null;
 
   // ───────── local media ─────────
@@ -124,7 +119,9 @@ export function initCalls(ctx) {
       video: video ? { ...captureSize(p), frameRate: { ideal: p.fps, max: p.fps }, facingMode: { ideal: facing } } : false,
     };
     try {
-      return await navigator.mediaDevices.getUserMedia(constraints);
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+      stream.getVideoTracks().forEach((t) => { t.contentHint = 'motion'; });
+      return stream;
     } catch (e) {
       if (video && audio && (e.name === 'NotFoundError' || e.name === 'NotReadableError' || e.name === 'OverconstrainedError')) {
         toast('Camera unavailable — joining with audio only');
@@ -145,7 +142,7 @@ export function initCalls(ctx) {
 
   // A call object without a live screen is a leftover (e.g. the connection dropped mid-call). Clear it.
   function dropStaleCall() {
-    if (call && (!call.ui || !call.ui.root.isConnected)) { const c = call; call = null; try { c.stream?.getTracks().forEach((t) => t.stop()); } catch {} }
+    if (call?.ui && !call.ui.root.isConnected) cleanup();
   }
 
   // Relay (TURN) servers come with short-lived credentials — fetch them before every call.
@@ -161,7 +158,13 @@ export function initCalls(ctx) {
   }
   setTimeout(freshIce, 3000);
 
-  async function start(chatId, video, { reason = '' } = {}) {
+  async function start(...args) {
+    if (opening) return;
+    opening = true;
+    try { return await startCall(...args); } finally { opening = false; }
+  }
+
+  async function startCall(chatId, video, { reason = '' } = {}) {
     dropStaleCall();
     if (call) { toast('You are already in a call'); restore(); return; }
     if (!navigator.mediaDevices?.getUserMedia || !window.RTCPeerConnection) return toast('Calls are not supported in this browser', { error: true });
@@ -210,14 +213,16 @@ export function initCalls(ctx) {
   }
 
   function join() {
+    const session = call;
     socket.emit('call:join', { callId: call.id, video: call.videoOn }, async (res) => {
-      if (!call) return;
+      if (call !== session) return;
       if (!res?.ok) { toast(res?.error || 'Could not join the call', { error: true }); return cleanup(); }
       call.chatId = res.chatId;
       call.video = res.video || call.videoOn;
       if (res.answeredAt) markAnswered();
       sendMedia();
       for (const p of res.peers) {
+        if (call !== session) return;
         const peer = createPeer(p.socketId, p.userId, true);
         peer.media = p.media || peer.media;
         await makeOffer(peer);
@@ -227,6 +232,12 @@ export function initCalls(ctx) {
   }
 
   async function accept(video) {
+    if (opening || call) return;
+    opening = true;
+    try { return await acceptCall(video); } finally { opening = false; }
+  }
+
+  async function acceptCall(video) {
     const inv = incoming?.invite;
     closeIncoming();
     if (!inv) return;
@@ -250,7 +261,9 @@ export function initCalls(ctx) {
     }
     call = newSession({ chatId: inv.chatId, video: inv.video, stream, outgoing: false });
     call.id = inv.callId;
+    const session = call;
     await iceReady;
+    if (call !== session) return;
     buildUI();
     join();
   }
@@ -268,7 +281,7 @@ export function initCalls(ctx) {
     call = null;
     sounds.stopLoop();
     clearInterval(c.timer); clearInterval(c.statsTimer); clearTimeout(c.hideTimer);
-    for (const p of c.peers.values()) { try { p.pc.close(); } catch {} }
+    for (const p of c.peers.values()) { clearTimeout(p.failTimer); try { p.pc.close(); } catch {} }
     c.stream?.getTracks().forEach((t) => t.stop());
     c.whisper?.track?.stop();
     try { c.rewind?.stop(); } catch {}
@@ -446,6 +459,7 @@ export function initCalls(ctx) {
   function createPeer(socketId, userId, initiator) {
     if (call.peers.has(socketId)) return call.peers.get(socketId);
     // 'relay-only' (diagnostics): route media through TURN only, like the strictest mobile networks.
+    const session = call;
     const pc = new RTCPeerConnection({ iceServers: ice || ctx.config().iceServers, iceTransportPolicy: store.get('relay-only', false) ? 'relay' : 'all', bundlePolicy: 'max-bundle', rtcpMuxPolicy: 'require', iceCandidatePoolSize: 2 });
     const peer = {
       socketId, userId, pc, initiator,
@@ -462,8 +476,15 @@ export function initCalls(ctx) {
       applyCodecPrefs(pc);
     }
 
-    pc.onicecandidate = (e) => { if (e.candidate) signal(socketId, { type: 'ice', candidate: e.candidate.toJSON() }); };
+    pc.onsignalingstatechange = () => {
+      if (call === session && pc.signalingState === 'stable' && peer.restartPending) {
+        peer.restartPending = false;
+        restartIce(peer);
+      }
+    };
+    pc.onicecandidate = (e) => { if (call === session && e.candidate) signal(socketId, { type: 'ice', candidate: e.candidate.toJSON() }); };
     pc.ontrack = (e) => {
+      if (call !== session) return;
       if (!peer.stream.getTracks().includes(e.track)) peer.stream.addTrack(e.track);
       e.track.onunmute = () => renderTile(peer);
       e.track.onmute = () => renderTile(peer);
@@ -471,6 +492,7 @@ export function initCalls(ctx) {
       if (e.track.kind === 'audio') { call.rewind?.add(peer); updateSpatial(); }
     };
     pc.onconnectionstatechange = () => {
+      if (call !== session) return;
       const s = pc.connectionState;
       if (s === 'connected') {
         clearTimeout(peer.failTimer);
@@ -483,7 +505,7 @@ export function initCalls(ctx) {
       } else if (s === 'failed' || s === 'disconnected') {
         clearTimeout(peer.failTimer);
         peer.failTimer = setTimeout(() => {
-          if (pc.connectionState === 'connected' || !call) return;
+          if (pc.connectionState === 'connected' || call !== session || !call.peers.has(socketId)) return;
           if (peer.initiator) restartIce(peer); else signal(socketId, { type: 'restart' });
         }, s === 'failed' ? 0 : 3000);
       }
@@ -491,10 +513,9 @@ export function initCalls(ctx) {
       updateStatus();
     };
     // Never fail silently: if no media path appears, say so.
-    const session = call;
     setTimeout(() => {
       if (call !== session || !call.peers.has(socketId) || ['connected', 'closed'].includes(pc.connectionState)) return;
-      toast(ctx.config().relay
+      toast((ice || ctx.config().iceServers || []).some((s) => [].concat(s.urls).some((u) => /^turns?:/.test(u)))
         ? 'Still connecting — the network is slow. Try Wi-Fi or move to better signal.'
         : 'Can’t connect the call on this network — the server’s call relay (TURN) isn’t set up yet.', { error: true, timeout: 8000 });
     }, 20000);
@@ -507,20 +528,49 @@ export function initCalls(ctx) {
   }
 
   async function makeOffer(peer, iceRestart = false) {
-    const offer = await peer.pc.createOffer({ iceRestart });
-    await setLocal(peer.pc, offer);
-    signal(peer.socketId, { type: 'offer', sdp: peer.pc.localDescription.sdp });
+    if (peer.makingOffer || peer.pc.signalingState !== 'stable') {
+      if (iceRestart) peer.restartPending = true;
+      return;
+    }
+    const session = call;
+    peer.makingOffer = true;
+    try {
+      const offer = await peer.pc.createOffer({ iceRestart });
+      if (call !== session || peer.pc.signalingState === 'closed') return;
+      await setLocal(peer.pc, offer);
+      if (call === session) signal(peer.socketId, { type: 'offer', sdp: peer.pc.localDescription.sdp });
+    } finally { peer.makingOffer = false; }
   }
 
   async function restartIce(peer) {
-    await freshIce(); // relay credentials may have expired on a long call
-    try { if (ice) peer.pc.setConfiguration({ ...peer.pc.getConfiguration(), iceServers: ice }); } catch {}
-    try { peer.pc.restartIce?.(); await makeOffer(peer, true); } catch {}
+    if (peer.restarting) return;
+    const session = call;
+    peer.restarting = true;
+    try {
+      await freshIce();
+      if (!session || call !== session || !session.peers.has(peer.socketId)) return;
+      if (ice) peer.pc.setConfiguration({ ...peer.pc.getConfiguration(), iceServers: ice });
+      // Only the designated offerer restarts; avoid colliding offers on both phones.
+      await makeOffer(peer, true);
+    } catch (e) { console.warn('ICE restart failed', e); }
+    finally { peer.restarting = false; }
   }
 
+  function recoverNetwork() {
+    if (!call) return;
+    for (const peer of call.peers.values()) {
+      if (peer.initiator) restartIce(peer);
+      else signal(peer.socketId, { type: 'restart' });
+    }
+  }
+  window.addEventListener('online', recoverNetwork);
+  navigator.connection?.addEventListener('change', recoverNetwork);
+
   async function handleOffer(peer, sdp) {
+    const session = call;
     const pc = peer.pc;
     await pc.setRemoteDescription({ type: 'offer', sdp });
+    if (call !== session) return;
     const a = call.stream.getAudioTracks()[0];
     const v = call.screen?.getVideoTracks()[0] || call.stream.getVideoTracks()[0];
     for (const t of pc.getTransceivers()) {
@@ -534,13 +584,15 @@ export function initCalls(ctx) {
     applyCodecPrefs(pc);
     const answer = await pc.createAnswer();
     await setLocal(pc, answer);
+    if (call !== session) return;
     signal(peer.socketId, { type: 'answer', sdp: pc.localDescription.sdp });
-    flushIce(peer);
+    await flushIce(peer);
   }
 
   async function flushIce(peer) {
-    for (const c of peer.queued || []) { try { await peer.pc.addIceCandidate(c); } catch {} }
+    const queued = peer.queued || [];
     peer.queued = [];
+    for (const c of queued) { try { await peer.pc.addIceCandidate(c); } catch {} }
   }
 
   function signal(to, data) { socket.emit('call:signal', { callId: call?.id, to, data }); }
@@ -548,6 +600,7 @@ export function initCalls(ctx) {
   function removePeer(socketId) {
     const p = call?.peers.get(socketId);
     if (!p) return;
+    clearTimeout(p.failTimer);
     try { p.pc.close(); } catch {}
     p.tile?.remove();
     if (p.spatial) p.spatial.src.disconnect();
@@ -569,6 +622,7 @@ export function initCalls(ctx) {
   // Bitrate ceilings per sender; congestion control adapts underneath.
   async function tuneSenders() {
     if (!call) return;
+    const session = call;
     const p = profile();
     const n = Math.max(1, call.peers.size);
     for (const peer of call.peers.values()) {
@@ -578,16 +632,18 @@ export function initCalls(ctx) {
         if (!params.encodings || !params.encodings.length) params.encodings = [{}];
         const enc = params.encodings[0];
         if (s.track.kind === 'video') {
-          const screen = !!call.screen;
-          const height = s.track.getSettings?.().height || p.h;
+          if (call !== session) return;
+          const screen = !!session.screen;
+          const settings = s.track.getSettings?.() || {};
+          const height = Math.min(settings.width || p.w, settings.height || p.h);
           const cap = store.get('callQuality', 'auto') === 'saver' ? 600_000 : bpsForHeight(Math.min(height, p.h));
-          enc.maxBitrate = Math.round((screen ? SCREEN_BPS : cap) / Math.pow(n, 0.6));
+          enc.maxBitrate = Math.round((screen ? SCREEN_BPS : cap) / n);
           enc.maxFramerate = screen ? 30 : p.fps;
           enc.scaleResolutionDownBy = !screen && n >= 5 ? 2 : !screen && n >= 3 ? 1.5 : 1;
           enc.networkPriority = 'high';
-          params.degradationPreference = screen ? 'maintain-resolution' : 'balanced';
+          params.degradationPreference = screen ? 'maintain-resolution' : 'maintain-framerate';
         } else {
-          enc.maxBitrate = 128000;
+          enc.maxBitrate = 64000;
           enc.priority = 'high';
           enc.networkPriority = 'high';
         }
@@ -612,44 +668,64 @@ export function initCalls(ctx) {
   }
 
   async function toggleCamera() {
-    if (call.videoOn) {
-      call.stream.getVideoTracks().forEach((t) => { t.stop(); call.stream.removeTrack(t); });
-      call.videoOn = false;
-      if (!call.screen) await replaceTrack('video', null);
-    } else {
-      if (!(await ensurePermission(['camera'], 'So the people on this call can see you.'))) return;
-      try {
-        const s = await getMedia({ audio: false, video: true, facing: call.facing });
-        const t = s.getVideoTracks()[0];
-        t.contentHint = 'motion';
-        call.stream.addTrack(t);
-        call.videoOn = true;
-        call.video = true;
-        if (!call.screen) await replaceTrack('video', t);
-      } catch (e) { toast(mediaError(e), { error: true }); }
-    }
-    sendMedia(); render();
+    const session = call;
+    if (!session || session.cameraBusy) return;
+    session.cameraBusy = true;
+    try {
+      if (session.videoOn) {
+        session.stream.getVideoTracks().forEach((t) => { t.stop(); session.stream.removeTrack(t); });
+        session.videoOn = false;
+        if (!session.screen) await replaceTrack('video', null);
+      } else {
+        if (!(await ensurePermission(['camera'], 'So the people on this call can see you.')) || call !== session) return;
+        const stream = await getMedia({ audio: false, video: true, facing: session.facing });
+        if (call !== session) { stream.getTracks().forEach((t) => t.stop()); return; }
+        const track = stream.getVideoTracks()[0];
+        session.stream.addTrack(track);
+        session.videoOn = session.video = true;
+        if (!session.screen) await replaceTrack('video', track);
+      }
+    } catch (e) { toast(mediaError(e), { error: true }); }
+    finally { session.cameraBusy = false; }
+    if (call === session) { sendMedia(); render(); }
   }
 
   async function flipCamera() {
-    if (!call.videoOn) return;
-    call.facing = call.facing === 'user' ? 'environment' : 'user';
-    const old = call.stream.getVideoTracks()[0];
-    old?.stop();
-    if (old) call.stream.removeTrack(old);
+    const session = call;
+    if (!session?.videoOn || session.cameraBusy) return;
+    session.cameraBusy = true;
+    const previous = session.facing;
+    const facing = previous === 'user' ? 'environment' : 'user';
+    // Mobile cameras often require releasing the current camera before opening the other.
+    session.stream.getVideoTracks().forEach((t) => { t.stop(); session.stream.removeTrack(t); });
     try {
-      const s = await getMedia({ audio: false, video: true, facing: call.facing });
-      const t = s.getVideoTracks()[0];
-      call.stream.addTrack(t);
-      if (!call.screen) await replaceTrack('video', t);
-    } catch (e) { toast(mediaError(e), { error: true }); }
-    render();
+      let stream;
+      try {
+        stream = await getMedia({ audio: false, video: true, facing });
+        session.facing = facing;
+      } catch {
+        stream = await getMedia({ audio: false, video: true, facing: previous });
+        toast('Could not switch cameras — restored the previous camera');
+      }
+      if (call !== session) { stream.getTracks().forEach((t) => t.stop()); return; }
+      const track = stream.getVideoTracks()[0];
+      session.stream.addTrack(track);
+      if (!session.screen) await replaceTrack('video', track);
+    } catch (e) {
+      session.videoOn = false;
+      if (call === session && !session.screen) await replaceTrack('video', null);
+      toast(mediaError(e), { error: true });
+    } finally { session.cameraBusy = false; }
+    if (call === session) { sendMedia(); render(); }
   }
 
   async function toggleScreen() {
+    const session = call;
+    if (!session) return;
     if (call.screen) return stopScreen();
     try {
       const s = await navigator.mediaDevices.getDisplayMedia({ video: { frameRate: { ideal: 30, max: 30 }, width: { max: 3840 }, height: { max: 2160 } }, audio: false });
+      if (call !== session) { s.getTracks().forEach((t) => t.stop()); return; }
       const t = s.getVideoTracks()[0];
       t.contentHint = 'detail';
       t.onended = () => stopScreen();
@@ -668,6 +744,7 @@ export function initCalls(ctx) {
   }
 
   async function moreMenu() {
+    const session = call;
     const chat = ctx.chat(call.chatId);
     const inCall = new Set([...call.peers.values()].map((p) => p.userId).concat(ctx.me().id));
     const missing = chat ? chat.members.filter((m) => !inCall.has(m.id)).map((m) => m.id) : [];
@@ -682,15 +759,16 @@ export function initCalls(ctx) {
         { label: `Quality: ${profile().label}`, icon: 'settings', value: 'quality' },
       ],
     });
+    if (call !== session) return;
     if (r === 'ring') socket.emit('call:ring-more', { callId: call.id, userIds: missing });
     if (r === 'pip') { const v = [...call.peers.values()].find((p) => p.videoEl)?.videoEl; v?.requestPictureInPicture?.().catch(() => toast('Picture in Picture not available')); }
     if (r === 'stats') { call.showStats = !call.showStats; render(); }
     if (r === 'whisper') toggleWhisper();
     if (r === 'quality') {
       const q = await actionSheet({ title: 'Video quality', actions: [
-        { label: 'Auto (up to 4K)', value: 'auto' }, { label: PROFILES.uhd.label, value: 'uhd' }, { label: PROFILES.fhd.label, value: 'fhd' }, { label: PROFILES.hd.label, value: 'hd' }, { label: PROFILES.saver.label, value: 'saver' },
+        { label: 'Auto (1080p, smooth motion)', value: 'auto' }, { label: PROFILES.uhd.label, value: 'uhd' }, { label: PROFILES.fhd.label, value: 'fhd' }, { label: PROFILES.hd.label, value: 'hd' }, { label: PROFILES.saver.label, value: 'saver' },
       ] });
-      if (q) {
+      if (q && call === session) {
         store.set('callQuality', q);
         const p = profile();
         const t = call.stream.getVideoTracks()[0];
@@ -1034,7 +1112,15 @@ export function initCalls(ctx) {
     incoming = { invite: inv, root };
     sounds.ringtone();
     if (document.hidden && 'Notification' in window && Notification.permission === 'granted') {
-      navigator.serviceWorker?.ready.then((reg) => reg.showNotification(name, { body: `Incoming ${inv.video ? 'video' : 'audio'} call`, tag: 'call-' + inv.callId, icon: '/icons/icon-192.png', requireInteraction: true, data: { url: `/?call=${inv.callId}` } })).catch(() => {});
+      navigator.serviceWorker?.ready.then((reg) => {
+        if (incoming?.invite.callId !== inv.callId) return;
+        return reg.showNotification(`${inv.video ? '📹 Video call' : '☎ Incoming call'} · ${name}`, {
+          body: 'Tap to answer in Ping Me', tag: 'call-' + inv.callId,
+          icon: '/icons/icon-192.png', badge: '/icons/badge-96.png', requireInteraction: true,
+          actions: [{ action: 'answer', title: 'Answer' }, { action: 'decline', title: 'Decline' }],
+          data: { url: `/?call=${inv.callId}`, callId: inv.callId, type: 'call' },
+        });
+      }).catch(() => {});
     }
   }
 
@@ -1048,7 +1134,8 @@ export function initCalls(ctx) {
     if (!incoming) return;
     sounds.stopLoop();
     incoming.root.remove();
-    navigator.serviceWorker?.ready.then((reg) => reg.getNotifications({ tag: 'call-' + incoming?.invite.callId })).then((ns) => ns?.forEach((n) => n.close())).catch(() => {});
+    const callId = incoming?.invite.callId;
+    navigator.serviceWorker?.ready.then((reg) => reg.getNotifications({ tag: 'call-' + callId })).then((ns) => ns?.forEach((n) => n.close())).catch(() => {});
     incoming = null;
   }
 
@@ -1084,7 +1171,14 @@ export function initCalls(ctx) {
     renderTile(p);
     scheduleHide();
   });
-  socket.on('call:signal', async ({ callId, from, userId, data }) => {
+  socket.on('call:signal', (message) => {
+    const session = call;
+    if (!session || session.id !== message.callId) return;
+    session.signals = (session.signals || Promise.resolve()).then(() => {
+      if (call === session) return handleSignal(message);
+    }).catch((e) => console.warn('signal error', e));
+  });
+  async function handleSignal({ callId, from, userId, data }) {
     if (!call || call.id !== callId) return;
     let peer = call.peers.get(from);
     try {
@@ -1093,7 +1187,7 @@ export function initCalls(ctx) {
         await handleOffer(peer, data.sdp);
       } else if (data.type === 'answer' && peer) {
         await peer.pc.setRemoteDescription({ type: 'answer', sdp: data.sdp });
-        flushIce(peer);
+        await flushIce(peer);
       } else if (data.type === 'ice') {
         if (peer?.pc.remoteDescription) await peer.pc.addIceCandidate(data.candidate).catch(() => {});
         else if (peer) (peer.queued ||= []).push(data.candidate);
@@ -1104,7 +1198,7 @@ export function initCalls(ctx) {
         restartIce(peer);
       }
     } catch (e) { console.warn('signal error', e); }
-  });
+  }
   socket.on('disconnect', () => {
     if (!call) return;
     if (call.state !== 'active') { toast('Connection lost', { error: true }); cleanup(); return; }

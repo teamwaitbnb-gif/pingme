@@ -93,7 +93,7 @@ export function openSettings() {
 
       h('div', { class: 'group-label' }, 'Calls'),
       h('div', { class: 'group' },
-        selectCell('video', '#34c759', 'Video quality', 'callQuality', 'auto', [['auto', 'Auto (up to 4K)'], ['uhd', '4K Ultra HD'], ['fhd', '1080p Full HD'], ['hd', '720p HD'], ['saver', 'Data saver']]),
+        selectCell('video', '#34c759', 'Video quality', 'callQuality', 'auto', [['auto', 'Auto (1080p, smooth motion)'], ['uhd', '4K Ultra HD'], ['fhd', '1080p Full HD'], ['hd', '720p HD'], ['saver', 'Data saver']]),
         selectCell('chart', '#30b0c7', 'Video codec', 'callCodec', 'auto', [['auto', 'Auto (best for device)'], ['vp9', 'VP9'], ['av1', 'AV1 (best compression)'], ['h264', 'H.264 (hardware)']]),
         cell({ icon: 'mic', color: '#ff9500', label: 'Noise suppression', right: toggle(store.get('noiseSuppression', true), (v) => store.set('noiseSuppression', v)) })),
       h('div', { class: 'group-foot' }, 'Calls are peer-to-peer and encrypted in transit (DTLS-SRTP). Auto asks your camera for 4K and adapts to your network — on a weak connection it steps down smoothly instead of freezing.'),

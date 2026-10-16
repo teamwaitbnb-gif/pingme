@@ -67,3 +67,13 @@ public/js/call.js      WebRTC calls                    public/js/secure.js    sc
 public/js/smart.js     scam radar + promise tracker    public/js/keys.js      device keys (verified calls/photos)
 public/js/lock.js      app lock + duress PIN           public/js/onboarding.js  first-run feature setup
 ```
+
+## Call and camera quality checks
+
+`npm test` runs media lifecycle, signaling race, and notification regression tests without a database.
+
+Calls default to 1080p at 30 fps with the browser's codec preferences. Explicit 4K remains available where the camera supports it; mobile call capture stays capped at 1080p. Group calls share an upload budget across peers. TURN must be configured for reliable calls across carrier NAT; reconnecting the signaling socket still ends the current call.
+
+Choose **+ → Record video** for capture at up to 4K/30 fps with a bitrate based on the actual camera resolution, a preview, and no extra compression during upload. The browser chooses a supported camera mode and encoder, so this cannot guarantee parity with a phone's native camera processing, HDR, or stabilization. For native camera output, record in the phone camera app and attach the original file through **Photos & Videos**. The current upload limit is 45 MiB; the recorder stops near that limit and reports oversized clips without reducing their quality.
+
+Before release, check two physical phones over Wi-Fi and cellular: answer/decline, camera flip, camera off/on, screen share, network changes, recorded video playback on the other device, and Chrome notifications with the app backgrounded. Automated tests do not measure end-to-end latency or sensor image quality.
