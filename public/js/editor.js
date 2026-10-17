@@ -242,7 +242,7 @@ export async function editPhoto(file, startTool = 'crop', prev = null) {
       const out = document.createElement('canvas');
       out.width = Math.round(st.crop.w * src.width); out.height = Math.round(st.crop.h * src.height);
       paint(out, src, st);
-      const blob = await new Promise((r) => out.toBlob(r, 'image/jpeg', 0.95));
+      const blob = await new Promise((r) => out.toBlob(r, 'image/jpeg', 1));
       root.remove(); full.close?.();
       resolve({ file: blob ? new File([blob], file.name.replace(/\.\w+$/, '') + '-edit.jpg', { type: 'image/jpeg' }) : file, state: st, edited: true });
     }

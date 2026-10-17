@@ -31,8 +31,9 @@ function bpsForHeight(h) {
 
 function profile() {
   const q = store.get('callQuality', 'auto');
-  if (q === 'auto') return PROFILES.fhd;
-  return PROFILES[q] || PROFILES.fhd;
+  // Auto = the best the device can do (phones are capped at 1080p by captureSize). Older low settings → Auto.
+  if (q === 'fhd') return PROFILES.fhd;
+  return PROFILES.uhd;
 }
 
 function codecOrder() {
@@ -77,7 +78,7 @@ function tuneOpus(sdp) {
   const m = sdp.match(/a=rtpmap:(\d+) opus\/48000\/2/i);
   if (!m) return sdp;
   const pt = m[1];
-  const want = { minptime: '10', useinbandfec: '1', stereo: '0', 'sprop-stereo': '0', maxaveragebitrate: '64000', usedtx: '0', cbr: '0' };
+  const want = { minptime: '10', useinbandfec: '1', stereo: '0', 'sprop-stereo': '0', maxaveragebitrate: '128000', usedtx: '0', cbr: '0' };
   const re = new RegExp(`a=fmtp:${pt} ([^\\r\\n]*)`);
   if (re.test(sdp)) {
     return sdp.replace(re, (_, p) => {
@@ -647,7 +648,6 @@ export function initCalls(ctx) {
     if (!call) return;
     const session = call;
     const p = profile();
-    const n = Math.max(1, call.peers.size);
     for (const peer of call.peers.values()) {
       for (const s of peer.pc.getSenders()) {
         if (!s.track) continue;
@@ -659,14 +659,14 @@ export function initCalls(ctx) {
           const screen = !!session.screen;
           const settings = s.track.getSettings?.() || {};
           const height = Math.min(settings.width || p.w, settings.height || p.h);
-          const cap = store.get('callQuality', 'auto') === 'saver' ? 600_000 : bpsForHeight(Math.min(height, p.h));
-          enc.maxBitrate = Math.round((screen ? SCREEN_BPS : cap) / n);
+          // Full resolution and full bitrate to every person, also in group calls (no compromise).
+          enc.maxBitrate = screen ? SCREEN_BPS : bpsForHeight(Math.min(height, p.h));
           enc.maxFramerate = screen ? 30 : p.fps;
-          enc.scaleResolutionDownBy = !screen && n >= 5 ? 2 : !screen && n >= 3 ? 1.5 : 1;
+          enc.scaleResolutionDownBy = 1;
           enc.networkPriority = 'high';
           params.degradationPreference = screen ? 'maintain-resolution' : 'maintain-framerate';
         } else {
-          enc.maxBitrate = 64000;
+          enc.maxBitrate = 128000; // HD voice
           enc.priority = 'high';
           enc.networkPriority = 'high';
         }
@@ -789,7 +789,7 @@ export function initCalls(ctx) {
     if (r === 'whisper') toggleWhisper();
     if (r === 'quality') {
       const q = await actionSheet({ title: 'Video quality', actions: [
-        { label: 'Auto (1080p, smooth motion)', value: 'auto' }, { label: PROFILES.uhd.label, value: 'uhd' }, { label: PROFILES.fhd.label, value: 'fhd' }, { label: PROFILES.hd.label, value: 'hd' }, { label: PROFILES.saver.label, value: 'saver' },
+        { label: 'Auto (highest your device supports)', value: 'auto' }, { label: PROFILES.uhd.label, value: 'uhd' }, { label: PROFILES.fhd.label, value: 'fhd' },
       ] });
       if (q && call === session) {
         store.set('callQuality', q);

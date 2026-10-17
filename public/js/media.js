@@ -1,35 +1,10 @@
-// Media helpers: image compression, video metadata, voice notes, screen effects, photo cropper.
+// Media helpers (photos and videos are always sent in original quality): video metadata, voice notes, screen effects, photo cropper.
 import { h, openSheet } from './ui.js';
 
 // ───── images ─────
-// Re-encode photos on-device before upload: max 2560px long edge, high quality.
-// Strips EXIF (incl. GPS) as a side effect, and typically cuts size 60–90%.
 const webpEncode = (() => {
   try { return document.createElement('canvas').toDataURL('image/webp').startsWith('data:image/webp'); } catch { return false; }
 })();
-
-export async function compressImage(file, { maxEdge = 2560, quality = 0.86 } = {}) {
-  if (file.type === 'image/gif' || file.type === 'image/svg+xml') return { blob: file, ...(await imageSize(file)) };
-  let bmp;
-  try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
-  catch {
-    try { bmp = await loadImg(file); } catch { return { blob: file }; }
-  }
-  const w0 = bmp.width, h0 = bmp.height;
-  const scale = Math.min(1, maxEdge / Math.max(w0, h0));
-  const w = Math.round(w0 * scale), h = Math.round(h0 * scale);
-  const canvas = document.createElement('canvas');
-  canvas.width = w; canvas.height = h;
-  const ctx = canvas.getContext('2d');
-  ctx.imageSmoothingQuality = 'high';
-  ctx.drawImage(bmp, 0, 0, w, h);
-  bmp.close?.();
-  const type = webpEncode ? 'image/webp' : 'image/jpeg';
-  const blob = await new Promise((r) => canvas.toBlob(r, type, quality));
-  // Never make things worse: keep the original if it was already smaller.
-  if (!blob || (blob.size >= file.size && scale === 1)) return { blob: file, w: w0, h: h0 };
-  return { blob, w, h };
-}
 
 function loadImg(file) {
   return new Promise((res, rej) => {
@@ -38,10 +13,6 @@ function loadImg(file) {
     img.onerror = rej;
     img.src = URL.createObjectURL(file);
   });
-}
-
-async function imageSize(file) {
-  try { const i = await loadImg(file); return { w: i.naturalWidth, h: i.naturalHeight }; } catch { return {}; }
 }
 
 export function videoMeta(file) {
@@ -68,7 +39,7 @@ export async function avatarDataUrl(file) {
 }
 
 // ───── profile / group photo cropper ─────
-// Drag to position, pinch / scroll / slider to zoom, inside a circle. Returns a 512×512 data URL.
+// Drag to position, pinch / scroll / slider to zoom, inside a circle. Returns a 1080×1080 HD data URL.
 export async function cropImage(file, { title = 'Move and scale' } = {}) {
   let bmp;
   try { bmp = await createImageBitmap(file, { imageOrientation: 'from-image' }); }
@@ -121,12 +92,13 @@ export async function cropImage(file, { title = 'Move and scale' } = {}) {
       title, left: { label: 'Cancel' },
       right: { label: 'Choose', onClick: (close) => {
         const out = document.createElement('canvas');
-        out.width = out.height = 512;
-        const k = 512 / SIZE;
+        out.width = out.height = 1080;
+        const k = 1080 / SIZE;
         const o = out.getContext('2d');
         o.imageSmoothingQuality = 'high';
         o.drawImage(bmp, x * k, y * k, iw * scale * k, ih * scale * k);
-        result = out.toDataURL(webpEncode ? 'image/webp' : 'image/jpeg', 0.86);
+        // HD profile photo; only steps down if it wouldn't fit the upload limit.
+        for (const q of [0.95, 0.92, 0.88]) { result = out.toDataURL(webpEncode ? 'image/webp' : 'image/jpeg', q); if (result.length < 1_900_000) break; }
         close();
       } },
       body: h('div', { class: 'crop' },
@@ -146,9 +118,9 @@ export class VoiceRecorder {
   constructor(onLevel) { this.onLevel = onLevel; this.levels = []; }
 
   async start() {
-    this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
+    this.stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1, sampleRate: { ideal: 48000 } } });
     const type = AUDIO_TYPES.find((t) => window.MediaRecorder?.isTypeSupported?.(t)) || '';
-    this.rec = new MediaRecorder(this.stream, { mimeType: type || undefined, audioBitsPerSecond: 64000 });
+    this.rec = new MediaRecorder(this.stream, { mimeType: type || undefined, audioBitsPerSecond: 192000 }); // HD voice
     this.chunks = [];
     this.rec.ondataavailable = (e) => e.data.size && this.chunks.push(e.data);
     this.rec.start(250);

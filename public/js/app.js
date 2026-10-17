@@ -6,7 +6,7 @@ import {
   h, reconcileChildren, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, handleLayerPop, whenHistorySettled, longPress, richText, emojiCount,
   fmtTime, fmtListTime, fmtDay, fmtDur, fmtSize, lastSeenText, isIOS, isMobile, isStandalone, store,
 } from './ui.js';
-import { compressImage, videoMeta, VoiceRecorder, player, playScreenEffect, sounds, SCREEN_EFFECTS, BUBBLE_EFFECTS, makeThumb, lazyThumb } from './media.js';
+import { videoMeta, VoiceRecorder, player, playScreenEffect, sounds, SCREEN_EFFECTS, BUBBLE_EFFECTS, makeThumb, lazyThumb } from './media.js';
 import { initCalls } from './call.js';
 import { showAuth as renderAuth, showChooseUsername, setSignedInHandler, showJoin, askTakeover } from './auth.js';
 import {
@@ -1986,7 +1986,7 @@ function renderTray() {
     ...conv.tray.map((t) => h('div', { class: 'ti' },
       t.file.type.startsWith('image/') ? h('img', { src: t.url, alt: '' }) : t.file.type.startsWith('video/') ? h('video', { src: t.url, muted: true, playsinline: true }) : h('span', null, t.file.name),
       h('button', { class: 'rm', 'aria-label': 'Remove', onclick: () => { URL.revokeObjectURL(t.url); conv.tray = conv.tray.filter((x) => x !== t); renderTray(); updateSendBtn(); } }, icon('x')))),
-    hasImage ? h('button', { class: 'hd' + (store.get('sendHD', true) ? ' on' : ''), title: 'Send photos in original quality', onclick: () => { store.set('sendHD', !store.get('sendHD', true)); renderTray(); } }, 'HD') : '');
+''); // photos always go in original quality
 }
 
 // ─────── sending ───────
@@ -2072,12 +2072,8 @@ async function sendFile(chatId, file, base, localUrl) {
   if (!base.sendAt && st) { st.list.push(pending); if (S.current === chatId) { renderMessages(); scrollToBottom(true); } }
   let blob = file, media = {};
   try {
-    if (kind === 'image' && (file.pmSD || (file.pmSD === undefined && !store.get('sendHD', true)))) {
-      const r = await compressImage(file);
-      blob = r.blob; media = { w: r.w, h: r.h };
-      pending.att.w = r.w; pending.att.h = r.h;
-    } else if (kind === 'image') {
-      // HD = the original file, byte for byte (only its size is read for the layout).
+    if (kind === 'image') {
+      // Always the original file, byte for byte — never re-compressed (only its size is read for the layout).
       const bmp = await createImageBitmap(file).catch(() => null);
       if (bmp) { media = { w: bmp.width, h: bmp.height }; pending.att.w = bmp.width; pending.att.h = bmp.height; bmp.close?.(); }
     } else if (kind === 'video') {

@@ -2,7 +2,7 @@
 // video. Uses the camera at its highest resolution; photos come from the camera's still-photo mode
 // where the browser offers it (full sensor resolution), videos are recorded at a high bitrate and
 // sent exactly as recorded — nothing is compressed afterwards.
-import { h, icon, toast, registerLayer, fmtDur, store } from './ui.js';
+import { h, icon, toast, registerLayer, fmtDur } from './ui.js';
 import { editPhoto, editVideo, clipPlayer } from './editor.js';
 import { ensurePermission } from './perm.js';
 import { VideoRecorder } from './video-recorder.js';
@@ -13,19 +13,14 @@ export async function openCamera({ maxBytes, onSend, onGallery, onClose }) {
   if (!(await ensurePermission(['camera', 'microphone'], 'To take photos and record videos with sound.'))) return;
   let recorder = null, stream = null, facing = 'environment', torch = false, closed = false;
   let mode = 'photo', recording = false, holdTimer = null, tick = null, startedAt = 0, zoom = null;
-  let hd = store.get('camHD', true); // HD: highest resolution + original quality; off: smaller, faster to send
+  const hd = true; // always the highest resolution and original quality
 
   const video = h('video', { class: 'cam-view', autoplay: true, playsinline: true, muted: true });
   video.muted = true;
   const timer = h('div', { class: 'cam-timer', hidden: true });
   const res = h('div', { class: 'cam-res' });
   const flashBtn = h('button', { class: 'cam-icon', 'aria-label': 'Flash', hidden: true, onclick: toggleTorch }, icon('zap'));
-  const hdBtn = h('button', { class: 'cam-hd' + (hd ? ' on' : ''), 'aria-label': 'HD quality', onclick: async () => {
-    if (recording) return;
-    hd = !hd; store.set('camHD', hd); hdBtn.classList.toggle('on', hd);
-    toast(hd ? 'HD on — highest quality' : 'HD off — smaller files, faster to send', { timeout: 1800 });
-    await start();
-  } }, 'HD');
+  const hdBtn = h('span', { class: 'cam-hd on', title: 'Always the highest quality' }, 'HD');
   const shutter = h('button', { class: 'cam-shutter', 'aria-label': 'Take photo, hold for video' }, h('span'));
   const hint = h('div', { class: 'cam-hint' }, 'Tap for photo, hold for video');
   const modes = h('div', { class: 'cam-modes' },
@@ -151,7 +146,7 @@ export async function openCamera({ maxBytes, onSend, onGallery, onClose }) {
       const x = c.getContext('2d');
       if (facing === 'user') { x.translate(c.width, 0); x.scale(-1, 1); }
       x.drawImage(video, 0, 0);
-      blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.97));
+      blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 1));
     }
     if (!blob) return toast('Couldn’t take the photo', { error: true });
     preview(new File([blob], `ping-me-${Date.now()}.jpg`, { type: blob.type || 'image/jpeg' }));
@@ -227,7 +222,7 @@ export async function openCamera({ maxBytes, onSend, onGallery, onClose }) {
     const tools = isVideo
       ? [tool('scissors', 'Trim', async () => { const r = await editVideo(st.file, st); if (r) { st.trim = r.trim; st.muted = r.muted; show(); muteBtn.replaceChildren(icon(st.muted ? 'mute' : 'vol')); muteBtn.classList.toggle('on', st.muted); } }), muteBtn]
       : [tool('crop', 'Crop', () => photoEdit('crop')), tool('edit', 'Draw', () => photoEdit('draw')), tool('text', 'Text', () => photoEdit('text')), tool('sparkle', 'Filters', () => photoEdit('filter'))];
-    const hdChip = h('button', { class: 'cam-hd' + (st.hd ? ' on' : ''), 'aria-label': 'HD', disabled: isVideo, title: isVideo ? 'Recorded in ' + (st.hd ? 'HD' : 'standard quality') : 'Send in HD (original quality)', onclick: () => { st.hd = !st.hd; hdChip.classList.toggle('on', st.hd); toast(st.hd ? 'Sending in HD — original quality' : 'Sending a smaller photo', { timeout: 1600 }); } }, 'HD');
+    const hdChip = h('span', { class: 'cam-hd on', title: 'Sent in original quality' }, 'HD');
     const onceBtn = h('button', { class: 'cam-once', 'aria-label': 'View once', title: 'View once', onclick: () => { st.viewOnce = !st.viewOnce; onceBtn.classList.toggle('on', st.viewOnce); toast(st.viewOnce ? 'View once: they can open it one time' : 'View once off', { timeout: 1600 }); } }, '1');
     const review = h('div', { class: 'cam cam-reviewing' },
       holder,
@@ -242,7 +237,6 @@ export async function openCamera({ maxBytes, onSend, onGallery, onClose }) {
             review.remove(); close();
             const f = st.file;
             f.pmMeta = isVideo ? { trim: st.trim, muted: st.muted } : null;
-            f.pmSD = !isVideo && !st.hd;
             f.pmViewOnce = st.viewOnce;
             onSend(f);
           } }, icon('send')))));

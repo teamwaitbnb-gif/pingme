@@ -1325,6 +1325,7 @@ html, body { touch-action: manipulation; overscroll-behavior: none; -webkit-text
 .cam-tool.on { background: #fff; color: #000; }
 .cam-left { display: flex; align-items: center; gap: 10px; }
 .cam-hd { height: 34px; min-width: 44px; padding: 0 10px; border-radius: 10px; border: 2px solid rgba(255,255,255,.7); color: rgba(255,255,255,.8); font-weight: 800; font-size: 13px; letter-spacing: .5px; background: rgba(0,0,0,.3); }
+.cam-hd { display: inline-grid; place-items: center; }
 .cam-hd.on { background: #fff; color: #000; border-color: #fff; }
 .cam-hd:disabled { opacity: .75; }
 .cam-top .cam-hd { margin-left: 0; }

@@ -1036,7 +1036,7 @@ app.patch('/api/me', auth, wrap(async (req, res) => {
     const a = req.body.avatar;
     if (a === null) { sets.push('avatar_enc=NULL', 'avatar_v=?'); vals.push(Date.now()); }
     else {
-      if (typeof a !== 'string' || !/^data:image\/(png|jpeg|webp);base64,/.test(a) || a.length > 600000) throw bad('Avatar must be a PNG/JPEG/WebP under 400KB');
+      if (typeof a !== 'string' || !/^data:image\/(png|jpeg|webp);base64,/.test(a) || a.length > 1_950_000) throw bad('Avatar must be a PNG/JPEG/WebP under 1.4MB');
       sets.push('avatar_enc=?', 'avatar_v=?'); vals.push(C.enc(a), Date.now());
     }
   }
@@ -1374,7 +1374,7 @@ app.patch('/api/chats/:id', auth, wrap(async (req, res) => {
   }
   if (req.body.avatar !== undefined && chat.type === 'group') {
     const a = req.body.avatar;
-    if (a !== null && (typeof a !== 'string' || !/^data:image\/(png|jpeg|webp);base64,/.test(a) || a.length > 600000)) throw bad('Photo must be under 400KB');
+    if (a !== null && (typeof a !== 'string' || !/^data:image\/(png|jpeg|webp);base64,/.test(a) || a.length > 1_950_000)) throw bad('Photo must be under 1.4MB');
     await db.q('UPDATE chats SET avatar_enc=?, avatar_v=? WHERE id=?', [a ? C.enc(a) : null, Date.now(), id]);
     await systemMessage(id, req.uid, { type: 'photo' });
   }

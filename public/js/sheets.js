@@ -106,7 +106,7 @@ export function openSettings() {
 
       h('div', { class: 'group-label' }, 'Calls'),
       h('div', { class: 'group' },
-        selectCell('video', '#34c759', 'Video quality', 'callQuality', 'auto', [['auto', 'Auto (1080p, smooth motion)'], ['uhd', '4K Ultra HD'], ['fhd', '1080p Full HD'], ['hd', '720p HD'], ['saver', 'Data saver']]),
+        selectCell('video', '#34c759', 'Video quality', 'callQuality', 'auto', [['auto', 'Auto (highest your device supports)'], ['uhd', '4K Ultra HD'], ['fhd', '1080p Full HD']]),
         selectCell('chart', '#30b0c7', 'Video codec', 'callCodec', 'auto', [['auto', 'Auto (best for device)'], ['vp9', 'VP9'], ['av1', 'AV1 (best compression)'], ['h264', 'H.264 (hardware)']]),
         cell({ icon: 'mic', color: '#ff9500', label: 'Noise suppression', right: toggle(store.get('noiseSuppression', true), (v) => store.set('noiseSuppression', v)) })),
       h('div', { class: 'group-foot' }, 'Calls are peer-to-peer and encrypted in transit (DTLS-SRTP). Auto asks your camera for 4K and adapts to your network — on a weak connection it steps down smoothly instead of freezing.'),
@@ -124,7 +124,7 @@ export function openSettings() {
       h('div', { class: 'group-label' }, 'Chats'),
       h('div', { class: 'group' },
         cell({ icon: 'send', label: 'Enter key sends', right: toggle(p.enterSend, (v) => store.set('enterSend', v)) }),
-        cell({ icon: 'image', color: '#34c759', label: 'Send photos in original quality', sub: 'Off = smaller, faster photos', right: toggle(store.get('sendHD', true), (v) => store.set('sendHD', v)) })),
+        cell({ icon: 'image', color: '#34c759', label: 'Photos, videos and voice', sub: 'Always sent in original quality — never compressed' })),
 
       h('div', { class: 'group-label' }, 'Security'),
       h('div', { class: 'group' },
@@ -1185,7 +1185,7 @@ export async function openVerifiedCamera(chatId) {
   const start = async () => {
     stream?.getTracks().forEach((t) => t.stop());
     try {
-      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
+      stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, width: { ideal: 4032 }, height: { ideal: 3024 } }, audio: false });
       video.srcObject = stream; video.style.transform = facing === 'user' ? 'scaleX(-1)' : '';
     } catch { status.textContent = 'Allow camera access to take a Verified photo.'; }
   };
@@ -1197,7 +1197,7 @@ export async function openVerifiedCamera(chatId) {
     const x = c.getContext('2d');
     if (facing === 'user') { x.translate(c.width, 0); x.scale(-1, 1); }
     x.drawImage(video, 0, 0);
-    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 0.9));
+    const blob = await new Promise((r) => c.toBlob(r, 'image/jpeg', 1));
     shot = { blob, w: c.width, h: c.height };
     preview.src = URL.createObjectURL(blob);
     preview.hidden = false; video.hidden = true; shutter.hidden = true; flip.hidden = true; retake.hidden = false; sendBtn.hidden = false;
