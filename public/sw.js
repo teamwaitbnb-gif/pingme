@@ -12,7 +12,13 @@ const SHELL = [
 
 self.addEventListener('install', (e) => {
   // Fetch every file fresh (bypassing the browser's HTTP cache) so the saved set is one release.
-  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => self.skipWaiting()));
+  // First install takes over at once; a new release downloads quietly and waits until the app is
+  // off screen (the page asks with 'skip-waiting'), or the next time it's opened — never a visible reload.
+  e.waitUntil(caches.open(VERSION).then((c) => c.addAll(SHELL.map((u) => new Request(u, { cache: 'reload' })))).then(() => { if (!self.registration.active) return self.skipWaiting(); }));
+});
+
+self.addEventListener('message', (e) => {
+  if (e.data === 'skip-waiting') self.skipWaiting();
 });
 
 self.addEventListener('activate', (e) => {

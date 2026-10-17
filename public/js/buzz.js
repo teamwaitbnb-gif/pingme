@@ -1,7 +1,7 @@
 // Buzz: one live feed of real stories for where you are — local first (e.g. Hyderabad), mixed with
 // India, tech, business, world, cricket and cinema. Our server collects the publisher feeds; the app
 // checks /api/feed every 5 seconds while Buzz is on screen and merges new stories in place.
-import { h, icon, toast, avatar, openSheet, store, fmtListTime } from './ui.js';
+import { h, icon, toast, avatar, openSheet, store, fmtListTime, reconcileChildren } from './ui.js';
 import { track } from './analytics.js';
 
 // Analytics: a story counts as "seen" after being at least half on screen for a second; opens are
@@ -320,9 +320,19 @@ export function initBuzz(ctx) {
   }
 
   function renderAll(items) {
-    feedEl.replaceChildren();
+    // Reuse cards already on screen (their pictures stay loaded) and swap the rest in one go.
+    const prev = cards;
     cards = new Map(); order = [];
-    for (const it of items) { if (cards.has(it.id)) continue; const el = card(it); cards.set(it.id, { el, data: it }); order.push(it.id); feedEl.append(el); }
+    const nodes = [];
+    for (const it of items) {
+      if (cards.has(it.id)) continue;
+      const old = prev.get(it.id);
+      let el;
+      if (old) { el = old.el; cards.set(it.id, { el, data: old.data }); patch(it); }
+      else { el = card(it); cards.set(it.id, { el, data: it }); }
+      order.push(it.id); nodes.push(el);
+    }
+    reconcileChildren(feedEl, nodes);
   }
 
   // Fresh stories slip in just below where you're reading — no banner, no jump. At the very top they
@@ -473,7 +483,8 @@ export function initBuzz(ctx) {
   function show(container) {
     if (root !== container || !feedEl) mount(container);
     // Back after 10+ minutes: start again from the top with only stories not seen yet.
-    else if (lastCheck && Date.now() - lastCheck > 10 * 60000) { cards = new Map(); order = []; version = null; root.scrollTop = 0; feedEl.replaceChildren(); }
+    // (the current stories stay on screen until the fresh feed arrives, then swap in one go — no blank flash)
+    else if (lastCheck && Date.now() - lastCheck > 10 * 60000) { version = null; fromCache = true; root.scrollTop = 0; }
     visible = true;
     check(true);
     clearInterval(timer);

@@ -63,16 +63,21 @@ async function boot() {
     // 30 minutes — an app that's only ever resumed (never reopened) still updates itself.
     const reg = navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).catch(() => null);
     const checkUpdate = () => reg.then((r) => r?.update()).catch(() => {});
-    document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });
+    // A downloaded release switches over only while the app is in the background (or closed), so the
+    // screen never reloads in front of you.
+    const safeNow = () => !S.calls?.active() && !window.__pmPicking && !(els.ta && els.ta.value.trim()) && !document.querySelector('.cam, .ed, .sheet');
+    const applyWaiting = () => reg.then((r) => { if (r?.waiting && document.hidden && safeNow()) r.waiting.postMessage('skip-waiting'); }).catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (document.hidden) applyWaiting(); else checkUpdate(); });
     setInterval(checkUpdate, 30 * 60000);
     // A new release took over: reload onto it when it won't interrupt anything (never mid-call or
     // mid-typing) so old and new app files are never mixed.
     let hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if (!hadController) { hadController = true; return; }
-      const safe = () => !S.calls?.active() && !window.__pmPicking && !(els.ta && els.ta.value.trim()) && !document.querySelector('.cam, .ed, .sheet');
-      const go = () => { if (safe()) location.reload(); else setTimeout(go, 4000); };
-      if (document.hidden) go(); else { document.addEventListener('visibilitychange', function v() { if (document.hidden) { document.removeEventListener('visibilitychange', v); go(); } }); setTimeout(go, 20000); }
+      const safe = () => document.hidden && !S.calls?.active() && !window.__pmPicking && !(els.ta && els.ta.value.trim()) && !document.querySelector('.cam, .ed, .sheet');
+      // Only ever reload while the app is off screen.
+      const go = () => { if (safe()) location.reload(); else if (document.hidden) setTimeout(go, 4000); };
+      if (document.hidden) go(); else document.addEventListener('visibilitychange', function v() { if (document.hidden) { document.removeEventListener('visibilitychange', v); go(); } });
     });
   }
   // The app is running: tell the start-up watchdog in index.html (and forget an earlier retry).
@@ -558,6 +563,15 @@ function chatPreview(c) {
   return h('span', { class: 'pv' }, who, ic ? icon(ic, 'pv-ic') : null, p);
 }
 
+// Rows that look exactly the same are kept as-is, so the list never flashes (photos aren't re-created).
+const listRows = new Map();
+function stableRow(key, el) {
+  const old = listRows.get(key);
+  if (old && old.outerHTML === el.outerHTML) return old;
+  listRows.set(key, el);
+  return el;
+}
+
 export function renderList() {
   if (!els.list) return;
   const q = S.search.trim().toLowerCase();
@@ -617,18 +631,18 @@ export function renderList() {
   const visible = all.filter((c) => !c.archived);
   const pinned = visible.filter((c) => c.pinned);
   const rest = visible.filter((c) => !c.pinned);
-  if (pinned.length) frag.push(h('div', { class: 'pins' }, pinned.map(pinTile)));
+  if (pinned.length) frag.push(stableRow('pins', h('div', { class: 'pins' }, pinned.map(pinTile))));
   if (archivedCount) {
     frag.push(h('button', { class: 'cell', onclick: () => { S.showArchived = true; renderList(); } },
       h('span', { class: 'ci', style: { background: '#8e8e93' } }, icon('archive')), h('span', { class: 'lb' }, 'Archived'), h('span', { class: 'val' }, String(archivedCount), icon('chev'))));
   }
-  frag.push(rest.map(chatRow));
+  frag.push(rest.map((c) => stableRow('row' + c.id, chatRow(c))));
   if (!visible.length) {
     frag.push(h('div', { class: 'empty-list' }, icon('msg'), h('div', null, h('b', null, 'No messages yet')),
       h('div', null, 'Message someone by username, or send a link — they can reply without installing anything.'),
       h('button', { class: 'btn invite-btn', onclick: () => openInviteLink() }, icon('link'), 'Invite with a link')));
   }
-  els.list.replaceChildren(...frag.flat());
+  reconcileChildren(els.list, frag.flat().filter(Boolean));
 }
 
 function chatRow(c) {
@@ -642,7 +656,7 @@ function chatRow(c) {
         h('span', { class: 'name' }, chatTitle(c), u?.birthdayToday ? icon('gift', 'bday') : null, c.streak >= 2 && feature('usSpace') ? h('span', { class: 'streak', title: `${c.streak}-day streak` }, icon('fire'), c.streak) : null),
         h('span', { class: 'time' }, isMuted(c) ? icon('belloff') : null, c.lastMessage ? fmtListTime(c.lastMessage.createdAt) : '', c.unread ? h('span', { class: 'badge', style: isMuted(c) ? { background: 'var(--text3)' } : null }, c.unread > 99 ? '99+' : c.unread) : null)),
       h('div', { class: 'prev' }, chatPreview(c))));
-  longPress(row, () => chatMenu(c));
+  longPress(row, () => chatMenu(S.chats.get(c.id) || c)); // row may be reused: always the latest chat
   return row;
 }
 
@@ -654,7 +668,7 @@ function pinTile(c) {
     c.unread && !isMuted(c) ? h('span', { class: 'ub' }) : null,
     typing ? h('span', { class: 'typing-bubble' }, h('i'), h('i'), h('i')) : null,
     h('span', { class: 'nm' }, chatTitle(c)));
-  longPress(el, () => chatMenu(c));
+  longPress(el, () => chatMenu(S.chats.get(c.id) || c));
   return el;
 }
 
