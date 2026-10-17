@@ -506,7 +506,8 @@ export function initCalls(ctx) {
         restartIce(peer);
       }
     };
-    pc.onicecandidate = (e) => { if (call === session && e.candidate) signal(socketId, { type: 'ice', candidate: e.candidate.toJSON() }); };
+    // peer.socketId (not the original id): the other phone may rejoin on a new connection mid-call.
+    pc.onicecandidate = (e) => { if (call === session && e.candidate) signal(peer.socketId, { type: 'ice', candidate: e.candidate.toJSON() }); };
     pc.ontrack = (e) => {
       if (call !== session) return;
       if (!peer.stream.getTracks().includes(e.track)) peer.stream.addTrack(e.track);
@@ -529,8 +530,8 @@ export function initCalls(ctx) {
       } else if (s === 'failed' || s === 'disconnected') {
         clearTimeout(peer.failTimer);
         peer.failTimer = setTimeout(() => {
-          if (pc.connectionState === 'connected' || call !== session || !call.peers.has(socketId)) return;
-          if (peer.initiator) restartIce(peer); else signal(socketId, { type: 'restart' });
+          if (pc.connectionState === 'connected' || call !== session || call.peers.get(peer.socketId) !== peer) return;
+          if (peer.initiator) restartIce(peer); else signal(peer.socketId, { type: 'restart' });
         }, s === 'failed' ? 0 : 3000);
       }
       renderTile(peer);
@@ -538,7 +539,7 @@ export function initCalls(ctx) {
     };
     // Never fail silently: if no media path appears, say so.
     setTimeout(() => {
-      if (call !== session || !call.peers.has(socketId) || ['connected', 'closed'].includes(pc.connectionState)) return;
+      if (call !== session || call.peers.get(peer.socketId) !== peer || ['connected', 'closed'].includes(pc.connectionState)) return;
       toast((ice || ctx.config().iceServers || []).some((s) => [].concat(s.urls).some((u) => /^turns?:/.test(u)))
         ? 'Still connecting — the network is slow. Try Wi-Fi or move to better signal.'
         : 'Can’t connect the call on this network — the server’s call relay (TURN) isn’t set up yet.', { error: true, timeout: 8000 });
@@ -897,6 +898,7 @@ export function initCalls(ctx) {
   function buildTile(peer) {
     const u = ctx.user(peer.userId);
     const v = h('video', { class: 'fg', autoplay: true, playsinline: true });
+    v.setAttribute('autopictureinpicture', ''); // Safari/Chrome: float the call when leaving the app
     // Blurred copy behind the video: fills the screen when the picture's shape differs from it.
     const bgv = h('video', { class: 'bgv', autoplay: true, playsinline: true, muted: true, 'aria-hidden': 'true' });
     bgv.muted = true;
@@ -1223,16 +1225,81 @@ export function initCalls(ctx) {
       }
     } catch (e) { console.warn('signal error', e); }
   }
+  // Going to another app (or a network blip) drops the connection to the server, but a connected
+  // call keeps going: the server holds our place for 2 minutes and we rejoin on the new connection.
+  let mySid = socket.id || null;
   socket.on('disconnect', () => {
     if (!call) return;
     if (call.state !== 'active') { toast('Connection lost', { error: true }); cleanup(); return; }
-    call.lostAt = Date.now();
+    if (!call.lostAt) { call.lostAt = Date.now(); call.lostSid = mySid; }
   });
-  // The server ends a call when this phone's connection drops; after reconnecting, clear it locally
-  // so we're never stuck as "busy" (which auto-declined the next incoming call).
   socket.on('connect', () => {
-    if (call?.lostAt) { toast('Call ended — the connection dropped', { error: true }); cleanup(); }
+    mySid = socket.id;
+    if (call?.lostAt) rejoin();
   });
+  function rejoin() {
+    const session = call;
+    socket.emit('call:rejoin', { callId: session.id, socketId: session.lostSid }, (r) => {
+      if (call !== session) return;
+      if (!r?.ok) { toast('Call ended — the connection dropped', { error: true }); cleanup(); return; }
+      session.lostAt = null; session.lostSid = null;
+      // Signals sent while we were away were lost: renegotiate any link that isn't up.
+      for (const p of session.peers.values()) {
+        if (p.pc.connectionState === 'connected') continue;
+        if (p.initiator) restartIce(p); else signal(p.socketId, { type: 'restart' });
+      }
+      recoverMedia();
+      render();
+    });
+  }
+  socket.on('call:peer-moved', ({ callId, from, to }) => {
+    const p = call?.id === callId && call.peers.get(from);
+    if (!p) return;
+    call.peers.delete(from); p.socketId = to; call.peers.set(to, p);
+    if (call.pendingIce?.has(from)) { call.pendingIce.set(to, call.pendingIce.get(from)); call.pendingIce.delete(from); }
+  });
+  // Back in the app: phones stop the camera (and sometimes the mic) in the background — reopen them.
+  async function recoverMedia() {
+    const session = call;
+    if (!session?.stream) return;
+    const a = session.stream.getAudioTracks()[0];
+    if (!a || a.readyState === 'ended') {
+      try {
+        const t = (await getMedia({ audio: true, video: false })).getAudioTracks()[0];
+        if (call !== session) { t.stop(); return; }
+        if (a) session.stream.removeTrack(a);
+        t.enabled = session.audioOn !== false;
+        session.stream.addTrack(t);
+        if (session.whisper) { session.whisper.track.stop(); session.whisper = null; }
+        await replaceTrack('audio', t);
+      } catch {}
+    }
+    const v = session.stream.getVideoTracks()[0];
+    if (session.videoOn && !session.cameraBusy && (!v || v.readyState === 'ended')) {
+      session.cameraBusy = true;
+      try {
+        if (v) session.stream.removeTrack(v);
+        const t = (await getMedia({ audio: false, video: true, facing: session.facing })).getVideoTracks()[0];
+        if (call !== session) { t.stop(); return; }
+        session.stream.addTrack(t);
+        if (!session.screen) await replaceTrack('video', t);
+      } catch {} finally { session.cameraBusy = false; }
+    }
+    if (call === session) render();
+  }
+  if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => {
+    if (!call) return;
+    if (document.hidden) { autoPip(); return; }
+    if (!socket.connected) socket.connect();
+    recoverMedia();
+  });
+  // Leaving the app during a video call: float the other person's video (where the browser allows).
+  function pipVideo() { return [...(call?.peers.values() || [])].find((p) => p.videoEl && p.media?.video)?.videoEl; }
+  function autoPip() {
+    const v = pipVideo();
+    if (v && document.pictureInPictureEnabled && !document.pictureInPictureElement) v.requestPictureInPicture?.().catch(() => {});
+  }
+  try { navigator.mediaSession?.setActionHandler?.('enterpictureinpicture', () => pipVideo()?.requestPictureInPicture?.().catch(() => {})); } catch {}
 
   // Ask the server directly whether someone is calling me (app just opened / woke up).
   // autoAnswer: the person tapped "Answer" on the notification.

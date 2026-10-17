@@ -59,7 +59,12 @@ document.addEventListener('touchmove', (e) => {
 async function boot() {
   applyPrefs();
   if ('serviceWorker' in navigator) {
-    navigator.serviceWorker.register('/sw.js').catch(() => {});
+    // Check for a new release on open, whenever the app comes back to the foreground, and every
+    // 30 minutes — an app that's only ever resumed (never reopened) still updates itself.
+    const reg = navigator.serviceWorker.register('/sw.js', { updateViaCache: 'none' }).catch(() => null);
+    const checkUpdate = () => reg.then((r) => r?.update()).catch(() => {});
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) checkUpdate(); });
+    setInterval(checkUpdate, 30 * 60000);
     // A new release took over: reload onto it when it won't interrupt anything (never mid-call or
     // mid-typing) so old and new app files are never mixed.
     let hadController = !!navigator.serviceWorker.controller;

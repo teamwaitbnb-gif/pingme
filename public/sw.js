@@ -1,5 +1,7 @@
 // Ping Me service worker: app-shell caching + app-style notifications.
-const VERSION = 'pm-v49';
+// Replaced by the server with a fingerprint of all app files (server/index.js BUILD), so every
+// deploy that changes the app updates everyone automatically. No manual bump needed.
+const VERSION = 'pm-dev';
 const SHELL = [
   '/', '/index.html', '/css/app.css', '/manifest.webmanifest',
   '/js/video-recorder.js', '/js/camera.js', '/js/editor.js', '/js/pet.js', '/js/buzz.js', '/js/analytics.js', '/js/app.js', '/js/core.js', '/js/ui.js', '/js/media.js', '/js/call.js', '/js/sheets.js', '/js/auth.js',

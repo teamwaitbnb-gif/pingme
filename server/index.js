@@ -1292,6 +1292,7 @@ app.get('/api/config', (req, res) => {
     relay: !!process.env.TURN_URLS || !!(cfIce.list && hasRelay(cfIce.list)), // true only once Cloudflare accepted the keys
     vapidPublicKey: push.enabled ? process.env.VAPID_PUBLIC_KEY : null,
     maxUpload: media.MAX_FILE,
+    build: BUILD,
     googleClientId: oauth.enabled('google') ? process.env.GOOGLE_CLIENT_ID.split(',')[0].trim() : null,
     inviteOnly: inviteOnly(),
     features: FEATURES,
@@ -1770,6 +1771,21 @@ app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 // ─────────────────────────── static app ───────────────────────────
 
 const pub = path.join(__dirname, '..', 'public');
+// Every deploy updates everyone's app by itself: the service worker's version is a fingerprint of
+// all app files, so any change makes phones install the new release (no manual version bump, no
+// reinstall). The app checks for it on open, on return to the foreground and every 30 minutes.
+const BUILD = (() => {
+  const h = require('crypto').createHash('sha256');
+  const walk = (dir) => { for (const f of require('fs').readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))) { const p = path.join(dir, f.name); if (f.isDirectory()) walk(p); else { h.update(path.relative(pub, p)); h.update(require('fs').readFileSync(p)); } } };
+  try { walk(pub); } catch {}
+  return h.digest('hex').slice(0, 12);
+})();
+const swSource = (() => { try { return require('fs').readFileSync(path.join(pub, 'sw.js'), 'utf8').replace(/const VERSION = '[^']*';/, `const VERSION = 'pm-${BUILD}';`); } catch { return null; } })();
+app.get('/sw.js', (req, res, next) => {
+  if (!swSource) return next();
+  res.set({ 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Service-Worker-Allowed': '/' });
+  res.send(swSource);
+});
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'same-origin');
@@ -2033,6 +2049,20 @@ io.on('connection', (socket) => {
   socket.on('call:decline', sockHandler(socket, (d) => declineCall(socket.uid, d)));
   socket.on('call:leave', sockHandler(socket, (d) => leaveCall(socket, toInt(d.callId))));
   socket.on('call:ring-more', sockHandler(socket, (d) => ringMore(socket, d)));
+  // Back after the connection dropped mid-call: move my place in the call to this connection.
+  socket.on('call:rejoin', sockHandler(socket, (d) => {
+    const call = calls.get(toInt(d.callId));
+    const old = String(d.socketId || '');
+    const p = call && (call.participants.get(old) || call.participants.get(socket.id));
+    if (!call || !p || p.userId !== uid) throw notFound('This call has ended');
+    clearTimeout(p.awayTimer); delete p.away; delete p.awayTimer;
+    if (old && old !== socket.id && call.participants.get(old) === p) {
+      call.participants.delete(old);
+      call.participants.set(socket.id, p);
+      for (const sid of call.participants.keys()) if (sid !== socket.id) io.to(sid).emit('call:peer-moved', { callId: call.id, from: old, to: socket.id });
+    }
+    return { callId: call.id };
+  }));
   socket.on('call:signal', (d) => {
     const call = calls.get(toInt(d?.callId));
     if (!call || !call.participants.has(socket.id) || !call.participants.has(d.to)) return;
@@ -2047,7 +2077,18 @@ io.on('connection', (socket) => {
   });
 
   socket.on('disconnect', () => {
-    for (const call of [...calls.values()]) if (call.participants.has(socket.id)) leaveCall(socket, call.id).catch(() => {});
+    for (const call of [...calls.values()]) {
+      const p = call.participants.get(socket.id);
+      if (!p) continue;
+      // A connected call survives the phone going to the background (iOS pauses the app and the
+      // connection drops): media flows phone-to-phone, so keep the place for a while and let the
+      // phone rejoin with its new connection (call:rejoin). Not-yet-answered calls end as before.
+      if (!call.answeredAt) { leaveCall(socket, call.id).catch(() => {}); continue; }
+      const sid = socket.id;
+      p.away = Date.now();
+      p.awayTimer = setTimeout(() => { if (calls.get(call.id)?.participants.get(sid) === p) leaveCall({ id: sid, uid }, call.id).catch(() => {}); }, CALL_GRACE_MS);
+      for (const other of call.participants.keys()) if (other !== sid) io.to(other).emit('call:peer-away', { callId: call.id, socketId: sid });
+    }
     const set = online.get(uid);
     if (set) {
       set.delete(socket);
@@ -2062,6 +2103,7 @@ io.on('connection', (socket) => {
 const calls = new Map();
 let nextCallId = 1;
 const RING_TIMEOUT = 45000;
+const CALL_GRACE_MS = 2 * 60000; // how long a dropped phone keeps its place in a connected call
 const MAX_CALL_PARTICIPANTS = 8;
 
 function callInvite(call) {
@@ -2071,7 +2113,7 @@ function callInvite(call) {
 function userInCall(userId) {
   for (const c of calls.values()) {
     for (const [sid, p] of c.participants) {
-      if (p.userId === userId && io.sockets.sockets.get(sid)?.connected) return c;
+      if (p.userId === userId && (io.sockets.sockets.get(sid)?.connected || p.away)) return c;
     }
   }
   return null;
@@ -2196,6 +2238,7 @@ async function declineCall(uid, d) {
 async function leaveCall(socket, callId) {
   const call = calls.get(callId);
   if (!call || !call.participants.has(socket.id)) return;
+  clearTimeout(call.participants.get(socket.id).awayTimer);
   call.participants.delete(socket.id);
   for (const sid of call.participants.keys()) io.to(sid).emit('call:peer-left', { callId, socketId: socket.id, userId: socket.uid });
   const remaining = call.participants.size;
@@ -2207,6 +2250,7 @@ async function leaveCall(socket, callId) {
 async function endCall(call, reason) {
   if (!calls.has(call.id)) return;
   calls.delete(call.id);
+  for (const p of call.participants.values()) clearTimeout(p.awayTimer);
   emitCallState(call, false);
   clearTimeout(call.timer);
   (call.ringTimers || []).forEach(clearInterval);
