@@ -922,7 +922,7 @@ addEventListener('offline', updateSmsBar);
 
 function startPet(chat) {
   S.pet?.destroy(); S.pet = null;
-  if (!feature('groupPets') || petHidden(chat.id)) return; // every chat — group or one-to-one — has a pet
+  if (chat.type !== 'group' || !feature('groupPets') || petHidden(chat.id)) return; // pets live in group chats only
   S.pet = mountPet({
     conv: els.conv, msgs: els.msgs, chatId: chat.id, api,
     me: () => S.me?.id, userName: (id) => user(id).name.split(' ')[0], sounds: () => prefs().sounds,

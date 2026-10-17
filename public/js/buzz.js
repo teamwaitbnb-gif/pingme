@@ -254,7 +254,7 @@ export function initBuzz(ctx) {
   // ───── cards (built once, then only patched — a playing video or open state is never rebuilt) ─────
   function card(it) {
     const host = hostOf(it.canonicalUrl);
-    const social = host === 'x.com' || host === 'youtube.com';
+    const social = host === 'x.com' || host === 'youtube.com' || host === 'instagram.com';
     const link = (cls, ...kids) => h('a', { class: cls, href: it.canonicalUrl, target: '_blank', rel: 'noopener noreferrer' }, ...kids);
     let media;
     if (it.videoUrl) {
@@ -292,7 +292,7 @@ export function initBuzz(ctx) {
         it.discussUrl && it.discussUrl !== it.canonicalUrl ? h('a', { class: 'bz-discuss', href: it.discussUrl, target: '_blank', rel: 'noopener noreferrer' }, 'Discussion on Hacker News') : null,
         h('div', { class: 'bz-actions' }, likeBtn, comBtn, repBtn,
           h('button', { class: 'bz-act', 'aria-label': 'Send to a chat', onclick: () => shareToChat(it) }, icon('send')),
-          link('bz-read', host === 'x.com' ? 'Open on X' : host === 'youtube.com' ? 'YouTube' : 'Read', icon('chev')))));
+          link('bz-read', host === 'x.com' ? 'Open on X' : host === 'youtube.com' ? 'YouTube' : host === 'instagram.com' ? 'Open on Instagram' : 'Read', icon('chev')))));
     el._refs = { likeBtn, comBtn, repBtn };
     if (it.videoUrl) { el._video = it.videoUrl; el._poster = it.imageUrl; }
     seenObserver?.observe(el);

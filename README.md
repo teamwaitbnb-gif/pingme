@@ -105,6 +105,21 @@ Architecture: publisher RSS/Atom feeds + Hacker News API → server collectors (
 - Sources: The Hindu, Times of India and Google News for 35 cities, Google Trends for 19 states, plus ~45 national, tech, business, world, sports and entertainment publishers (158 in `server/buzz/sources.js`).
 - Known source status: Moneycontrol returns HTTP 403 to servers and Ars Technica blocks logo requests (both handled gracefully).
 
+### Instagram posts in Buzz (optional)
+
+Buzz can show the latest public posts (photos and reels, with likes and comments) from celebrities, cricketers and creators — for example Alia Bhatt, Allu Arjun, Prabhas, Samantha, Virat Kohli, Rohit Sharma, CarryMinati, Cristiano Ronaldo. Instagram only allows this through its official Graph API ("Business Discovery"), read through **your own** Instagram business/creator account:
+
+1. Switch your Instagram account to a **Professional** (Creator or Business) account and link it to a **Facebook Page**.
+2. At developers.facebook.com create an app (type *Business*), add the **Instagram Graph API** product.
+3. In the Graph API Explorer, pick your app, add permissions `instagram_basic`, `pages_show_list`, `pages_read_engagement`, and generate a user token; exchange it for a **long-lived token** (60 days).
+4. Find your Instagram account id: `GET /me/accounts` → your Page id → `GET /{page-id}?fields=instagram_business_account`.
+5. Add to `.env` and deploy:
+   ```
+   IG_USER_ID=1784xxxxxxxxxxxx
+   IG_ACCESS_TOKEN=EAAG...
+   ```
+The accounts followed are listed in `server/buzz/sources.js` (`ig-*` sources; edit freely). Without the keys, Buzz still covers viral Instagram posts through news searches. Instagram/Threads have no other legal way to read other people's posts.
+
 ## Admin portal (owner only)
 
 Open **/admin** (e.g. `https://<your-app>/admin`) and enter `ADMIN_KEY` from `.env` (at least 16 characters). It is separate from Ping Me sign-in, so using it on a laptop never signs your phone out (one-device rule). The key sets a 30-day admin cookie; login attempts are rate-limited.

@@ -83,7 +83,7 @@ const EXAMPLES = {
   spatialAudio: 'In a group call each friend’s voice comes from a different side, like sitting at a table.',
   sos: 'Hold 2 seconds — trusted contacts get your live location and a normal-looking call starts.',
   checkIn: 'Taking a cab late? If you don’t tap “I’m safe” in time, your family is alerted.',
-  groupPets: 'Every chat raises a pet — name it, feed it, play fetch and dress it up. Go quiet and it gets lonely.',
+  groupPets: 'Every group raises a pet — name it, feed it, play fetch and dress it up. Go quiet and it gets lonely.',
   wrapped: 'Every month: who replies fastest, your longest streak, favourite emoji — share the card.',
   whosRight: 'Settle a debate with a quick vote and share the result card.',
   verifiedCamera: 'Photos taken in Ping Me carry a signature proving they’re real and unedited.',

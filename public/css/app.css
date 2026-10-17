@@ -1404,11 +1404,11 @@ html, body { touch-action: manipulation; overscroll-behavior: none; -webkit-text
 .pet-shadow { transform-origin: 50% 50%; }
 .pet-actor.blink .eye { transform: scaleY(.12); }
 
-.pet-actor[data-mode="walk"] .leg.a, .pet-actor[data-mode="run"] .leg.a { animation: petLeg .36s ease-in-out infinite alternate; }
-.pet-actor[data-mode="walk"] .leg.b, .pet-actor[data-mode="run"] .leg.b { animation: petLeg .36s ease-in-out infinite alternate-reverse; }
-.pet-actor[data-mode="run"] .leg { animation-duration: .18s !important; }
-.pet-actor[data-mode="walk"] .body { animation: petBob .36s ease-in-out infinite alternate; }
-.pet-actor[data-mode="run"] .body { animation: petBob .18s ease-in-out infinite alternate; }
+.pet-actor[data-mode="walk"] .leg.a, .pet-actor[data-mode="run"] .leg.a { animation: petLeg var(--gait, .36s) ease-in-out infinite alternate; }
+.pet-actor[data-mode="walk"] .leg.b, .pet-actor[data-mode="run"] .leg.b { animation: petLeg var(--gait, .36s) ease-in-out infinite alternate-reverse; }
+.pet-actor[data-mode="walk"] .body, .pet-actor[data-mode="run"] .body { animation: petBob var(--gait, .36s) ease-in-out infinite alternate; }
+.pet-actor[data-mode="run"] .head { transform: rotate(6deg) translateY(2px); }
+.pet-actor[data-mode="run"] .tail { animation-duration: .3s; }
 .pet-actor[data-mode="walk"] .pet-svg.owl .body, .pet-actor[data-mode="run"] .pet-svg.owl .body { animation: petWaddle .45s ease-in-out infinite alternate; }
 .pet-actor[data-mode="hop"] .body { animation: petHop .52s cubic-bezier(.3,.7,.4,1) infinite; }
 .pet-actor[data-mode="hop"] .pet-shadow { animation: petShadow .52s ease-in-out infinite; }
@@ -1819,3 +1819,26 @@ html, body { touch-action: manipulation; overscroll-behavior: none; -webkit-text
 .wrapped .wr-hint { color: var(--text2); font-size: 12.5px; }
 @keyframes fcSpin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .fc-rays { animation: none; } }
+
+/* Pet movement 2.0: jump arcs, squash & stretch, idle habits, see-through while moving off a message */
+.pet-actor { transition: opacity .25s, filter .25s; }
+.pet-actor.ghost { opacity: .38; }
+.pet-actor.squash .pet-svg { transform: scale(1.12, .84); transform-origin: 50% 100%; transition: transform .1s; }
+.pet-actor.land .pet-svg { animation: petLand .22s ease-out; transform-origin: 50% 100%; }
+.pet-actor[data-mode="jump"] .pet-svg { transform: scale(.94, 1.08); transform-origin: 50% 100%; transition: transform .15s; }
+.pet-actor[data-mode="jump"] .leg.front { transform: rotate(-38deg); } .pet-actor[data-mode="jump"] .leg.back { transform: rotate(32deg); }
+.pet-actor[data-mode="jump"] .tail { animation: none; transform: rotate(-20deg); }
+.pet-actor[data-mode="jump"] .pet-shadow { opacity: .25; transform: scale(.6); }
+.pet-actor[data-mode="sniff"] .head { animation: petSniff .35s ease-in-out 4 alternate; }
+.pet-actor[data-mode="groom"] .head { transform: rotate(18deg) translateY(4px); } .pet-actor[data-mode="groom"] .leg.front.b { animation: petGroom .3s ease-in-out 4 alternate; }
+.pet-actor[data-mode="look"] .head { animation: petLook 1.3s ease-in-out; }
+.pet-actor[data-mode="yawn"] .mouth-open { display: inline; animation: petYawn 1.4s ease-in-out; } .pet-actor[data-mode="yawn"] .head { transform: rotate(-14deg); transition: transform .4s; }
+.pet-actor[data-mode="spin"] .pet-svg { animation: petSpin .9s cubic-bezier(.4,0,.2,1); }
+.pet-actor[data-mode="perk"] .head { transform: rotate(-8deg) translateY(-3px); transition: transform .2s; }
+@keyframes petLand { 0% { transform: scale(1.18, .8); } 60% { transform: scale(.96, 1.05); } 100% { transform: scale(1, 1); } }
+@keyframes petSniff { from { transform: rotate(14deg) translateY(5px); } to { transform: rotate(22deg) translateY(7px); } }
+@keyframes petGroom { from { transform: rotate(-60deg); } to { transform: rotate(-90deg) translateY(-2px); } }
+@keyframes petLook { 0%, 100% { transform: rotate(0); } 30% { transform: rotate(-12deg); } 65% { transform: rotate(10deg); } }
+@keyframes petYawn { 0%, 100% { transform: scaleY(.4); } 50% { transform: scaleY(1.5); } }
+@keyframes petSpin { to { transform: rotate(-360deg); } }
+@media (prefers-reduced-motion: reduce) { .pet-actor[data-mode="spin"] .pet-svg, .pet-actor.land .pet-svg { animation: none; } }

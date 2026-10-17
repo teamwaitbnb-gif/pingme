@@ -236,6 +236,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
     const art = svg(kind === 'egg' ? egg() : kind === 'owl' ? owl() : quadruped(kind));
     dress(art);
     inner.append(art);
+    eyes = [];
     pet.className = `pet-actor k-${kind} stage-${state.level}` + (state.level >= 5 ? ' legend' : '');
     pet.dataset.mode = mode;
     setCage(state.caged, false);
@@ -267,65 +268,193 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
     mode = m; pet.dataset.mode = m;
     if (state?.night && wasSleep !== (m === 'sleep')) draw(); // nightcap on/off
   }
+  // ───── movement: smooth acceleration, real jump arcs, and never sitting on top of messages ─────
+  let vx = 0, jump = null, eyes = [], lookAt = null, relocAt = 0;
+  const BUSY = new Set(['happy', 'eat', 'react', 'laugh', 'tilt', 'perk', 'dance', 'stretch', 'spin', 'groom', 'sniff', 'yawn', 'look', 'jump']);
+  const floorY = () => H() - pet.offsetHeight - 2;
+  const zoneRect = () => zone.getBoundingClientRect();
+  // Message bubbles (and notices) on screen, in the pet's coordinates.
+  function bubbles() {
+    const zr = zoneRect(), hh = H();
+    const out = [];
+    for (const b of msgs.querySelectorAll('.m .bubble, .sys, .day')) {
+      const r = b.getBoundingClientRect();
+      const t = r.top - zr.top, bb = r.bottom - zr.top;
+      if (bb > 0 && t < hh && r.width > 0) out.push({ el: b, l: r.left - zr.left, r: r.right - zr.left, t, b: bb });
+    }
+    return out;
+  }
+  const petBox = (px, py) => ({ l: px + SIZE() * 0.12, r: px + SIZE() * 0.88, t: py + pet.offsetHeight * 0.3, b: py + pet.offsetHeight - 4 });
+  // How much message area the pet would hide at (px, py) — small overlaps (a corner) don't count.
+  function overlapArea(px, py, list = bubbles()) {
+    const p = petBox(px, py); let a = 0;
+    for (const r of list) {
+      if (r.el === perch?.el) continue;
+      const w = Math.min(p.r, r.r) - Math.max(p.l, r.l), hh = Math.min(p.b, r.b) - Math.max(p.t, r.t);
+      if (w > 0 && hh > 0) a += w * hh;
+    }
+    return a;
+  }
+  const covering = (px = x, py = y) => overlapArea(px, py) > 150;
+  // Stretches of floor with no message in the way: [minX, maxX] for the pet's left edge.
+  function freeSpans() {
+    const s = SIZE(), fy = floorY(), bt = fy + pet.offsetHeight * 0.3, bb = fy + pet.offsetHeight;
+    const blocks = bubbles().filter((r) => r.t < bb && r.b > bt).map((r) => [r.l - 6, r.r + 6]).sort((p, q) => p[0] - q[0]);
+    const spans = []; let cur = 4;
+    for (const [l, r] of blocks) { if (l - cur >= s) spans.push([cur, l - s]); cur = Math.max(cur, r); }
+    if (W() - 4 - cur >= s) spans.push([cur, W() - 4 - s]);
+    return spans;
+  }
+  // A bubble with room on top (nothing above it where the pet would sit).
+  function perchSpots({ avoidLeft = false } = {}) {
+    const ph = pet.offsetHeight, s = SIZE();
+    return bubbles().filter((r) => r.el.classList.contains('bubble') && r.r - r.l >= s * 0.75 && r.t - ph > 4 && r.t < floorY() - 30 && (!avoidLeft || r.r > W() * 0.5))
+      .map((r) => ({ el: r.el, dx: Math.max(0, Math.min(r.r - r.l - s, (r.r - r.l - s) / 2 + (Math.random() - 0.5) * 30)), r }))
+      .filter((p) => overlapArea(p.r.l + p.dx, p.r.t - ph + 6) < 150);
+  }
+  // Where to be: the floor spot that hides the least text, closest to where it is (and away from the
+  // bottom-left when someone is typing). In a packed chat it hops onto a bubble with room, or peeks in
+  // from the screen edge with most of its body hidden.
+  function bestSpot({ avoidLeft = false } = {}) {
+    const s = SIZE(), fy = floorY(), list = bubbles(), lo = -s * 0.55, hi = W() - s * 0.45;
+    let best = null;
+    for (let px = lo; px <= hi; px += 6) {
+      const peek = px < 4 || px > W() - s - 4;
+      const cost = overlapArea(px, fy, list) + Math.abs(px - x) * 0.08 + (peek ? 700 : 0) + (avoidLeft && px < W() * 0.45 ? 5000 : 0);
+      if (!best || cost < best.cost) best = { x: px, cost, peek };
+    }
+    if (best.cost < 250) return best;
+    const ps = perchSpots({ avoidLeft });
+    if (ps.length) { const p = ps.sort((u, v) => v.r.t - u.r.t)[0]; return { perch: { el: p.el, dx: p.dx } }; }
+    return best;
+  }
+  function goTo(spot, run = false) {
+    if (!spot || jump) return;
+    if (spot.perch) return leapTo(spot.perch);
+    if (perch) { perch = null; return leapTo(null, spot.x); }
+    targetX = spot.x; facing = targetX > x ? 1 : -1;
+    if (Math.abs(targetX - x) > 3) setMode(run ? 'run' : LOOK[kind]?.hop ? 'hop' : 'walk');
+  }
+  // A real jump: a parabola from here to there, squashing on take-off and landing.
+  function endOf(p, toX) {
+    if (p?.el?.isConnected) { const r = p.el.getBoundingClientRect(), zr = zoneRect(); return [r.left - zr.left + p.dx, r.top - zr.top - pet.offsetHeight + 6]; }
+    return [toX ?? x, floorY()];
+  }
+  function leapTo(p, toX = null) {
+    const [tx, ty] = endOf(p, toX);
+    facing = tx > x + 2 ? 1 : tx < x - 2 ? -1 : facing;
+    const dist = Math.hypot(tx - x, ty - y);
+    jump = { fromX: x, fromY: y, p, toX: tx, t0: performance.now() + 120, dur: Math.min(820, 360 + dist * 1.05), h: Math.max(26, Math.min(130, dist * 0.42 + (ty < y ? 30 : 0))) };
+    perch = null; vx = 0;
+    pet.classList.add('squash'); setTimeout(() => pet.classList.remove('squash'), 120);
+    setMode('jump');
+  }
   function place() {
     const s = SIZE();
-    x = Math.max(4, Math.min(W() - s - 4, x));
-    const floorY = H() - pet.offsetHeight - 2;
-    const yy = perch ? Math.max(0, Math.min(floorY, perch.y - pet.offsetHeight + 6)) : floorY;
-    y = yy;
+    if (!jump) {
+      if (perch) {
+        const [px, py] = endOf(perch);
+        // Its bubble scrolled away or got covered: hop down.
+        if (!perch.el.isConnected || py < -pet.offsetHeight * 0.5 || py > floorY()) { const fx = x; perch = null; leapTo(null, fx); }
+        else { x = px; y = py; }
+      }
+      if (!perch && !jump) y = floorY();
+    }
+    // It may peek in from either edge (most of its body off-screen) when the chat is packed.
+    x = Math.max(-s * 0.55, Math.min(W() - s * 0.45, x));
+    pet.classList.toggle('peek', x < 0 || x > W() - s);
     pet.style.transform = `translate(${x}px, ${y}px)`;
     inner.style.transform = `scaleX(${facing})`;
-    if (cageEl) { cageEl.style.width = s * 1.36 + 'px'; cageEl.style.transform = `translate(${x - s * 0.18}px, ${floorY - s * 0.36}px)`; }
+    if (cageEl) { const fy = floorY(); cageEl.style.width = s * 1.36 + 'px'; cageEl.style.transform = `translate(${x - s * 0.18}px, ${fy - s * 0.36}px)`; }
   }
-
-  // Pick a message bubble on screen to hop onto (or come back down to the floor).
-  function bubbleSpot() {
-    const zr = zone.getBoundingClientRect();
-    const opts = [...msgs.querySelectorAll('.bubble')].map((b) => b.getBoundingClientRect())
-      .filter((r) => r.width > 90 && r.top - zr.top > 70 && r.bottom < zr.bottom - 40);
-    if (!opts.length) return null;
-    const r = opts[Math.floor(Math.random() * opts.length)];
-    return { x: r.left - zr.left + Math.random() * Math.max(0, r.width - SIZE()), y: r.top - zr.top };
+  // Eyes follow your finger, whoever is typing, or the newest message.
+  function look(px, py, ms = 2500) { lookAt = { x: px, y: py, until: performance.now() + ms }; }
+  function aimEyes(now) {
+    if (!eyes.length) eyes = [...inner.querySelectorAll('.eye')];
+    let dx = 0, dy = 0;
+    if (lookAt && now < lookAt.until && mode !== 'sleep') {
+      const cx = x + SIZE() * (facing > 0 ? 0.72 : 0.28), cy = y + pet.offsetHeight * 0.38;
+      dx = Math.max(-1, Math.min(1, (lookAt.x - cx) / 90)) * 1.7 * facing;
+      dy = Math.max(-1, Math.min(1, (lookAt.y - cy) / 90)) * 1.3;
+    }
+    for (const e of eyes) for (const c of e.children) c.setAttribute('transform', `translate(${dx.toFixed(2)} ${dy.toFixed(2)})`);
   }
+  const onPointer = (e) => { const zr = zoneRect(); look(e.clientX - zr.left, e.clientY - zr.top, 1800); };
+  conv.addEventListener('pointermove', onPointer, { passive: true });
+  conv.addEventListener('pointerdown', onPointer, { passive: true });
 
+  const IDLES = ['sniff', 'groom', 'look', 'yawn', 'stretch'];
   function think(now) {
     if (state.caged) { setMode(Math.random() < 0.3 ? 'shake' : 'sad'); nextThink = now + 2500 + Math.random() * 2500; return; }
-    if (kind === 'egg') { setMode(Math.random() < 0.4 ? 'wobble' : 'idle'); nextThink = now + 2500 + Math.random() * 3000; return; }
-    if (Date.now() - lastActivity > 4 * 60000 || state.mood === 'Sleeping') { perch = null; place(); setMode('sleep'); nextThink = now + 15000; return; }
+    if (kind === 'egg') { if (covering()) goTo(bestSpot()); setMode(Math.random() < 0.4 ? 'wobble' : 'idle'); nextThink = now + 2500 + Math.random() * 3000; return; }
+    // Never settle on top of a message (unless this already is the least-covering spot).
+    if (covering()) { const sp = bestSpot(); if (sp.perch || Math.abs(sp.x - x) > 8) { goTo(sp, true); nextThink = now + 1800; return; } }
+    if (Date.now() - lastActivity > 4 * 60000 || state.mood === 'Sleeping') { setMode('sleep'); nextThink = now + 15000; return; }
     const r = Math.random();
-    if (r < 0.5) { targetX = 10 + Math.random() * (W() - SIZE() - 20); facing = targetX > x ? 1 : -1; setMode(LOOK[kind]?.hop ? 'hop' : 'walk'); nextThink = now + 9000; }
-    else if (r < 0.65) { const spot = bubbleSpot(); if (spot) jumpTo(spot); else setMode('sit'); nextThink = now + 6000; }
-    else if (r < 0.75 && perch) { jumpTo(null); nextThink = now + 5000; }
-    else { setMode(Math.random() < 0.5 ? 'sit' : 'idle'); nextThink = now + 3500 + Math.random() * 4000; }
-  }
-
-  function jumpTo(spot) {
-    if (spot) { facing = spot.x > x ? 1 : -1; x = spot.x; }
-    perch = spot;
-    pet.classList.remove('leap'); void pet.offsetWidth; pet.classList.add('leap');
-    place();
-    setTimeout(() => { pet.classList.remove('leap'); setMode('sit'); }, 520);
+    if (r < 0.3) {
+      const spans = freeSpans();
+      if (spans.length) { const [a, b] = spans[Math.floor(Math.random() * spans.length)]; goTo({ x: a + Math.random() * (b - a) }); }
+      nextThink = now + 7000;
+    } else if (r < 0.42) {
+      const ps = perchSpots(); if (ps.length) { const p = ps[Math.floor(Math.random() * ps.length)]; leapTo({ el: p.el, dx: p.dx }); } else setMode('sit');
+      nextThink = now + 6000;
+    } else if (r < 0.5 && perch) {
+      const spans = freeSpans(); if (spans.length) { const [a, b] = spans[0]; leapTo(null, Math.max(a, Math.min(b, x))); }
+      nextThink = now + 4000;
+    } else if (r < 0.78) {
+      const m = Math.random() < 0.06 ? 'spin' : IDLES[Math.floor(Math.random() * IDLES.length)];
+      react(m, m === 'stretch' ? 1500 : m === 'spin' ? 900 : 1400);
+      if (m === 'look') look(x + (Math.random() < 0.5 ? -200 : 200), y - 60, 1300);
+      nextThink = now + 2600 + Math.random() * 2500;
+    } else { setMode(Math.random() < 0.5 ? 'sit' : 'idle'); nextThink = now + 3500 + Math.random() * 4000; }
   }
 
   function loop(t) {
     if (destroyed) return;
     const dt = Math.min(0.05, (t - (last || t)) / 1000); last = t;
-    if (state && t > nextThink && !['happy', 'eat', 'react'].includes(mode)) think(t);
-    if ((mode === 'walk' || mode === 'hop' || mode === 'run') && state) {
-      perch = null;
-      const speed = mode === 'run' ? 150 : kind === 'owl' ? 34 : mode === 'hop' ? 70 : 52;
-      const d = targetX - x;
-      if (Math.abs(d) < 3) setMode('idle');
-      else { x += Math.sign(d) * Math.min(Math.abs(d), speed * dt); facing = d > 0 ? 1 : -1; }
+    if (jump) {
+      const k = Math.max(0, Math.min(1, (t - jump.t0) / jump.dur));
+      const [tx, ty] = endOf(jump.p, jump.toX); // the target can scroll mid-air
+      const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+      x = jump.fromX + (tx - jump.fromX) * e;
+      y = jump.fromY + (ty - jump.fromY) * k - jump.h * 4 * k * (1 - k);
+      pet.style.transform = `translate(${x}px, ${y}px)`;
+      inner.style.transform = `scaleX(${facing})`;
+      if (k >= 1) {
+        perch = jump.p && jump.p.el.isConnected ? jump.p : null; jump = null;
+        pet.classList.add('land'); setTimeout(() => pet.classList.remove('land'), 220);
+        setMode('sit'); nextThink = t + 1400 + Math.random() * 1500;
+        place();
+      }
+    } else {
+      if (state && t > nextThink && !BUSY.has(mode)) think(t);
+      if ((mode === 'walk' || mode === 'hop' || mode === 'run') && state) {
+        perch = null;
+        const max = mode === 'run' ? 170 : kind === 'owl' ? 38 : mode === 'hop' ? 82 : 60;
+        const d = targetX - x;
+        const desired = Math.max(-max, Math.min(max, d * 3.2)); // eases in when it arrives
+        vx += (desired - vx) * Math.min(1, dt * 5.5);            // and accelerates smoothly
+        x += vx * dt;
+        if (Math.abs(vx) > 4) facing = vx > 0 ? 1 : -1;
+        pet.style.setProperty('--gait', Math.max(0.13, Math.min(0.48, 20 / Math.max(8, Math.abs(vx)))).toFixed(2) + 's');
+        if (Math.abs(d) < 2 && Math.abs(vx) < 14) { vx = 0; if (x < 0) facing = 1; else if (x > W() - SIZE()) facing = -1; setMode('idle'); nextThink = Math.min(nextThink, t + 600); }
+      }
       place();
     }
-    // Keep a perched pet on its bubble while the chat scrolls; fall off if the bubble moves away.
-    if (perch && mode !== 'walk') {
-      const floorY = H() - pet.offsetHeight - 2;
-      if (perch.y < 0 || perch.y > floorY) { perch = null; place(); }
-    }
+    aimEyes(t);
     raf = requestAnimationFrame(loop);
   }
+  // Watchdog: if a new message lands on it, it gets out of the way (see-through until it has moved).
+  const guard = setInterval(() => {
+    if (!state || destroyed || jump || state.caged) { pet.classList.remove('ghost'); return; }
+    const over = covering();
+    pet.classList.toggle('ghost', over);
+    if (over && !['walk', 'run', 'hop'].includes(mode) && Date.now() - relocAt > 700) {
+      relocAt = Date.now();
+      const sp = bestSpot();
+      if (sp.perch || Math.abs(sp.x - x) > 8) { if (mode === 'sleep') setMode('idle'); goTo(sp, true); }
+    }
+  }, 350);
 
   function burst(markup, n = 5, cls = 'up') {
     const s = SIZE();
@@ -488,6 +617,12 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
   function onMessage(m) {
     if (!state || destroyed) return;
     lastActivity = Date.now();
+    setTimeout(() => {
+      if (destroyed) return;
+      const mine = m.senderId === me();
+      look(mine ? W() - 40 : 40, H() - 30, 2200);
+      if (!jump && covering()) goTo(bestSpot(), true);
+    }, 90);
     if (mode === 'sleep') { setMode('idle'); say('!'); }
     if (state.caged || kind === 'egg') { if (kind === 'egg') react('wobble', 800); return; }
     const t = (m.text || '').toLowerCase();
@@ -512,7 +647,21 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
     say('🎉 yay!', 2200);
     setTimeout(() => { trick = null; draw(); place(); }, 3400);
   }
-  function onTyping() { if (state && mode === 'sleep' && !state.caged) { setMode('idle'); } lastActivity = Date.now(); if (state && !state.caged && kind !== 'egg') react('perk', 900); }
+  // Someone is typing: it perks up, looks at where their message will appear (bottom left) and steps
+  // aside — or hops onto an older bubble — so their message never lands under it.
+  let typingAt = 0;
+  function onTyping() {
+    lastActivity = Date.now();
+    if (!state || state.caged) return;
+    if (mode === 'sleep') setMode('idle');
+    look(40, H() - 20, 3000);
+    if (Date.now() - typingAt < 2500) return;
+    typingAt = Date.now();
+    const inTheWay = !perch && x < W() * 0.6;
+    if (inTheWay || covering()) goTo(bestSpot({ avoidLeft: true }), true);
+    else if (kind !== 'egg') react('perk', 900);
+    if (kind !== 'egg' && Math.random() < 0.35) setTimeout(() => say('…', 1200), 400);
+  }
   function onEvent(ev) {
     if (!state || ev.chatId !== chatId) return;
     const was = state.caged;
@@ -532,7 +681,8 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
 
   function destroy() {
     destroyed = true;
-    cancelAnimationFrame(raf); clearInterval(blink); clearInterval(hintTimer); ro.disconnect();
+    cancelAnimationFrame(raf); clearInterval(blink); clearInterval(hintTimer); clearInterval(guard); ro.disconnect();
+    conv.removeEventListener('pointermove', onPointer); conv.removeEventListener('pointerdown', onPointer);
     zone.remove();
   }
 

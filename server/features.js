@@ -473,7 +473,9 @@ module.exports = function features(x) {
   app.get('/api/chats/:id/pet', auth, wrap(async (req, res) => {
     const chatId = toInt(req.params.id);
     await requireMember(chatId, req.uid);
-    res.json({ pet: await petState(chatId) }); // groups and one-to-one chats both have a pet
+    const chat = await db.one('SELECT type FROM chats WHERE id=?', [chatId]);
+    if (chat?.type !== 'group') throw notFound(); // pets live in group chats only
+    res.json({ pet: await petState(chatId) });
   }));
 
   // cage / release / feed are shared with the whole group; poke just makes it react for everyone.
@@ -483,6 +485,7 @@ module.exports = function features(x) {
     rateLimit('pet:' + req.uid, 40, 60000);
     const action = String(req.body.action || '');
     if (!['cage', 'release', 'feed', 'poke', 'play', 'rename', 'outfit'].includes(action)) throw bad('Unknown action');
+    if ((await db.one('SELECT type FROM chats WHERE id=?', [chatId]))?.type !== 'group') throw notFound();
     const extra = {};
     if (action === 'rename') {
       const name = clampStr(String(req.body.name || ''), 20).replace(/[\u0000-\u001f<>]/g, '').trim();

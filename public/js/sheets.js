@@ -519,7 +519,7 @@ export function openChatInfo(chatId) {
         h('button', { onclick: () => muteMenu(chat).then(draw) }, icon(isMuted(chat) ? 'bell' : 'belloff'), isMuted(chat) ? 'Unmute' : 'Mute'),
         h('button', { onclick: () => searchInChat(chat, s) }, icon('search'), 'Search')),
 
-      feature('groupPets') ? petCard(chat) : null,
+      group && feature('groupPets') ? petCard(chat) : null,
       feature('wrapped') ? h('div', { class: 'group' }, cell({ icon: 'star', color: '#111111', label: 'Chat Wrapped', sub: 'Your month & year together, as a shareable card', chevron: true, onClick: () => openWrapped(chat) })) : null,
 
       group ? h('div', { class: 'group' },

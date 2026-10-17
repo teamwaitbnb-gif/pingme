@@ -39,7 +39,7 @@ export const FEATURE_GROUPS = [
   },
   {
     title: 'Fun', items: [
-      ['groupPets', 'paw', 'Chat pets', 'Every chat raises a little pet: name it, feed it, play fetch, dress it up — it grows as you chat and care for it, and loves whoever looks after it most.'],
+      ['groupPets', 'paw', 'Group pets', 'Every group raises a little pet: name it, feed it, play fetch, dress it up — it grows as you chat and care for it, and loves whoever looks after it most.'],
       ['wrapped', 'gift', 'Chat Wrapped', 'Monthly & yearly cards: who replies fastest, favourite emoji, longest streak.'],
       ['whosRight', 'scale', 'Who’s Right?', 'Settle arguments with a quick group vote.'],
       ['verifiedCamera', 'camcheck', 'Verified Real photos', 'Photos taken in Ping Me carry a signature proving they’re real and unedited.'],

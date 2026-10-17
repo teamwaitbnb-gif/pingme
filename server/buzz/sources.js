@@ -185,6 +185,22 @@ const SOURCES = [
     ['boxoffice', 'Box office', '"box office collection"', 'entertainment'],
     ['cricket', 'Cricket', 'cricket match OR IPL OR "Team India"', 'sports'],
   ].map(([id, name, q, topic]) => ({ id: 'gn-' + id, name: `Google News · ${name}`, site: 'news.google.com', url: GN(q), region: 'india', topic, poll: min(15), aggregator: true })),
+  // ── Instagram: posts from celebrities, cricketers and creators (official API; on once IG_USER_ID and
+  // IG_ACCESS_TOKEN are set — see README). Grouped so each source makes a few calls per poll.
+  ...[
+    ['bollywood', 'Bollywood', 'entertainment', 'india', ['aliaabhatt', 'deepikapadukone', 'iamsrk', 'ranveersingh', 'katrinakaif', 'priyankachopra', 'kritisanon', 'kartikaaryan']],
+    ['tollywood', 'Tollywood', 'entertainment', 'hyderabad', ['alluarjunonline', 'actorprabhas', 'jrntr', 'samantharuthprabhuoffl', 'urstrulymahesh', 'ramcharan', 'rashmika_mandanna', 'vijaydeverakonda']],
+    ['kollywood', 'Kollywood', 'entertainment', 'chennai', ['actorvijay', 'dhanushkraja', 'trishakrishnan', 'nayanthara']],
+    ['cricket', 'Cricket', 'sports', 'india', ['virat.kohli', 'rohitsharma45', 'hardikpandya93', 'jaspritb1', 'mahi7781', 'indiancricketteam', 'iplt20']],
+    ['viral', 'Viral India', 'entertainment', 'india', ['bhuvan.bam22', 'carryminati', 'ashishchanchlani', 'beerbiceps', 'mostlysane', 'thebeerbiceps']],
+    ['world', 'Worldwide', 'entertainment', 'world', ['cristiano', 'leomessi', 'taylorswift', 'mrbeast', 'kimkardashian', 'therock']],
+  ].map(([id, name, topic, region, accounts]) => ({ id: 'ig-' + id, name: `Instagram · ${name}`, site: 'instagram.com', url: 'https://graph.facebook.com/', adapter: 'instagram', accounts, max: 3, region, topic, poll: min(Number(process.env.IG_POLL_MINUTES) || 60), social: true, credentials: 'IG_USER_ID + IG_ACCESS_TOKEN' })),
+  // Viral posts covered by the news (works without any keys).
+  ...[
+    ['insta-viral', 'Viral on Instagram', '"Instagram" (viral OR reel OR post) (actor OR actress OR cricketer OR star)', 'entertainment'],
+    ['insta-celeb', 'Celebrity Instagram', '"shares" "Instagram" (Kohli OR Alia OR Deepika OR Shah Rukh OR Allu Arjun OR Prabhas OR Samantha OR Rashmika)', 'entertainment'],
+    ['viral-reels', 'Viral reels', '"viral reel" OR "reel goes viral" OR "internet reacts"', 'entertainment'],
+  ].map(([id, name, q, topic]) => ({ id: 'gn-' + id, name: `Google News · ${name}`, site: 'news.google.com', url: GN(q), region: 'india', topic, poll: min(15), aggregator: true })),
   // ── X (Twitter): the most engaging recent posts near the reader and worldwide. Official API only —
   // off until X_BEARER_TOKEN is set (X has no free read access). Polled gently to stay inside the plan.
   ...[

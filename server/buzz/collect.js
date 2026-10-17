@@ -252,7 +252,33 @@ async function collectX(src, state) {
   }).filter((x) => x.title.length >= 20);
 }
 
+// Instagram — official Graph API "Business Discovery": public posts (photos, reels, likes, comments)
+// of creator/business accounts such as celebrities and cricketers, read through your own Instagram
+// business account. Needs IG_USER_ID + IG_ACCESS_TOKEN (see README); there is no other legal way
+// to read other people's Instagram posts.
+async function collectInstagram(src) {
+  const out = [];
+  for (const username of src.accounts) {
+    const fields = `business_discovery.username(${username}){name,username,media.limit(${src.max || 4}){caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count}}`;
+    let d;
+    try { d = JSON.parse((await safeGet(`https://graph.facebook.com/v21.0/${encodeURIComponent(process.env.IG_USER_ID)}?fields=${encodeURIComponent(fields)}&access_token=${encodeURIComponent(process.env.IG_ACCESS_TOKEN)}`, { timeout: src.timeout, accept: 'application/json' })).body); } catch { continue; }
+    const bd = d.business_discovery;
+    if (!bd) continue;
+    for (const m of bd.media?.data || []) {
+      const caption = N.text(m.caption || '').replace(/\s+/g, ' ').trim();
+      const video = m.media_type === 'VIDEO' ? m.media_url : null;
+      out.push({
+        title: (caption || `New post from ${bd.name || username}`).slice(0, 280), url: m.permalink, via: `${bd.name || username} (@${bd.username}) · Instagram`, description: null,
+        image: m.media_type === 'VIDEO' ? m.thumbnail_url || null : m.media_url || null, video, publishedAt: N.date(m.timestamp), rank: out.length,
+        engagement: { platform: 'Instagram', likes: m.like_count || 0, replies: m.comments_count || 0 },
+      });
+    }
+  }
+  return out;
+}
+
 async function collect(src, state = {}) {
+  if (src.adapter === 'instagram') return { items: await collectInstagram(src) };
   if (src.adapter === 'hn') return { items: await collectHN(src) };
   if (src.adapter === 'youtube') return { items: await collectYouTube(src) };
   if (src.adapter === 'x') return { items: await collectX(src, state) };
