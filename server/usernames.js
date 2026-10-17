@@ -61,4 +61,9 @@ function suggestionsFor(seed) {
   return [...out].map((s) => s.slice(0, 24).replace(/[._]+$/, '')).filter((s) => !validate(s));
 }
 
-module.exports = { normalize, canonical, validate, suggestionsFor, RESERVED };
+// "@name" handles in a message (lowercase, without a trailing full stop). Emails don't count.
+function mentionsIn(text) {
+  return new Set([...String(text || '').matchAll(/(?:^|[^\w@])@([a-z0-9_.]{3,24})/gi)].map((m) => m[1].replace(/\.+$/, '').toLowerCase()).filter((x) => x.length >= 3));
+}
+
+module.exports = { mentionsIn, normalize, canonical, validate, suggestionsFor, RESERVED };

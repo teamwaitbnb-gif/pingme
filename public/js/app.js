@@ -1,4 +1,3 @@
-import { createEditDiagnostics } from './edit-diagnostics.js';
 import { openCamera } from './camera.js';
 import { mountPet, petHidden } from './pet.js';
 import { initBuzz } from './buzz.js';
@@ -48,7 +47,7 @@ if (window.visualViewport) {
 
 // Keep the app pinned like a native app: no page rubber-banding, no pinch / double-tap zoom.
 // Only real scroll areas (lists, chats, sheets) move.
-const SCROLLERS = '.msgs, .sb-list, .sheet-body, .onboard-in, .actions .grp, .ctx .menu, .tray, .people-row, .story-strip, .emoji-grid, .eo-content, textarea, .tabs, .chips, .opts-bar, .sugg-row, .stats, .gate, .auth, .vb, .st-text, .lockscreen, .wrapped, .buzz-pane, .ed-options, .ed-tools, .cam-tools, .bz-src-list';
+const SCROLLERS = '.msgs, .mention-bar, .sb-list, .sheet-body, .onboard-in, .actions .grp, .ctx .menu, .tray, .people-row, .story-strip, .emoji-grid, .eo-content, textarea, .tabs, .chips, .opts-bar, .sugg-row, .stats, .gate, .auth, .vb, .st-text, .lockscreen, .wrapped, .buzz-pane, .ed-options, .ed-tools, .cam-tools, .bz-src-list';
 document.addEventListener('touchmove', (e) => {
   if (e.touches.length > 1) { if (!e.target.closest('.vb')) e.preventDefault(); return; }
   if (!e.target.closest(SCROLLERS)) e.preventDefault();
@@ -385,10 +384,7 @@ function connectSocket() {
     updateChatPreview(m.chatId, m);
     if (box && box === els.msgs) {
       box.scrollTop = atBottom ? box.scrollHeight : top;
-      probeVisible('update');
-      forceRedraw(120);
     }
-    editDiagnostics.updated(m);
   });
   socket.on('msg:remove', ({ chatId, id }) => {
     const st = S.msgs.get(chatId);
@@ -765,10 +761,9 @@ export function openChat(id, { around = null, push = true } = {}) {
     if (st?.list.some((m) => m.id === around)) { renderMessages(); flashMessage(around); }
     else loadMessages(id, { around });
   } else if (!st || !st.loaded) loadMessages(id, { reset: true });
-  else { renderMessages(); scrollToBottom(); markRead(); forceRedraw(250); }
+  else { renderMessages(); scrollToBottom(); markRead(); }
   loadScheduled(id);
   clearChatNotifications(id);
-  probeVisible('open', [1500, 4000]);
 }
 
 export function closeChat() {
@@ -993,7 +988,6 @@ async function loadMessages(chatId, { reset = false, around = null, older = fals
     renderMessages();
     if (around) flashMessage(around); else scrollToBottom();
     markRead();
-    forceRedraw(250);
   }
   renderPinnedBar();
 }
@@ -1213,94 +1207,6 @@ export function renderMessages() {
   }
 }
 
-// Capture both successful and broken edits so a phone reproduction is observable.
-const editDiagnostics = createEditDiagnostics((chatId) => {
-  if (S.current !== chatId) return { changedChat: true };
-  const box = els.msgs;
-  if (!box) return { missing: true };
-  const r = box.getBoundingClientRect(), css = getComputedStyle(box);
-  const vh = window.visualViewport?.height || innerHeight;
-  const nodes = [...box.querySelectorAll('.m, .sys:not(.intro), .ping-row')];
-  const visible = nodes.filter((node) => { const b = node.getBoundingClientRect(); return b.height > 0 && b.bottom > Math.max(0, r.top) && b.top < Math.min(vh, r.bottom); }).length;
-  return {
-    n: [S.msgs.get(chatId)?.list.length || 0, nodes.length, visible],
-    box: [r.top, r.height, box.scrollTop, box.scrollHeight, box.clientHeight].map(Math.round),
-    vp: [vh, window.visualViewport?.offsetTop || 0, scrollY].map(Math.round),
-    flags: [box.isConnected, document.hidden, !!document.querySelector('.ctx, .sheet, .viewer, .call'), document.documentElement.classList.contains('kb-open')].map(Number),
-    css: [css.display, css.visibility, css.opacity],
-  };
-});
-addEventListener('pagehide', () => editDiagnostics.flush());
-
-// Visibility probe: messages exist but none are on screen (iPhone layout/paint glitch) → record the
-// exact layout (no message text) and repair it: reset page scroll/offsets, force a redraw, go to bottom.
-const probeTimers = new Set();
-function probeVisible(reason, delays = [700, 2000]) {
-  for (const d of delays) {
-    const t = setTimeout(() => { probeTimers.delete(t); checkVisible(reason + '@' + d); }, d);
-    probeTimers.add(t);
-  }
-}
-function checkVisible(reason) {
-  const box = els.msgs, chatId = S.current;
-  const st = chatId && S.msgs.get(chatId);
-  if (!box || !st?.loaded || !st.list.length || document.hidden || document.querySelector('.ctx, .sheet, .viewer, .call')) return;
-  const r = box.getBoundingClientRect();
-  const items = [...box.querySelectorAll('.m, .sys:not(.intro)')];
-  const vh = window.visualViewport?.height || innerHeight;
-  const vis = items.filter((el) => { const b = el.getBoundingClientRect(); return b.height > 0 && b.bottom > Math.max(0, r.top) && b.top < Math.min(vh, r.bottom); }).length;
-  if (vis > 0 && r.height > 40) return;
-  const chain = [];
-  for (let el = box; el && el !== document.documentElement; el = el.parentElement) {
-    const cs = getComputedStyle(el);
-    const bits = [cs.display !== 'block' && cs.display !== 'flex' ? 'd:' + cs.display : '', cs.visibility !== 'visible' ? 'v:' + cs.visibility : '', cs.opacity !== '1' ? 'o:' + cs.opacity : '', cs.transform !== 'none' ? 't:' + cs.transform : '', el.hidden ? 'hidden' : ''].filter(Boolean);
-    const br = el.getBoundingClientRect();
-    chain.push(`${el.tagName.toLowerCase()}.${String(el.className).split(' ').slice(0, 2).join('.')}[${Math.round(br.top)},${Math.round(br.height)}]${bits.length ? '{' + bits.join(' ') + '}' : ''}`);
-  }
-  const info = { reason, msgs: st.list.length, nodes: items.length, vis, box: [r.top, r.height, r.bottom].map(Math.round), scroll: [box.scrollTop, box.scrollHeight, box.clientHeight].map(Math.round),
-    win: [scrollY, innerHeight, Math.round(vh), Math.round(window.visualViewport?.offsetTop || 0)], app: [app.style.height, app.style.transform], kb: document.documentElement.classList.contains('kb-open'), active: document.activeElement?.tagName, chain };
-  const e = new Error(`chat not visible (${reason}): ${items.length} nodes, ${vis} visible, box h ${Math.round(r.height)}`);
-  e.stack = JSON.stringify(info);
-  reportError(e, 'invisible:' + reason.split('@')[0]);
-  // Repair.
-  try {
-    window.scrollTo(0, 0); document.scrollingElement && (document.scrollingElement.scrollTop = 0);
-    if (window.visualViewport) { app.style.height = window.visualViewport.height + 'px'; app.style.transform = ''; }
-    box.style.display = 'none'; void box.offsetHeight; box.style.display = '';
-    scrollToBottom();
-  } catch {}
-}
-
-// iOS Safari sometimes doesn't repaint the message list after it changes; a one-frame layer flip
-// forces a fresh paint (invisible to the eye).
-function nudgePaint() {
-  const box = els.msgs;
-  if (!box || !isIOS()) return;
-  box.style.transform = 'translateZ(0)';
-  requestAnimationFrame(() => requestAnimationFrame(() => { if (box.isConnected) box.style.transform = ''; }));
-}
-
-// iPhone: rebuild the whole message list from scratch (fresh DOM = Safari must paint it). Used after
-// opening a chat and after edits/updates, where Safari has been seen leaving the chat blank.
-let redrawTimer = null;
-function forceRedraw(delay = 0) {
-  if (!isIOS()) return;
-  clearTimeout(redrawTimer);
-  redrawTimer = setTimeout(() => {
-    const chat = S.chats.get(S.current), st = chat && S.msgs.get(chat.id);
-    if (!chat || !st?.loaded || !els.msgs?.isConnected || document.querySelector('.ctx')) return;
-    const box = els.msgs;
-    const atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 160;
-    const top = box.scrollTop;
-    try {
-      conv.nodes.clear();
-      box.replaceChildren();
-      drawMessages(chat, st);
-      box.scrollTop = atBottom ? box.scrollHeight : top;
-    } catch (e) { reportError(e, 'force-redraw'); }
-  }, delay);
-}
-
 function drawMessages(chat, st) {
   const list = st.list;
   const lastMineIdx = (() => { for (let i = list.length - 1; i >= 0; i--) if (list[i].senderId === S.me.id && !['system', 'call'].includes(list[i].kind)) return i; return -1; })();
@@ -1336,7 +1242,6 @@ function drawMessages(chat, st) {
   }
   // Keep unchanged bubbles mounted (media, scroll anchors and mobile paint layers).
   reconcileChildren(els.msgs, nodes);
-  nudgePaint();
   const live = new Set(nodes);
   for (const [k, v] of conv.nodes) if (!live.has(v.el)) conv.nodes.delete(k);
   renderPinnedBar();
@@ -1348,6 +1253,45 @@ function getNode(id, key, build) {
   const el = build();
   conv.nodes.set(id, { key, el });
   return el;
+}
+
+// ─────── link previews ───────
+// The first link in a text message gets a card (title, picture, site) read by our server. A message
+// that is only a link shows just the card. Buzz share links show the story as a Buzz card.
+const linkPreviews = new Map(); // url → preview | null | Promise
+const URL_IN_TEXT = /https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"]/;
+const firstUrl = (text) => URL_IN_TEXT.exec(text || '')?.[0] || null;
+function loadPreview(url) {
+  const c = linkPreviews.get(url);
+  if (c !== undefined) return Promise.resolve(c);
+  const p = api('GET', '/api/unfurl?url=' + encodeURIComponent(url)).then((r) => r.preview).catch(() => null)
+    .then((v) => { linkPreviews.set(url, v); return v; });
+  linkPreviews.set(url, p);
+  return p;
+}
+function linkCard(url, bubble, onlyLink) {
+  const card = h('a', { class: 'link-card', href: url, target: '_blank', rel: 'noopener noreferrer', hidden: true, onclick: (e) => e.stopPropagation() });
+  const keepBottom = () => { if (conv.nearBottom && bubble.isConnected) scrollToBottom(); };
+  const fill = (p) => {
+    if (!p || (!p.title && !p.image)) return;
+    const site = p.kind === 'buzz' ? [icon('hand'), h('span', null, 'Buzz · ' + p.site)]
+      : p.icon ? [h('img', { class: 'lc-ic', src: p.icon, alt: '', onerror: (e) => e.target.remove() }), h('span', null, p.site)]
+      : p.kind === 'map' ? [icon('map'), h('span', null, p.site)] : [icon('link'), h('span', null, p.site)];
+    const img = p.image ? h('img', { class: 'lc-img', src: p.image, alt: '', decoding: 'async', onload: keepBottom, onerror: (e) => e.target.remove() }) : null;
+    card.className = 'link-card k-' + p.kind + (img ? '' : ' no-img');
+    if (p.kind === 'buzz' && p.url) card.href = p.url;
+    card.replaceChildren(img || '', h('div', { class: 'lc-body' },
+      h('div', { class: 'lc-site' }, site),
+      p.title ? h('div', { class: 'lc-title' }, p.title) : null,
+      p.description ? h('div', { class: 'lc-desc' }, p.description) : null));
+    card.hidden = false;
+    bubble.classList.add('has-card');
+    if (onlyLink) bubble.classList.add('only-card');
+    keepBottom();
+  };
+  const c = linkPreviews.get(url);
+  if (c !== undefined && !(c instanceof Promise)) fill(c); else loadPreview(url).then(fill);
+  return card;
 }
 
 function buildMessage(m, { first, last, status, chat }) {
@@ -1441,6 +1385,8 @@ function buildBubble(m, mine, chat) {
     case 'text': {
       const n = emojiCount(m.text);
       const b = h('div', { class: 'bubble' + (n ? ` emoji e${n}` : ' tail'), html: n ? esc(m.text) : richText(m.text) });
+      const url = !n && !ink && !m.pending ? firstUrl(m.text) : null;
+      if (url) b.append(linkCard(url, b, m.text.trim() === url));
       return withInk(b);
     }
     case 'image':
@@ -1780,10 +1726,13 @@ function renderComposer() {
   els.composer = h('div', { class: 'composer' }, els.plus, h('div', { class: 'inputbox' }, els.intentBtn, els.ta, els.sendBtn, els.camBtn, els.micBtn), els.fileInput);
   els.blockedNote = h('div', { class: 'blocked-note', hidden: true });
   els.smsBar = h('div', { class: 'sms-bar', hidden: true });
-  els.composerWrap.append(els.smsBar, els.sched, els.ctxBar, els.optsBar, els.tray, els.composer, els.blockedNote);
+  els.mentionBar = h('div', { class: 'mention-bar', hidden: true });
+  els.composerWrap.append(els.smsBar, els.sched, els.ctxBar, els.optsBar, els.tray, els.mentionBar, els.composer, els.blockedNote);
   updateSmsBar();
 
-  els.ta.addEventListener('input', () => { autosize(); updateSendBtn(); typingPing(); });
+  els.ta.addEventListener('input', () => { autosize(); updateSendBtn(); typingPing(); updateMentions(); });
+  els.ta.addEventListener('click', updateMentions);
+  els.ta.addEventListener('blur', () => setTimeout(() => { if (document.activeElement !== els.ta && els.mentionBar) els.mentionBar.hidden = true; }, 150));
   els.ta.addEventListener('keydown', (e) => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && prefs().enterSend) { e.preventDefault(); send(); }
     if (e.key === 'ArrowUp' && !els.ta.value && !conv.editing) {
@@ -1814,6 +1763,34 @@ function renderComposerState() {
   els.composer.hidden = blocked || deleted;
   els.blockedNote.hidden = !(blocked || deleted);
   els.blockedNote.replaceChildren(deleted ? 'This account no longer exists.' : h('span', null, 'You blocked this contact. ', h('a', { href: '#', onclick: async (e) => { e.preventDefault(); await api('DELETE', `/api/blocks/${otherMember(chat)}`); S.blocked.delete(otherMember(chat)); renderComposerState(); renderHeader(); } }, 'Unblock')));
+}
+
+// @mentions: typing "@" (or "@ma…") suggests people in this chat; picking one inserts @username.
+// Mentioned people get a "mentioned you" notification, even when they've muted the chat.
+function mentionQuery() {
+  const ta = els.ta;
+  if (!ta || ta.selectionStart !== ta.selectionEnd) return null;
+  const m = ta.value.slice(0, ta.selectionStart).match(/(^|\s)@([a-z0-9_.]{0,24})$/i);
+  return m ? { q: m[2].toLowerCase(), start: ta.selectionStart - m[2].length - 1 } : null;
+}
+function updateMentions() {
+  const bar = els.mentionBar, chat = S.chats.get(S.current);
+  if (!bar || !chat) return;
+  const mq = mentionQuery();
+  const people = mq ? chat.members.map((x) => user(x.id)).filter((u) => u && u.id !== S.me.id && u.username && !u.deleted
+    && (!mq.q || u.username.toLowerCase().startsWith(mq.q) || u.name.toLowerCase().split(/\s+/).some((w) => w.startsWith(mq.q)))).slice(0, 6) : [];
+  bar.hidden = !people.length;
+  bar.replaceChildren(...people.map((u) => h('button', { class: 'mention-row', onmousedown: (e) => e.preventDefault(), onclick: () => insertMention(u, mq) },
+    avatar({ id: u.id, name: u.name, src: userAvatar(u.id), size: 30 }), h('b', null, u.name), h('span', null, '@' + u.username))));
+}
+function insertMention(u, mq) {
+  const ta = els.ta, v = ta.value, end = ta.selectionStart;
+  const ins = '@' + u.username + ' ';
+  ta.value = v.slice(0, mq.start) + ins + v.slice(end);
+  const pos = mq.start + ins.length;
+  ta.focus(); ta.setSelectionRange(pos, pos);
+  els.mentionBar.hidden = true;
+  autosize(); updateSendBtn();
 }
 
 function autosize() {
@@ -2030,10 +2007,8 @@ export async function send(opts = {}) {
     els.ta.value = '';
     autosize(); renderCtxBar(); updateSendBtn();
     if (text !== (m.text || '')) {
-      const done = editDiagnostics.begin(m);
-      emit('msg:edit', { id: m.id, text }).then(() => { done?.(true); forceRedraw(150); }).catch((e) => { done?.(false); toast(e.message, { error: true }); });
+      emit('msg:edit', { id: m.id, text }).catch((e) => toast(e.message, { error: true }));
     }
-    probeVisible('edit', [800, 2500, 5000]);
     return;
   }
   if (!text && !conv.tray.length) return;

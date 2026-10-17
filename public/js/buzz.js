@@ -465,7 +465,7 @@ export function initBuzz(ctx) {
     const s = openSheet({ title: 'Send to…', left: { label: 'Close' }, full: true });
     s.body.append(h('div', { class: 'group' }, chats.length ? chats.map((c) => h('button', { class: 'user-row', style: { cursor: 'pointer', width: '100%' }, onclick: async () => {
       s.close();
-      try { await ctx.sendToChat(c.id, `${it.title}\n${it.canonicalUrl}`); await ctx.api('POST', `/api/feed/${it.id}/repost`, { on: true }).then((r) => patch({ ...cards.get(it.id).data, ...r })).catch(() => {}); toast(`Sent to ${ctx.chatTitle(c)}`); } catch (e) { toast(e.message, { error: true }); }
+      try { /* shows as a Buzz card in the chat */ await ctx.sendToChat(c.id, `${location.origin}/b/${it.id}`); await ctx.api('POST', `/api/feed/${it.id}/repost`, { on: true }).then((r) => patch({ ...cards.get(it.id).data, ...r })).catch(() => {}); toast(`Sent to ${ctx.chatTitle(c)}`); } catch (e) { toast(e.message, { error: true }); }
     } }, avatar({ id: c.id, name: ctx.chatTitle(c), src: ctx.chatAvatar(c), size: 40, group: c.type === 'group' }), h('div', { class: 't' }, h('b', null, ctx.chatTitle(c))))) : h('div', { class: 'bz-empty' }, 'Start a chat first')));
   }
 

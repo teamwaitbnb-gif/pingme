@@ -302,13 +302,20 @@ function notifyText(m) {
   }
 }
 
+// A message that is only a link reads as "Link · site" (or "Buzz story") in lists and notifications.
+function linkOnly(text) {
+  const t = (text || '').trim();
+  if (!/^https?:\/\/\S+$/.test(t)) return null;
+  try { const u = new URL(t); return /^\/b\/[a-f0-9]{24}$/.test(u.pathname) ? 'Shared a Buzz story' : 'Link · ' + u.hostname.replace(/^www\./, ''); } catch { return null; }
+}
+
 function preview(m) {
   if (!m) return '';
   if (m.deleted) return 'Message unsent';
   if (m.eyes) return 'Eyes-only message';
   if (m.secure) return 'Private message';
   switch (m.kind) {
-    case 'text': return m.text || '';
+    case 'text': return linkOnly(m.text) || m.text || '';
     case 'image': return 'Photo' + (m.text ? ' · ' + m.text : '');
     case 'video': return 'Video' + (m.text ? ' · ' + m.text : '');
     case 'audio': return 'Voice message';
@@ -558,9 +565,24 @@ async function insertMessage({ chatId, senderId, kind, body, replyTo = null, att
   return msg;
 }
 
+// "@username" in a message → the ids of chat members it refers to (never the sender, never hidden text).
+async function mentionedIds(msg, members, senderId) {
+  if (!msg.text || msg.secure || msg.eyes || msg.effect === 'ink') return new Set();
+  const names = U.mentionsIn(msg.text);
+  const out = new Set();
+  if (!names.size) return out;
+  for (const uid of members) {
+    if (uid === senderId) continue;
+    const u = await getUser(uid);
+    if (u?.username && names.has(u.username.toLowerCase())) out.add(uid);
+  }
+  return out;
+}
+
 async function notifyMembers(chatId, senderId, msg, members) {
-  if (!push.enabled || msg.silent || msg.viaSms) return; // SMS copies were already received as texts
+  if (!push.enabled || msg.viaSms) return; // SMS copies were already received as texts
   const sender = await publicUser(senderId);
+  const mentioned = await mentionedIds(msg, members, senderId);
   const chat = await db.one('SELECT type, title_enc FROM chats WHERE id=?', [chatId]);
   const mutes = await db.q('SELECT user_id, muted_until FROM chat_members WHERE chat_id=? AND active=1', [chatId]);
   const muted = new Map(mutes.map((m) => [Number(m.user_id), Number(m.muted_until)]));
@@ -568,8 +590,11 @@ async function notifyMembers(chatId, senderId, msg, members) {
   const t = Date.now();
   for (const uid of members) {
     if (uid === senderId || blockedBy.has(uid)) continue;
+    const isMention = mentioned.has(uid);
+    // Silent messages and muted chats still reach people who were @mentioned.
+    if (msg.silent && !isMention) continue;
     const mu = muted.get(uid) || 0;
-    if (mu === -1 || mu > t) continue;
+    if ((mu === -1 || mu > t) && !isMention) continue;
     const u = await getUser(uid);
     if (!u) continue;
     const group = chat.type === 'group' ? C.dec(chat.title_enc) || 'Group' : null;
@@ -582,9 +607,11 @@ async function notifyMembers(chatId, senderId, msg, members) {
     else if (msg.kind === 'letter') body = 'Sent you a letter: ' + (msg.letter?.title || '');
     else if (urgent && previews) body = 'Urgent · ' + body;
     const show = previews || msg.sos;
+    let title = show ? (group || sender.name) : 'Ping Me';
+    if (isMention) { title = group ? `${sender.name} mentioned you in ${group}` : `${sender.name} mentioned you`; if (!previews) body = 'Tap to see the message'; }
     push.send(uid, {
-      type: 'msg', title: show ? (group || sender.name) : 'Ping Me', sender: show && group ? sender.name : null,
-      body, tag: 'chat-' + chatId, url: '/?chat=' + chatId, chatId, msgId: msg.id, ts: msg.createdAt, urgent, ping: msg.kind === 'ping',
+      type: 'msg', title, sender: show && group && !isMention ? sender.name : null, mention: isMention || undefined,
+      body, tag: isMention ? 'mention-' + msg.id : 'chat-' + chatId, url: '/?chat=' + chatId, chatId, msgId: msg.id, ts: msg.createdAt, urgent, ping: msg.kind === 'ping',
       // Who + what, so the notification shows their face (or coloured initials) and a photo preview.
       kind: msg.kind, from: show ? { id: senderId, name: sender.name, avatar: sender.avatarV ? `/api/avatar/u/${senderId}?v=${sender.avatarV}` : null } : null,
       image: show && !hidden && msg.kind === 'image' && msg.att?.id ? `/api/files/${msg.att.id}` : null,
@@ -1720,6 +1747,8 @@ const advanced = require('./features')({
 
 // Buzz: the live news feed tab.
 const buzz = require('./buzz')({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, rateLimit, publicUser, ms });
+// Link previews for links shared in chats (+ Buzz share links).
+require('./unfurl')({ app, db, C, auth, wrap, bad, rateLimit, publicOrigin });
 // Usage analytics + the owner's admin portal (/admin, unlocked with ADMIN_KEY).
 require('./admin')({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online, buzz });
 
