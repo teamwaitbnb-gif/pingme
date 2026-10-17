@@ -475,7 +475,7 @@ textarea.field { height: auto; min-height: 80px; padding: 12px 16px; resize: ver
 .actions.left button.danger, .actions.left button.danger svg { color: var(--red); }
 
 /* message context menu */
-.ctx { position: fixed; inset: 0; z-index: 70; display: flex; flex-direction: column; justify-content: center; padding: calc(20px + var(--sat)) 14px calc(20px + var(--sab)); animation: fadein 0.18s; }
+.ctx { position: fixed; inset: 0; z-index: 70; cursor: pointer; display: flex; flex-direction: column; justify-content: center; padding: calc(20px + var(--sat)) 14px calc(20px + var(--sab)); animation: fadein 0.18s; }
 .ctx .bg { position: absolute; inset: 0; background: var(--overlay); backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px); }
 .ctx .stack { position: relative; display: flex; flex-direction: column; gap: 8px; max-width: 520px; width: 100%; margin: 0 auto; }
 .ctx .stack.me { align-items: flex-end; }
@@ -489,6 +489,7 @@ textarea.field { height: auto; min-height: 80px; padding: 12px 16px; resize: ver
 .ctx .preview { max-width: 85%; max-height: 40vh; overflow: hidden; pointer-events: none; }
 .ctx .preview .m { margin: 0; }
 .ctx .preview .reacts { display: none; }
+.ctx .tapbacks, .ctx .menu { cursor: auto; }
 .ctx .menu { min-width: 240px; background: var(--elev); border-radius: 14px; overflow: hidden; box-shadow: var(--shadow); animation: pop2 0.25s cubic-bezier(0.2, 1.1, 0.4, 1); max-height: 46vh; overflow-y: auto; }
 .ctx .menu button { width: 100%; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 16px; font-size: 16px; border-bottom: 0.5px solid var(--sep); text-align: left; }
 .ctx .menu button:last-child { border-bottom: 0; }

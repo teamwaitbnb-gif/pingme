@@ -1753,6 +1753,9 @@ function openMessageMenu(m, el) {
       h('div', { class: 'menu' },
         h('div', { class: 'info-line' }, new Date(m.createdAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })),
         items.map(([label, ic, fn, danger]) => h('button', { class: danger ? 'danger' : '', onclick: act(fn) }, label, icon(ic))))));
+  // Any tap outside the reactions row and the menu closes it (the stack spans the full width and the
+  // preview ignores taps, so the backdrop alone only caught the screen edges).
+  wrap.addEventListener('click', (e) => { if (!e.target.closest('.tapbacks, .menu')) close(); });
   document.getElementById('layer').append(wrap);
 }
 
