@@ -112,3 +112,18 @@ Open **/admin** (e.g. `https://<your-app>/admin`) and enter `ADMIN_KEY` from `.e
 It shows: total / new users, daily / weekly / monthly active users, stickiness, who is online right now and which screen they're on, time by screen, weekly retention cohorts (day 1, week 2, month 2) for the app and for Buzz, devices (iPhone / Android / computer, installed app vs browser), messages and calls per day, and Buzz stats (readers, stories seen/opened, open rate, likes/comments/reposts, top stories, top sources, cities).
 
 Privacy: only activity is recorded (screen + duration, app opens, Buzz story ids seen/opened). Message text and calls are never recorded. Raw events are kept 120 days (`analytics_events`); daily summaries (`user_days`) and device type (`user_devices`) stay.
+
+Pages (tabs at the top, or link straight to them):
+
+| Page | Link | What it shows |
+|---|---|---|
+| Overview | `/admin#overview` | The summary above |
+| Speed | `/admin#speed` | "Where it's slow" in plain words; every server route (requests, typical / slowest-5% / worst time, failures); realtime events; database time per query shape and slow queries (> 250 ms); server event-loop delay, CPU, memory, connections, calls; and real speed on phones (app opening time, message send time, requests over 0.7 s). Route history is saved hourly (`perf_hourly`, 90 days). |
+| Errors | `/admin#errors` | Crashes on phones (`client_errors`) and errors on the server (`server_errors`), per day, with details |
+| Users | `/admin#users` | Everyone, searchable: joined, last seen, messages, active days, minutes, profile photo (when uploaded), photo views, device |
+| One person | `/admin#user/<id>` | Profile, privacy settings, devices and sign-ins, messages per day and per conversation (counts only), calls, time per screen, Buzz activity and topics, photo views, app speed, errors, and a timeline of everything they did (`activity_log`: sign-up, sign-in, photo/name/username/privacy changes, blocks, groups, calls, incognito) |
+| Calls | `/admin#calls` | Calls per day, answered vs missed, talk time, how calls ended, recent calls |
+| Activity | `/admin#activity` | The activity log across all accounts, filterable by kind |
+| Buzz algorithm | `/admin#algorithm` | How well For You works |
+
+Never shown, even to the admin: message text, photos/videos people send, call audio/video, passwords.

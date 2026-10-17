@@ -206,8 +206,8 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
 
   // ───── ranking ─────
   // Buckets and their share of a region's feed. Local first; everything interleaved.
-  const MIX_CITY = [['local', 34], ['india', 18], ['tech', 14], ['business', 12], ['world', 10], ['sports', 6], ['entertainment', 6]];
-  const MIX_INDIA = [['india', 32], ['tech', 18], ['business', 16], ['world', 14], ['sports', 10], ['entertainment', 10]];
+  const MIX_CITY = [['local', 30], ['india', 16], ['entertainment', 14], ['tech', 12], ['sports', 10], ['business', 9], ['world', 9]];
+  const MIX_INDIA = [['india', 26], ['entertainment', 18], ['tech', 15], ['sports', 14], ['business', 14], ['world', 13]];
 
   function bucketOf(row, region) {
     if (row.topic === 'local') return row.region === region ? 'local' : null;
@@ -374,16 +374,29 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       for (const r of await db.q(`SELECT item_id id, created_at FROM ${table} WHERE user_id=? AND created_at > ? ORDER BY created_at DESC LIMIT 300`, [uid, since])) sig.push({ id: r.id, w, t: ms(r.created_at) });
     }
     // Behaviour: opens, how long a story was read on screen (dwell), and quick scroll-pasts (less of this).
-    for (const r of await db.q(`SELECT item id, type, value, created_at FROM analytics_events WHERE user_id=? AND type IN ('buzz_open','buzz_dwell','buzz_skip') AND created_at > ? ORDER BY created_at DESC LIMIT 600`, [uid, since]).catch(() => [])) {
+    // Videos: watching with sound counts a lot (more the longer you watch); a muted autoplay you let
+    // run counts a little; one scrolled past in a couple of seconds counts slightly against.
+    let videoScore = 0;
+    for (const r of await db.q(`SELECT item id, type, value, created_at FROM analytics_events WHERE user_id=? AND type IN ('buzz_open','buzz_dwell','buzz_skip','buzz_play','buzz_autoplay') AND created_at > ? ORDER BY created_at DESC LIMIT 800`, [uid, since]).catch(() => [])) {
+      const v = Number(r.value) || 0;
+      let w;
       // dwell value = % of the story's reading time spent in the reading zone (100 = read fully).
-      const w = r.type === 'buzz_open' ? 1.5 : r.type === 'buzz_dwell' ? Math.min(1.8, ((Number(r.value) || 0) / 100) * 1.2) : -0.25;
+      if (r.type === 'buzz_open') w = 1.5;
+      else if (r.type === 'buzz_dwell') w = Math.min(1.8, (v / 100) * 1.2);
+      else if (r.type === 'buzz_play') w = 1.2 + Math.min(1.8, v / 40);
+      else if (r.type === 'buzz_autoplay') w = v >= 8 ? 0.3 + Math.min(0.7, v / 60) : -0.1;
+      else w = -0.25;
+      if (r.type === 'buzz_play' || r.type === 'buzz_autoplay') videoScore += w * Math.exp(-(Date.now() - ms(r.created_at)) / (10 * 86400e3));
       sig.push({ id: r.id, w, t: ms(r.created_at) });
     }
     // Impressions: every story this person was shown, with its topic and publisher (kept even after
     // the story itself expires), so the profile can tell "likes cricket" from "was shown lots of cricket".
     const imp = await db.q('SELECT item_id, topic, source_id FROM feed_seen WHERE user_id=? AND seen_at > ? ORDER BY seen_at DESC LIMIT 4000', [uid, since]).catch(() => []);
     const impOf = new Map(imp.map((r) => [r.item_id, r]));
-    const p = { topics: {}, sources: {}, words: {}, n: sig.length, imp: imp.length, impTopics: {}, topicLift: {}, sourceLift: {} };
+    const p = { topics: {}, sources: {}, words: {}, n: sig.length, imp: imp.length, impTopics: {}, topicLift: {}, sourceLift: {}, video: 0 };
+    // How much this person likes videos: watch score vs how many videos they were shown.
+    const vidShown = Number((await db.one('SELECT COUNT(*) n FROM feed_seen s JOIN feed_items i ON i.id=s.item_id WHERE s.user_id=? AND s.seen_at > ? AND i.video_url IS NOT NULL', [uid, since]).catch(() => null))?.n || 0);
+    p.video = videoScore > 0 ? Math.min(1.5, videoScore / Math.max(3, vidShown * 0.25)) : videoScore < 0 ? Math.max(-0.5, videoScore / 2) : vidShown >= 15 ? -0.5 : 0;
     if (sig.length) {
       const items = new Map((await db.q('SELECT id, title, topic, source_id, via FROM feed_items WHERE id IN (?)', [[...new Set(sig.map((x) => x.id))]])).map((r) => [r.id, r]));
       for (const x of sig) {
@@ -477,7 +490,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     const s = (p.sources[r.via || r.source_id] || 0) + 0.3 * (clamp(p.sourceLift[r.source_id] ?? 1, 0, 2) - 1);
     let k = 0;
     for (const w of tokens(r.title)) k += p.words[w] || 0;
-    return 0.3 * t + 0.2 * s + 0.5 * Math.min(1, k / 1.2);
+    return 0.3 * t + 0.2 * s + 0.5 * Math.min(1, k / 1.2) + (r.video_url ? 0.35 * (p.video || 0) : 0);
   }
 
   // ───── seen stories never come back ─────
@@ -533,7 +546,8 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     const pool = base.list.filter((x) => !isSeen(x, seen.set));
     let out;
     if (!p.n) out = pool.map((x) => ({ ...x, slot: 'g' }));
-    else out = spaceVideos(arrange(pool, p, region));
+    // Video lovers get a video every 2nd–3rd story; people who skip videos get fewer.
+    else out = spaceVideos(arrange(pool, p, region), p.video >= 1 ? 2 : p.video >= 0.4 ? 3 : p.video < 0 ? 7 : 4);
     const version = require('crypto').createHash('sha1').update(out.slice(0, 60).map((x) => x.row.id).join(',')).digest('hex').slice(0, 16);
     const entry = { at: Date.now(), version, list: out };
     personalCache.set(key, { at: Date.now(), key: want, entry });

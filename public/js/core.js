@@ -1,5 +1,6 @@
 // Shared state + API helpers.
 import { store } from './ui.js';
+import { track } from './analytics.js';
 
 export const S = {
   me: null,
@@ -25,9 +26,13 @@ export async function api(method, path, body) {
   const opts = { method, credentials: 'same-origin', headers: { 'x-pingme': '1' } };
   if (body !== undefined) { opts.headers['content-type'] = 'application/json'; opts.body = JSON.stringify(body); }
   let res;
+  const t0 = performance.now();
   try { res = await fetch(path, opts); }
   catch { throw new ApiError('You appear to be offline', 0); }
   const data = await res.json().catch(() => ({}));
+  // Admin Speed page: requests that felt slow on this phone (the address shape, never its contents).
+  const took = Math.round(performance.now() - t0);
+  if (took > 700) track({ t: 'perf_api', p: method + ' ' + path.split('?')[0].replace(/\/[0-9a-f]{24}(?=\/|$)/gi, '/:hex').replace(/\/\d+(?=\/|$)/g, '/:id'), v: took });
   if (!res.ok) {
     if (res.status === 401 && path !== '/api/login' && path !== '/api/me' && !path.startsWith('/api/me/')) window.dispatchEvent(new Event('mm:unauthorized'));
     throw new ApiError(data.error || 'Request failed', res.status);
@@ -106,7 +111,9 @@ function uploadWhole(chatId, blob, name, onProgress) {
 export function emit(event, data) {
   return new Promise((resolve, reject) => {
     if (!S.socket?.connected) return reject(new ApiError('Not connected — retrying…', 0));
+    const t0 = performance.now();
     S.socket.timeout(20000).emit(event, data, (err, res) => {
+      if (event === 'msg:send' && !err) track({ t: 'perf_send', v: Math.round(performance.now() - t0) }); // message send time
       if (err) return reject(new ApiError('Server did not respond', 0));
       if (!res?.ok) return reject(new ApiError(res?.error || 'Failed', 400));
       resolve(res);

@@ -18,7 +18,7 @@ const COOKIE = 'mm_sess';
 // Identifies this running copy of the server (changes on every deploy).
 const INSTANCE_ID = (process.env.K_REVISION || 'local') + '-' + require('crypto').randomBytes(4).toString('hex');
 const REACTION_MAX = 16;
-const DEFAULT_SETTINGS = { readReceipts: true, typing: true, lastSeen: true, previews: true };
+const DEFAULT_SETTINGS = { readReceipts: true, typing: true, lastSeen: true, previews: true, dpViews: true };
 // Advanced features each person can switch on/off (first-run setup + Settings → Features).
 const FEATURES = {
   scamRadar: true, promiseTracker: true, intentTags: true, secureMessages: true, eyesOnly: true,
@@ -33,6 +33,9 @@ push.init();
 
 const app = express();
 app.set('trust proxy', true);
+// Admin Speed/Errors/Activity pages: route + query + realtime timing, server errors, account activity.
+const monitor = require('./monitor')({ db, C });
+app.use(monitor.middleware);
 app.disable('x-powered-by');
 app.use(compression());
 
@@ -731,6 +734,7 @@ async function createSession(req, res, userId) {
   const dev = deviceHash(req);
   await db.q('DELETE FROM sessions WHERE user_id=? AND device_hash=?', [userId, dev]);
   await db.q('INSERT INTO sessions (token_hash, user_id, ua_enc, device_hash) VALUES (?,?,?,?)', [C.sha256(t), userId, C.enc(clampStr(req.get('user-agent') || '', 300)), dev]);
+  monitor.log(userId, 'signin', { device: deviceLabel(req.get('user-agent') || ''), path: req.path });
   setSessionCookie(req, res, t);
   if (req.newDeviceCookie) addCookie(res, req.newDeviceCookie);
 }
@@ -819,6 +823,7 @@ async function createUser({ username, name, password = null, email = null, birth
         email ? C.enc(email) : null, birthDate ? C.enc(birthDate) : null, C.enc(name || username), C.enc({ ...DEFAULT_SETTINGS, features: FEATURES, onboarded: guest, guest }), now()]
     );
     const uid = Number(r.insertId);
+    monitor.log(uid, 'signup', { method: guest ? 'guest' : email ? 'google' : 'password' });
     if (inviteRow) {
       const used = await db.q('UPDATE invites SET used_by=?, used_at=? WHERE code_hash=? AND used_by IS NULL', [uid, now(), inviteRow]);
       if (!used.affectedRows) { await db.q('DELETE FROM users WHERE id=?', [uid]); throw bad('That invite code was just used — ask for another'); }
@@ -1079,6 +1084,14 @@ app.patch('/api/me', auth, wrap(async (req, res) => {
   if (req.body.birth !== undefined) { sets.push('birth_enc=?'); vals.push(C.enc(parseBirth(req.body.birth))); }
   if (sets.length) {
     await db.q(`UPDATE users SET ${sets.join(', ')} WHERE id=?`, [...vals, req.uid]);
+    // Activity log: what changed (never the photo itself or other content).
+    if (req.body.avatar !== undefined) monitor.log(req.uid, 'photo', { action: req.body.avatar === null ? 'removed' : 'changed' });
+    if (typeof req.body.name === 'string' && clampStr(req.body.name, 60).trim() !== u.name) monitor.log(req.uid, 'name', { from: u.name, to: clampStr(req.body.name, 60).trim() });
+    if (typeof req.body.bio === 'string' && clampStr(req.body.bio, 200) !== u.bio) monitor.log(req.uid, 'bio', {});
+    if (req.body.settings && typeof req.body.settings === 'object') {
+      const changed = Object.keys(DEFAULT_SETTINGS).filter((k) => typeof req.body.settings[k] === 'boolean' && req.body.settings[k] !== u.settings[k]);
+      if (changed.length) monitor.log(req.uid, 'privacy', Object.fromEntries(changed.map((k) => [k, req.body.settings[k]])));
+    }
     userCache.delete(req.uid);
     await broadcastUser(req.uid);
   }
@@ -1092,6 +1105,7 @@ app.post('/api/me/username', auth, wrap(async (req, res) => {
   if (problem) throw bad(problem);
   try {
     await db.q('UPDATE users SET uname_hash=?, uname_canon=?, uname_enc=? WHERE id=?', [unameHash(username), unameCanon(username), C.enc(username), req.uid]);
+    monitor.log(req.uid, 'username', { to: username });
   } catch (e) {
     if (e.code === 'ER_DUP_ENTRY') throw bad('That username was just taken — try another');
     throw e;
@@ -1137,6 +1151,7 @@ app.post('/api/me/sessions/logout-others', auth, wrap(async (req, res) => {
 
 app.delete('/api/me', auth, wrap(async (req, res) => {
   rateLimit('del:' + req.uid, 5, 60000);
+  res.on('finish', () => { if (res.statusCode < 300) monitor.log(req.uid, 'deleted'); });
   const row = await db.one('SELECT pass_hash FROM users WHERE id=?', [req.uid]);
   const u = await getUser(req.uid);
   if (row.pass_hash) {
@@ -1186,6 +1201,7 @@ app.post('/api/blocks/:id', auth, wrap(async (req, res) => {
   const id = toInt(req.params.id);
   if (!id || id === req.uid) throw bad('Invalid user');
   await db.q('INSERT IGNORE INTO blocks (user_id, blocked_id) VALUES (?,?)', [req.uid, id]);
+  monitor.log(req.uid, 'block', { user: id });
   res.json({ ok: true });
 }));
 
@@ -1202,6 +1218,45 @@ async function sendAvatar(res, enc) {
   res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
   res.end(Buffer.from(m[2], 'base64'));
 }
+
+// ─── Who viewed your profile photo ───
+// A view = opening someone's photo full screen. Like LinkedIn: if you turn off "Show when I view
+// photos", your views appear as "Someone" and you can't see who viewed yours either.
+app.post('/api/avatar/u/:id/view', auth, wrap(async (req, res) => {
+  const owner = toInt(req.params.id);
+  if (!owner || owner === req.uid) return res.json({ ok: true });
+  rateLimit('dpview:' + req.uid, 120, 3600e3);
+  const o = await db.one('SELECT avatar_v FROM users WHERE id=?', [owner]);
+  if (!o || !Number(o.avatar_v) || (await isBlockedBetween(req.uid, owner))) return res.json({ ok: true });
+  // Opening the same photo again within a minute is the same view.
+  const recent = await db.one('SELECT 1 x FROM avatar_views WHERE owner_id=? AND viewer_id=? AND viewed_at > ? LIMIT 1', [owner, req.uid, new Date(Date.now() - 60000)]);
+  if (!recent) {
+    const me = await getUser(req.uid);
+    await db.q('INSERT INTO avatar_views (owner_id, viewer_id, hidden, avatar_v) VALUES (?,?,?,?)', [owner, req.uid, me?.settings.dpViews === false ? 1 : 0, Number(o.avatar_v)]);
+  }
+  res.json({ ok: true });
+}));
+
+app.get('/api/me/avatar-views', auth, wrap(async (req, res) => {
+  const since = new Date(Date.now() - 90 * 86400e3);
+  const rows = await db.q('SELECT viewer_id, hidden, viewed_at FROM avatar_views WHERE owner_id=? AND viewed_at > ? ORDER BY viewed_at DESC LIMIT 2000', [req.uid, since]);
+  const me = await getUser(req.uid);
+  const total = rows.length;
+  if (me.settings.dpViews === false) return res.json({ locked: true, total, viewers: [], someone: 0 });
+  const by = new Map();
+  let someone = 0;
+  for (const r of rows) {
+    if (r.hidden) { someone++; continue; }
+    const id = Number(r.viewer_id);
+    if (!by.has(id)) by.set(id, { userId: id, count: 0, times: [] });
+    const v = by.get(id);
+    v.count++;
+    if (v.times.length < 20) v.times.push(ms(r.viewed_at));
+  }
+  const viewers = [...by.values()].sort((a, b) => b.times[0] - a.times[0]);
+  const users = await Promise.all(viewers.map((v) => publicUser(v.userId)));
+  res.json({ locked: false, total, someone, viewers, users });
+}));
 
 app.get('/api/avatar/u/:id', auth, wrap(async (req, res) => {
   const r = await db.one('SELECT avatar_enc FROM users WHERE id=?', [toInt(req.params.id)]);
@@ -1361,6 +1416,7 @@ app.post('/api/chats', auth, wrap(async (req, res) => {
   const chatId = Number(r.insertId);
   const rows = [[chatId, req.uid, 'admin'], ...ids.map((id) => [chatId, id, 'member'])];
   await db.q('INSERT INTO chat_members (chat_id, user_id, role) VALUES ?', [rows]);
+  monitor.log(req.uid, 'group', { chatId, members: rows.length });
   for (const [, uid] of rows) joinUserToChat(uid, chatId);
   await systemMessage(chatId, req.uid, { type: 'created', title: title || 'Group' });
   for (const id of ids) emitToUser(id, 'chat:changed', { chatId });
@@ -1764,7 +1820,7 @@ const buzz = require('./buzz')({ app, db, C, auth, wrap, bad, notFound, toInt, c
 // Link previews for links shared in chats (+ Buzz share links).
 require('./unfurl')({ app, db, C, auth, wrap, bad, rateLimit, publicOrigin });
 // Usage analytics + the owner's admin portal (/admin, unlocked with ADMIN_KEY).
-require('./admin')({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online, buzz });
+require('./admin')({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online, buzz, monitor, activeCalls: () => calls.size });
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
@@ -1803,7 +1859,7 @@ app.get('*', (req, res) => res.sendFile(path.join(pub, 'index.html'), { headers:
 app.use((err, req, res, next) => {
   if (err.type === 'entity.too.large') return res.status(413).json({ error: 'File is too large' });
   const status = err.status || 500;
-  if (status >= 500) console.error(err);
+  if (status >= 500) { console.error(err); monitor.serverError(err, `${req.method} ${req.route?.path || req.path}`, req.uid); }
   res.status(status).json({ error: status >= 500 ? 'Something went wrong' : err.message });
 });
 
@@ -1860,13 +1916,14 @@ const sockHandler = (socket, fn) => async (data, ack) => {
     const out = await fn(data || {});
     if (typeof ack === 'function') ack({ ok: true, ...(out || {}) });
   } catch (e) {
-    if (!(e instanceof HttpError)) console.error(e);
+    if (!(e instanceof HttpError)) { console.error(e); monitor.serverError(e, 'realtime', socket.uid); }
     if (typeof ack === 'function') ack({ ok: false, error: e instanceof HttpError ? e.message : 'Something went wrong' });
   }
 };
 
 io.on('connection', (socket) => {
   const uid = socket.uid;
+  monitor.socketUse(socket);
   socket.join('u:' + uid);
   socket.emit('hello', { instance: INSTANCE_ID });
   const first = !online.has(uid);
@@ -2268,6 +2325,9 @@ async function endCall(call, reason) {
     push.send(u, { type: 'call-ended', tag: 'call-' + call.id, callId: call.id, chatId: call.chatId, video: call.video, title: (await publicUser(call.startedBy)).name, body: call.answeredAt ? 'Call ended' : `Missed ${call.video ? 'video' : 'audio'} call`, url: '/?chat=' + call.chatId }, { ttl: 3600 }).catch(() => {});
   }
   const dur = call.answeredAt ? Math.round((Date.now() - call.answeredAt) / 1000) : 0;
+  for (const u of new Set([...call.everJoined, ...call.ringing])) {
+    monitor.log(u, 'call', { chatId: call.chatId, callId: call.id, video: call.video, group: call.group, dur, missed: !call.answeredAt, reason, caller: call.startedBy === u, joined: call.everJoined.has(u) });
+  }
   try {
     await insertMessage({
       chatId: call.chatId,
@@ -2303,6 +2363,7 @@ const INCOGNITO_IDLE_MS = 3 * 60000, INCOGNITO_MAX_MS = 12 * 3600000;
 async function startIncognito(chatId, uid) {
   const r = await db.q('UPDATE chats SET incognito_since=?, incognito_by=?, incognito_last=? WHERE id=? AND incognito_since IS NULL', [now(), uid, now(), chatId]);
   if (!r.affectedRows) return;
+  monitor.log(uid, 'incognito', { chatId, on: true });
   await systemMessage(chatId, uid, { type: 'incognito', on: true });
   await emitChatChanged(chatId);
 }
@@ -2346,6 +2407,7 @@ async function runCleanup() {
     await db.q('DELETE FROM attachments WHERE id IN (?)', [stale.map((s) => s.id)]);
   }
   await db.q('DELETE FROM sessions WHERE last_used < ?', [new Date(Date.now() - 400 * 86400000)]);
+  await db.q('DELETE FROM avatar_views WHERE viewed_at < ?', [new Date(Date.now() - 90 * 86400000)]);
 }
 
 function loop(fn, every) {

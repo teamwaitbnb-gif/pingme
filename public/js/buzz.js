@@ -100,6 +100,7 @@ function playIn(el, sound) {
   activeVideo = el;
   const mode = sound ? 's' : 'm';
   if (box.dataset.playing === mode || (box.dataset.playing === 's' && !sound)) return;
+  if (sound && el._watch) el._watch.sound = true; // autoplay → tapped for sound: it's a real watch
   const old = box.querySelector('iframe, video');
   if (old && old.tagName === 'VIDEO') { old.muted = !sound; old.play().catch(() => {}); box.dataset.playing = mode; return; }
   old?.remove();
@@ -113,12 +114,24 @@ function playIn(el, sound) {
   }
   box.dataset.playing = mode;
   box.append(node);
+  // Watch time feeds the algorithm: started now; "sound" once the person tapped to watch with sound.
+  el._watch = { at: Date.now(), sound: !!sound };
 }
 function stopVideo(el) {
   const box = el?.querySelector('.bz-video');
   if (box) { box.querySelector('iframe, video')?.remove(); delete box.dataset.playing; }
+  endWatch(el);
   if (activeVideo === el) activeVideo = null;
 }
+// One event per play: seconds watched, and whether it was a real watch (sound on) or an autoplay.
+function endWatch(el) {
+  const w = el?._watch;
+  if (!w) return;
+  el._watch = null;
+  const secs = Math.round((Date.now() - w.at) / 1000);
+  if (secs >= 2 && el.dataset.id) track({ t: w.sound ? 'buzz_play' : 'buzz_autoplay', i: el.dataset.id, v: Math.min(1800, secs) });
+}
+document.addEventListener('visibilitychange', () => { if (document.hidden && activeVideo) { endWatch(activeVideo); } else if (!document.hidden && activeVideo?.querySelector('.bz-video')?.dataset.playing) activeVideo._watch ||= { at: Date.now(), sound: activeVideo.querySelector('.bz-video').dataset.playing === 's' }; });
 const zoneTimers = new Map();
 
 const POLL_MS = 5000;

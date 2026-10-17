@@ -134,6 +134,60 @@ const SCHEMA = [
     seen_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     PRIMARY KEY (user_id, item_id), INDEX (seen_at), INDEX (user_id, seen_at)
   )`,
+  // Admin: what each account did (sign-up, sign-in, photo/name changes, calls…). Metadata only, encrypted.
+  `CREATE TABLE IF NOT EXISTS activity_log (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT UNSIGNED NULL,
+    kind VARCHAR(24) NOT NULL,
+    meta_enc TEXT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX (user_id, created_at),
+    INDEX (created_at),
+    INDEX (kind, created_at)
+  )`,
+  // Admin: server speed per route and hour (kept 90 days), server errors and speed measured on phones.
+  `CREATE TABLE IF NOT EXISTS perf_hourly (
+    hour DATETIME NOT NULL,
+    route VARCHAR(120) NOT NULL,
+    n INT UNSIGNED NOT NULL,
+    errors INT UNSIGNED NOT NULL DEFAULT 0,
+    p50 INT UNSIGNED NOT NULL,
+    p95 INT UNSIGNED NOT NULL,
+    mx INT UNSIGNED NOT NULL,
+    total_ms BIGINT UNSIGNED NOT NULL DEFAULT 0,
+    PRIMARY KEY (hour, route)
+  )`,
+  `CREATE TABLE IF NOT EXISTS server_errors (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    where_at VARCHAR(120) NOT NULL,
+    msg VARCHAR(300) NOT NULL,
+    stack TEXT NULL,
+    user_id BIGINT UNSIGNED NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX (created_at)
+  )`,
+  `CREATE TABLE IF NOT EXISTS client_perf (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT UNSIGNED NULL,
+    kind VARCHAR(16) NOT NULL,
+    path VARCHAR(80) NULL,
+    ms INT UNSIGNED NOT NULL,
+    platform VARCHAR(12) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX (kind, created_at),
+    INDEX (created_at)
+  )`,
+  // Profile photo views: who opened whose photo full screen, and when. Kept 90 days.
+  `CREATE TABLE IF NOT EXISTS avatar_views (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    owner_id BIGINT UNSIGNED NOT NULL,
+    viewer_id BIGINT UNSIGNED NOT NULL,
+    hidden TINYINT NOT NULL DEFAULT 0,
+    avatar_v BIGINT NULL,
+    viewed_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX owner_views (owner_id, viewed_at),
+    INDEX (viewer_id, viewed_at)
+  )`,
   // App crash reports (what broke and where; never message text), kept 30 days.
   `CREATE TABLE IF NOT EXISTS client_errors (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -388,7 +442,12 @@ async function migrate(dbName) {
   await pool.query('ALTER TABLE users MODIFY pass_hash VARCHAR(255) NULL');
 }
 
-const q = (sql, params) => pool.query(sql, params).then(([rows]) => rows);
+// Every query is timed for the admin Speed page (slowest queries, time spent per query shape).
+const hooks = { onQuery: null };
+const q = (sql, params) => {
+  const t = process.hrtime.bigint();
+  return pool.query(sql, params).then(([rows]) => rows).finally(() => { if (hooks.onQuery) { try { hooks.onQuery(sql, Number(process.hrtime.bigint() - t) / 1e6); } catch {} } });
+};
 const one = async (sql, params) => (await q(sql, params))[0] || null;
 
-module.exports = { init, q, one, get pool() { return pool; } };
+module.exports = { init, q, one, hooks, get pool() { return pool; } };

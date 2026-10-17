@@ -55,6 +55,7 @@ export function openSettings() {
       h('div', { class: 'profile-top' },
         h('button', { onclick: changeAvatar, 'aria-label': 'Change photo' }, avatar({ id: me.id, name: me.name, src: me.avatarV ? `/api/avatar/u/${me.id}?v=${me.avatarV}` : null, size: 96, zoom: true })),
         h('button', { class: 'link small', onclick: changeAvatar }, me.avatarV ? 'Edit photo' : 'Add photo'),
+        me.avatarV ? dpViewsButton() : null,
         h('h3', null, me.name),
         h('div', { class: 'u' }, '@' + me.username),
         me.bio ? h('div', { class: 'bio' }, me.bio) : null),
@@ -98,6 +99,7 @@ export function openSettings() {
       h('div', { class: 'group-label' }, 'Privacy'),
       h('div', { class: 'group' },
         cell({ icon: 'check', color: '#0a84ff', label: 'Send read receipts', right: toggle(me.settings.readReceipts, (v) => setPriv('readReceipts', v)) }),
+        cell({ icon: 'eye', color: '#af52de', label: 'Show when I view photos', sub: 'Off: your views show as “Someone”, and you can’t see who viewed yours', right: toggle(me.settings.dpViews !== false, (v) => setPriv('dpViews', v)) }),
         cell({ icon: 'fire', color: '#ff9f0a', label: 'Personalise Buzz from my chats', sub: 'Topic keywords only — never your messages. Off forgets them.', right: toggle(!!me.settings.buzzFromChats, (v) => setPriv('buzzFromChats', v)) }),
         cell({ icon: 'dots', color: '#5856d6', label: 'Show typing indicator', right: toggle(me.settings.typing, (v) => setPriv('typing', v)) }),
         cell({ icon: 'clock', color: '#34c759', label: 'Show online & last seen', right: toggle(me.settings.lastSeen, (v) => setPriv('lastSeen', v)) }),
@@ -283,6 +285,43 @@ async function shareLink(url, me, text) {
   if (navigator.share) { try { await navigator.share(data); return; } catch (e) { if (e.name === 'AbortError') return; } }
   await navigator.clipboard?.writeText(url);
   toast('Invite link copied');
+}
+
+function dpViewsButton() {
+  const n = h('span', { class: 'n' }, '…');
+  const b = h('button', { class: 'dp-views-btn', onclick: openAvatarViews }, icon('eye'), n, ' photo views');
+  api('GET', '/api/me/avatar-views').then((r) => { n.textContent = String(r.total); if (r.total === 1) b.lastChild.textContent = ' photo view'; }).catch(() => { n.textContent = '0'; });
+  return b;
+}
+
+// Who viewed your profile photo: each person, how many times, and when (last 90 days).
+async function openAvatarViews() {
+  const s = openSheet({ title: 'Photo views', left: { label: 'Done' }, full: true });
+  s.body.replaceChildren(h('div', { class: 'loader' }, h('div', { class: 'spinner' })));
+  try {
+    const r = await api('GET', '/api/me/avatar-views');
+    if (r.users) mergeUsers(r.users);
+    const when = (t) => new Date(t).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' });
+    const ago = (t) => { const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min ago` : m < 1440 ? `${Math.round(m / 60)} h ago` : `${Math.round(m / 1440)} d ago`; };
+    if (r.locked) {
+      s.body.replaceChildren(h('div', { class: 'dpv-empty' }, icon('eye'), h('b', null, `${r.total} view${r.total === 1 ? '' : 's'} in the last 90 days`),
+        h('span', null, 'Turn on “Show when I view photos” in Settings → Privacy to see who they are.')));
+      return;
+    }
+    if (!r.total) { s.body.replaceChildren(h('div', { class: 'dpv-empty' }, icon('eye'), h('b', null, 'No views yet'), h('span', null, 'When someone opens your profile photo, you’ll see it here.'))); return; }
+    s.body.replaceChildren(
+      h('div', { class: 'dpv-sum' }, h('b', null, String(r.total)), h('span', null, `view${r.total === 1 ? '' : 's'} · last 90 days · ${r.viewers.length} ${r.viewers.length === 1 ? 'person' : 'people'}${r.someone ? ' + private views' : ''}`)),
+      h('div', { class: 'group' }, r.viewers.map((v) => {
+        const u = user(v.userId);
+        const times = h('div', { class: 'dpv-times', hidden: true }, v.times.map((t) => h('span', null, when(t))));
+        return h('div', { class: 'dpv-row', onclick: () => { times.hidden = !times.hidden; } },
+          h('div', { class: 'user-row' }, avatar({ id: u.id, name: u.name, src: userAvatar(u.id), size: 44 }),
+            h('div', { class: 't' }, h('b', null, u.name), h('small', null, `Viewed ${v.count} time${v.count === 1 ? '' : 's'} · last ${ago(v.times[0])}`)),
+            h('span', { class: 'dpv-n' }, String(v.count))),
+          times);
+      }), r.someone ? h('div', { class: 'user-row' }, h('div', { class: 'av dpv-anon' }, icon('eye')), h('div', { class: 't' }, h('b', null, 'Someone'), h('small', null, `${r.someone} view${r.someone === 1 ? '' : 's'} from people who keep their views private`))) : null),
+      h('p', { class: 'dpv-note' }, 'A view is someone opening your photo full screen. Tap a person to see each time.'));
+  } catch (e) { s.body.replaceChildren(h('div', { class: 'dpv-empty' }, e.message)); }
 }
 
 async function openBlocked() {

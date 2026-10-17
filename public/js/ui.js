@@ -294,6 +294,9 @@ export function avatar({ id = 0, name = '', src = null, size = 44, online = fals
 // Full-screen profile photo. Back / tap / swipe down closes it.
 export function viewPhoto(src, name = '') {
   const img = h('img', { src, alt: name });
+  // Opening someone's profile photo counts as a view ("Who viewed your photo").
+  const who = /\/api\/avatar\/u\/(\d+)/.exec(src);
+  if (who) fetch(`/api/avatar/u/${who[1]}/view`, { method: 'POST', headers: { 'x-pingme': '1' }, credentials: 'same-origin' }).catch(() => {});
   let startY = null;
   const close = () => { unregister(); root.classList.add('out'); setTimeout(() => root.remove(), 180); };
   const root = h('div', { class: 'photo-view', role: 'dialog', 'aria-label': name || 'Photo', onclick: close },

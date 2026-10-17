@@ -1,7 +1,7 @@
 import { openCamera } from './camera.js';
 import { mountPet, petHidden } from './pet.js';
 import { initBuzz } from './buzz.js';
-import { initAnalytics, setSocket, setScreen, pushScreen, popScreen, reportError } from './analytics.js';
+import { initAnalytics, setSocket, setScreen, pushScreen, popScreen, reportError, track } from './analytics.js';
 import {
   h, reconcileChildren, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, handleLayerPop, whenHistorySettled, longPress, richText, emojiCount,
   fmtTime, fmtListTime, fmtDay, fmtDur, fmtSize, lastSeenText, isIOS, isMobile, isStandalone, store,
@@ -275,7 +275,7 @@ function startApp() {
     chat: (id) => S.chats.get(id),
     chatTitle, chatAvatar, userAvatar,
   });
-  loadChats().then(() => { handleUrl(); loadSafety(); checkRecovery(); if (S.me.settings?.onboarded) askNotificationsOnce(); setTimeout(warmNotificationFaces, 4000); S.calls?.checkRinging(); });
+  loadChats().then(() => { track({ t: 'perf_boot', v: Math.round(performance.now()) }); handleUrl(); loadSafety(); checkRecovery(); if (S.me.settings?.onboarded) askNotificationsOnce(); setTimeout(warmNotificationFaces, 4000); S.calls?.checkRinging(); });
   setupPush(false);
   history.replaceState({ root: true }, '');
   if (globalsBound) return;

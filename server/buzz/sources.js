@@ -147,6 +147,44 @@ const SOURCES = [
     ['reuters', 'Reuters', 'UChqUTb7kYRX8-EiaN3XFrSQ', 'world', 'world'],
     ['dw', 'DW News', 'UCknLrEdhRCp1aegoMqRaCZg', 'world', 'world'],
   ].map(([id, name, ch, region, topic]) => ({ id: 'yt-' + id, name: `${name} · YouTube`, site: 'youtube.com', url: `https://www.youtube.com/feeds/videos.xml?channel_id=${ch}`, region, topic, poll: min(15), social: true, video: true })),
+  // ── Entertainment, movies, music, cricket and viral video: official YouTube channel feeds (free,
+  // no key). Every channel was checked to be live and posting. They play right inside Buzz.
+  ...[
+    // movies, trailers, songs, shows (all of India)
+    ['tseries', 'T-Series', 'UCq-Fj5jknLsUf-MWSy4_brA', 'india'], ['sonymusic', 'Sony Music India', 'UC56gTxNs4f9xZ7Pa2i5xNzg', 'india'],
+    ['zeemusic', 'Zee Music Company', 'UCFFbwnve3yF62-tVXkTyHqg', 'india'], ['saregama', 'Saregama Music', 'UC_A7K2dXFsTMAciGmnNxy-Q', 'india'],
+    ['yrf', 'YRF', 'UCbTLwN10NoCU4WDzLf1JMOA', 'india'], ['netflixindia', 'Netflix India', 'UCZSNzBgFub_WWil6TOTYwAg', 'india'],
+    ['primevideoin', 'Prime Video India', 'UC4zWG9LccdWGUlF77LZ8toA', 'india'], ['jiohotstar', 'JioHotstar', 'UC0PTktRYpZXb6On0_zFKWIg', 'india'],
+    ['sonyliv', 'Sony LIV', 'UCOQNJjhXwvAScuELTT_i7cQ', 'india'], ['zee5', 'ZEE5', 'UCXOgAl4w-FQero1ERbGHpXQ', 'india'],
+    ['colorstv', 'Colors TV', 'UC55IWqFLDH1Xp7iu1_xknRA', 'india'], ['starplus', 'StarPlus', 'UC-LPIU24bQXVljUXivKEeRQ', 'india'],
+    ['zoom', 'Zoom', 'UCotI-SqRXnkAZX4bMqlRNjw', 'india'], ['pinkvilla', 'Pinkvilla', 'UCkJZQddO3XTCdcLjN019FjA', 'india'],
+    // viral creators
+    ['bbkivines', 'BB Ki Vines', 'UCqwUrj10mAEsqezcItqvwEw', 'india'], ['carryminati', 'CarryMinati', 'UCj22tfcQrWG7EMEKS0qLeEg', 'india'],
+    ['ashishchanchlani', 'Ashish Chanchlani Vines', 'UC7eHZXheF8nVOfwB2PEslMw', 'india'], ['mrbeast', 'MrBeast', 'UCX6OQ3DkcsbYNE6H8uQQuVA', 'world'],
+    ['dudeperfect', 'Dude Perfect', 'UCRijo3ddMTht_IHyNSNXpNQ', 'world'], ['ladbible', 'LADbible', 'UCYRE3PMYatMVXmqmulF0sgA', 'world'],
+    ['netflix', 'Netflix', 'UCWOA1ZGywLbqmigxE4Qlvuw', 'world'],
+    // regional cinema (shown in those cities, and to people who like it)
+    ['adityamusic', 'Aditya Music', 'UCNApqoVYJbYSrni4YsbXzyQ', 'hyderabad'], ['tseriestelugu', 'T-Series Telugu', 'UCnJjcn5FrgrOEp5_N45ZLEQ', 'hyderabad'],
+    ['mythri', 'Mythri Movie Makers', 'UCKZSn5C-RzrLjuWJF8wWiDw', 'hyderabad'], ['telugufilmnagar', 'Telugu Filmnagar', 'UCintIUOJEktQBfhEI9XXpuw', 'hyderabad'],
+    ['suntv', 'Sun TV', 'UCBnxEdpoZwstJqC1yZpOjRA', 'chennai'], ['thinkmusic', 'Think Music India', 'UCLbdVvreihwZRL6kwuEUYsA', 'chennai'],
+    ['sonymusicsouth', 'Sony Music South', 'UCTNtRdBAiZtHP9w7JinzfUg', 'chennai'], ['hombale', 'Hombale Films', 'UCarJoVXH0T2pdtcHBu9J8Bw', 'bengaluru'],
+  ].map(([id, name, ch, region]) => ({ id: 'yt-' + id, name: `${name} · YouTube`, site: 'youtube.com', url: `https://www.youtube.com/feeds/videos.xml?channel_id=${ch}`, region, topic: 'entertainment', poll: min(20), social: true, video: true })),
+  ...[
+    ['starsports', 'Star Sports', 'UCmqfX0S3x0I3uwLkPdpX03w'], ['sonysports', 'Sony Sports Network', 'UC_WKb6N9iTGc77hxwXLDrbA'],
+    ['cricbuzz', 'Cricbuzz', 'UCSRQXk5yErn4e14vN76upOw'], ['cricinfo', 'ESPNcricinfo', 'UCujuVKmt_utAQZJghxlRMIQ'],
+  ].map(([id, name, ch]) => ({ id: 'yt-' + id, name: `${name} · YouTube`, site: 'youtube.com', url: `https://www.youtube.com/feeds/videos.xml?channel_id=${ch}`, region: 'india', topic: 'sports', poll: min(20), social: true, video: true })),
+  ...[['dhruvrathee', 'Dhruv Rathee', 'UC-CSyyi47VX1lD9zyeABW3w', 'india'], ['technicalguruji', 'Technical Guruji', 'UCOhHO2ICt0ti9KAh-QHvttQ', 'tech']]
+    .map(([id, name, ch, topic]) => ({ id: 'yt-' + id, name: `${name} · YouTube`, site: 'youtube.com', url: `https://www.youtube.com/feeds/videos.xml?channel_id=${ch}`, region: 'india', topic, poll: min(20), social: true, video: true })),
+  // ── What celebrities posted and what's going viral: news coverage of Instagram/X posts, trailers,
+  // OTT releases and box office (Instagram and Threads have no public API for other people's posts).
+  ...[
+    ['celeb-posts', 'Celebrity posts', '(Instagram OR "X post" OR tweet) (actor OR actress OR cricketer OR celebrity)', 'entertainment'],
+    ['viral', 'Viral', '"viral video" OR "goes viral"', 'entertainment'],
+    ['trailers', 'Trailers', 'trailer released OR teaser out', 'entertainment'],
+    ['ott', 'OTT this week', 'OTT release this week', 'entertainment'],
+    ['boxoffice', 'Box office', '"box office collection"', 'entertainment'],
+    ['cricket', 'Cricket', 'cricket match OR IPL OR "Team India"', 'sports'],
+  ].map(([id, name, q, topic]) => ({ id: 'gn-' + id, name: `Google News · ${name}`, site: 'news.google.com', url: GN(q), region: 'india', topic, poll: min(15), aggregator: true })),
   // ── X (Twitter): the most engaging recent posts near the reader and worldwide. Official API only —
   // off until X_BEARER_TOKEN is set (X has no free read access). Polled gently to stay inside the plan.
   ...[
