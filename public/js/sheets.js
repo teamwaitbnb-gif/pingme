@@ -518,7 +518,7 @@ export function openChatInfo(chatId) {
         h('button', { onclick: () => muteMenu(chat).then(draw) }, icon(isMuted(chat) ? 'bell' : 'belloff'), isMuted(chat) ? 'Unmute' : 'Mute'),
         h('button', { onclick: () => searchInChat(chat, s) }, icon('search'), 'Search')),
 
-      group && feature('groupPets') ? petCard(chat) : null,
+      feature('groupPets') ? petCard(chat) : null,
       feature('wrapped') ? h('div', { class: 'group' }, cell({ icon: 'star', color: '#111111', label: 'Chat Wrapped', sub: 'Your month & year together, as a shareable card', chevron: true, onClick: () => openWrapped(chat) })) : null,
 
       group ? h('div', { class: 'group' },
@@ -1188,16 +1188,18 @@ async function shareWrapped(chat, st, lines) {
 
 function petCard(chat) {
   const box = h('div', { class: 'pet' }, h('div', { class: 'spinner' }));
-  api('GET', `/api/chats/${chat.id}/stats?period=all`).then((st) => {
-    const p = st.pet;
+  api('GET', `/api/chats/${chat.id}/pet`).then(({ pet: p }) => {
     const pct = p.next ? Math.min(100, Math.round((p.xp / p.next) * 100)) : 100;
+    const need = (label, v) => h('span', { class: 'pet-chip' }, `${label} ${v}%`);
     box.replaceChildren(
       h('div', { class: 'pet-e' + (p.mood === 'Sleeping' ? ' sleep' : '') }, p.display),
       h('div', { class: 'pet-t' },
         h('b', null, `${p.name} the ${p.level === 0 ? 'Egg' : p.stage}`),
         h('span', { class: 'pet-r r-' + p.rarity.toLowerCase() }, p.rarity),
         h('div', { class: 'pet-bar' }, h('i', { style: { width: pct + '%' } })),
-        h('small', null, `${p.mood} · ${p.next ? `${p.next - p.xp} messages to grow` : 'Fully grown legend'}${st.topWord ? ` · knows “${st.topWord[0]}”` : ''}`),
+        h('small', null, `${p.moodEmoji} ${p.mood} · ${p.next ? `${p.next - p.xp} to grow (messages + care)` : 'Fully grown legend'}`),
+        p.level > 0 ? h('div', { class: 'pet-chips' }, need('🍖', p.hunger), need('💗', p.happiness), need('⚡', p.energy), p.favorite ? h('span', { class: 'pet-chip fav' }, `❤ ${p.favorite.userId === S.me.id ? 'you' : p.favorite.name.split(' ')[0]}`) : null) : null,
+        h('small', null, p.level === 0 ? 'Tap the egg in the chat to wobble it' : 'Tap the pet in the chat to feed, play fetch, pet, rename or dress it up'),
         petHidden(chat.id) ? h('button', { class: 'link small', onclick: (e) => { showPetAgain(chat.id); e.currentTarget.remove(); dispatchEvent(new CustomEvent('pm:pet-show', { detail: chat.id })); toast(`${p.name} is back in the chat`); } }, 'Show pet in chat') : null));
   }).catch(() => box.remove());
   return box;

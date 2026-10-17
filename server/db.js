@@ -434,6 +434,11 @@ async function migrate(dbName) {
       WHERE cm.archived=1 AND cm.cleared_before_id>0
         AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.chat_id=cm.chat_id AND m.id>cm.cleared_before_id AND m.kind<>'system')`);
   }
+  const pets = await cols('chat_pets');
+  if (pets.size && !pets.has('name_enc')) {
+    // Pet 2.0: a name, an outfit, care timestamps and how much each person cares for it.
+    await pool.query('ALTER TABLE chat_pets ADD COLUMN name_enc TEXT NULL, ADD COLUMN outfit VARCHAR(16) NULL, ADD COLUMN played_at DATETIME(3) NULL, ADD COLUMN petted_at DATETIME(3) NULL, ADD COLUMN love_enc TEXT NULL');
+  }
   const chats = await cols('chats');
   if (!chats.has('extra_enc')) await pool.query('ALTER TABLE chats ADD COLUMN extra_enc TEXT NULL AFTER disappear_secs');
   if (!chats.has('incognito_since')) {

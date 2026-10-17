@@ -1,7 +1,7 @@
 // The group pet lives inside the chat: it wanders along the bottom, hops onto message bubbles,
 // sleeps when the chat goes quiet, reacts to what people say, and makes its own sound when tapped.
 // Anyone can feed it, put it in a cage or let it out — everyone in the group sees the same pet.
-import { h, toast, actionSheet } from './ui.js';
+import { h, toast, actionSheet, promptDialog } from './ui.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const svg = (markup) => { const d = document.createElement('div'); d.innerHTML = markup.trim(); return d.firstChild; };
@@ -123,6 +123,20 @@ const CAGE = `
   <rect class="cage-door" x="50" y="40" width="40" height="70" rx="3" fill="none" stroke="#b3b8c2" stroke-width="3"/>
 </svg>`;
 
+// ───── outfits (unlocked as the pet grows) and trick props, drawn on top of the pet ─────
+// Anchors per body: top of the head, the eye line (centre + spacing) and the neck.
+const ANCHOR = { quad: { top: [84, 24], eyes: [87.5, 43, 17], neck: [80, 63] }, owl: { top: [60, 20], eyes: [60, 38, 20], neck: [60, 56] } };
+const PROPS = {
+  crown: (a) => `<g transform="translate(${a.top[0]} ${a.top[1] + 2})"><path d="M-13 0 L-13 -12 L-6.5 -5 L0 -15 L6.5 -5 L13 -12 L13 0 Z" fill="#f6c343" stroke="#d49b1a" stroke-width="1.5" stroke-linejoin="round"/><circle cx="0" cy="-6" r="2.2" fill="#e5484d"/><circle cx="-8" cy="-4" r="1.6" fill="#3e8ef7"/><circle cx="8" cy="-4" r="1.6" fill="#3ecf8e"/></g>`,
+  bow: (a) => `<g transform="translate(${a.top[0] + 10} ${a.top[1] + 3}) rotate(15)"><path d="M0 0 L-10 -7 L-10 7 Z M0 0 L10 -7 L10 7 Z" fill="#ff5c8a" stroke="#d63c6b" stroke-width="1.2" stroke-linejoin="round"/><circle r="3" fill="#d63c6b"/></g>`,
+  glasses: (a) => { const [x, y, s] = a.eyes; return `<g><rect x="${x - s / 2 - 7}" y="${y - 5}" width="14" height="10" rx="4" fill="#1d1d1f" opacity=".92"/><rect x="${x + s / 2 - 7}" y="${y - 5}" width="14" height="10" rx="4" fill="#1d1d1f" opacity=".92"/><path d="M${x - s / 2 + 7} ${y - 1} Q${x} ${y - 4} ${x + s / 2 - 7} ${y - 1}" stroke="#1d1d1f" stroke-width="2" fill="none"/><path d="M${x - s / 2 - 4} ${y - 3} l4 -1" stroke="#fff" stroke-width="1.4" opacity=".6"/></g>`; },
+  scarf: (a) => { const [x, y] = a.neck; return `<g><path d="M${x - 16} ${y - 3} Q${x} ${y + 6} ${x + 16} ${y - 3} L${x + 16} ${y + 4} Q${x} ${y + 13} ${x - 16} ${y + 4} Z" fill="#e5484d"/><path d="M${x - 6} ${y + 6} l-3 16 l7 -1 l1 -14 Z" fill="#c93a3f"/><path d="M${x - 12} ${y + 1} l3 4 M${x - 3} ${y + 4} l3 4 M${x + 6} ${y + 3} l3 4" stroke="#fff" stroke-width="1.5" opacity=".5"/></g>`; },
+  party: (a) => `<g transform="translate(${a.top[0] - 4} ${a.top[1] + 4}) rotate(-12)"><path d="M-10 0 L0 -26 L10 0 Z" fill="#7c5cff"/><path d="M-6.5 -9 L6.5 -9 M-3.5 -17 L3.5 -17" stroke="#ffd60a" stroke-width="3"/><circle cy="-27" r="3.5" fill="#ff5c8a"/></g>`,
+  nightcap: (a) => `<g transform="translate(${a.top[0]} ${a.top[1] + 4})"><path d="M-14 0 C-12 -16 8 -22 18 -8 C20 -2 22 4 24 8 C18 2 12 -2 14 0 Z" fill="#3e63dd"/><path d="M-15 0 L15 0" stroke="#fff" stroke-width="4" stroke-linecap="round"/><circle cx="24" cy="9" r="3.5" fill="#fff"/></g>`,
+};
+const BALL = '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" fill="#c6f432" stroke="#9cc21f" stroke-width="1.5"/><path d="M4 7 C10 10 10 16 5 19 M20 5 C14 9 14 15 19 19" stroke="#fff" stroke-width="1.6" fill="none"/></svg>';
+const CONFETTI = ['#ff5c8a', '#ffd60a', '#3ecf8e', '#3e8ef7', '#a78bfa'].map((c) => `<svg viewBox="0 0 10 10"><rect width="10" height="6" rx="1.5" fill="${c}"/></svg>`);
+
 const TREATS = {
   fish: '<svg viewBox="0 0 40 24"><path d="M4 12 C12 2 26 2 32 12 C26 22 12 22 4 12 Z" fill="#7fb7e8"/><path d="M32 12 L40 4 L40 20 Z" fill="#5b9bd5"/><circle cx="12" cy="10" r="2" fill="#1d1d1f"/></svg>',
   bone: '<svg viewBox="0 0 44 20"><path d="M8 4 a5 5 0 1 0 0 8 h28 a5 5 0 1 0 0 -8 a5 5 0 1 0 0 8 h-28" fill="#f6efe2" stroke="#d8cdb8" stroke-width="1.5"/></svg>',
@@ -203,11 +217,25 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
   }
   const ro = new ResizeObserver(fit); ro.observe(msgs); ro.observe(conv);
 
+  let trick = null; // temporary prop for a trick ('party'), shown over the outfit
+  function dress(el) {
+    if (kind === 'egg') return;
+    const a = ANCHOR[kind === 'owl' ? 'owl' : 'quad'];
+    const head = el.querySelector('.head');
+    const sleepingAtNight = mode === 'sleep' && state.night;
+    const hat = trick || (sleepingAtNight ? 'nightcap' : null);
+    const wear = (id) => { const g = document.createElementNS(NS, 'g'); g.setAttribute('class', 'outfit o-' + id); g.innerHTML = PROPS[id](a); return g; };
+    if (state.outfit === 'scarf' && head) head.parentNode.insertBefore(wear('scarf'), head);
+    if (state.outfit && state.outfit !== 'scarf' && !(hat && ['crown', 'bow'].includes(state.outfit))) (head || el).append(wear(state.outfit));
+    if (hat) (head || el).append(wear(hat));
+  }
   function draw() {
     if (!state) return;
     kind = state.level === 0 ? 'egg' : state.kind;
     inner.innerHTML = '';
-    inner.append(svg(kind === 'egg' ? egg() : kind === 'owl' ? owl() : quadruped(kind)));
+    const art = svg(kind === 'egg' ? egg() : kind === 'owl' ? owl() : quadruped(kind));
+    dress(art);
+    inner.append(art);
     pet.className = `pet-actor k-${kind} stage-${state.level}` + (state.level >= 5 ? ' legend' : '');
     pet.dataset.mode = mode;
     setCage(state.caged, false);
@@ -218,11 +246,27 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
     if (destroyed) return;
     draw(); fit();
     x = Math.max(10, W() * 0.15); targetX = x; place();
-    if (state.mood === 'Sleeping' && !state.caged) setMode('sleep');
+    if ((state.mood === 'Sleeping' || (state.night && state.energy < 35)) && !state.caged) setMode('sleep');
     raf = requestAnimationFrame(loop);
+    // Its favourite person gets a hello.
+    if (state.favorite?.userId === me() && kind !== 'egg' && !state.caged && mode !== 'sleep') setTimeout(() => { facing = 1; place(); react('happy', 1200); burst(HEART, 5); say(`hi ${userName(me())}!`, 2200); }, 1200);
+    needsHint();
   }
+  // Now and then it tells you what it needs.
+  let hintAt = 0;
+  function needsHint() {
+    if (!state || kind === 'egg' || state.caged || Date.now() - hintAt < 45000) return;
+    if (state.hunger < 25) { hintAt = Date.now(); say('hungry… 🍖', 2400); react('sad', 1400); }
+    else if (state.energy < 35 && mode !== 'sleep') { hintAt = Date.now(); say('*yawn*', 1800); }
+    else if (state.happiness < 40) { hintAt = Date.now(); say('play with me?', 2200); react('tilt', 1300); }
+  }
+  const hintTimer = setInterval(needsHint, 50000);
 
-  function setMode(m) { mode = m; pet.dataset.mode = m; }
+  function setMode(m) {
+    const wasSleep = mode === 'sleep';
+    mode = m; pet.dataset.mode = m;
+    if (state?.night && wasSleep !== (m === 'sleep')) draw(); // nightcap on/off
+  }
   function place() {
     const s = SIZE();
     x = Math.max(4, Math.min(W() - s - 4, x));
@@ -342,25 +386,79 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
     }, 120);
   }
 
-  async function act(action) {
+  // Fetch: the ball is thrown across the chat, the pet races after it and brings it back.
+  let fetching = false;
+  function fetchBall(where, byMe) {
+    if (state.caged || kind === 'egg' || fetching) return;
+    fetching = true;
+    const s = SIZE(), home = x;
+    const ball = h('i', { class: 'pet-ball' });
+    ball.innerHTML = BALL;
+    const bx = Math.max(10, Math.min(W() - 34, 10 + where * (W() - 44)));
+    ball.style.setProperty('--from', (x + s / 2) + 'px'); ball.style.setProperty('--to', bx + 'px');
+    ball.style.left = bx + 'px';
+    fx.append(ball);
+    if (byMe) sound('chomp');
+    if (mode === 'sleep') setMode('idle');
+    perch = null; place();
+    setTimeout(() => { targetX = Math.max(4, bx - s * 0.35); facing = targetX > x ? 1 : -1; setMode('run'); }, 450);
+    const t = setInterval(() => {
+      if (destroyed) return clearInterval(t);
+      if (mode !== 'run' || Math.abs(targetX - x) < 4) {
+        clearInterval(t);
+        ball.classList.add('carried');
+        const carry = setInterval(() => { ball.style.left = (x + (facing > 0 ? s * 0.78 : s * 0.02)) + 'px'; }, 30);
+        setTimeout(() => { targetX = home; facing = targetX > x ? 1 : -1; setMode('run'); }, 350);
+        const back = setInterval(() => {
+          if (destroyed || Math.abs(targetX - x) < 4 || mode !== 'run') {
+            clearInterval(back); clearInterval(carry);
+            ball.classList.add('drop'); setTimeout(() => ball.remove(), 700);
+            setMode('happy'); burst(HEART, 5); sound(kind); fetching = false;
+            setTimeout(() => setMode('idle'), 1000);
+          }
+        }, 60);
+      }
+    }, 60);
+  }
+
+  async function act(action, body = {}) {
     closeMenu();
-    try { const r = await api('POST', `/api/chats/${chatId}/pet`, { action }); state = r.pet; } catch (e) { toast(e.message, { error: true }); }
+    try { const r = await api('POST', `/api/chats/${chatId}/pet`, { action, ...body }); state = r.pet; draw(); place(); } catch (e) { toast(e.message, { error: true }); }
+  }
+  async function rename() {
+    closeMenu();
+    const name = await promptDialog({ title: 'Name your pet', value: state.name, placeholder: state.defaultName, maxlength: 20, ok: 'Save', note: 'Everyone in this chat sees the new name. Say it in a message and it comes running.' });
+    if (name && name.trim() && name.trim() !== state.name) act('rename', { name: name.trim() });
+  }
+  async function chooseOutfit() {
+    closeMenu();
+    const choice = await actionSheet({ title: state.nextOutfit ? `More outfits unlock as ${state.name} grows (next: ${state.nextOutfit})` : 'Outfits',
+      actions: [...state.outfits.map((o) => ({ label: o.label + (state.outfit === o.id ? ' ✓' : ''), value: o.id })), state.outfit ? { label: 'No outfit', value: 'none' } : null].filter(Boolean) });
+    if (choice) act('outfit', { outfit: choice === 'none' ? null : choice });
   }
 
   function closeMenu() { menu?.remove(); menu = null; }
   function openMenu() {
     closeMenu();
     const L = state;
+    const bar = (label, v, cls) => h('div', { class: 'pet-need ' + cls }, h('span', null, label), h('div', { class: 'pn-track' }, h('i', { style: { width: v + '%' } })), h('small', null, v));
     menu = h('div', { class: 'pet-menu' },
-      h('b', null, L.level === 0 ? 'Mystery egg' : L.name),
-      h('span', null, L.level === 0 ? `Hatches at 20 messages · ${L.xp}/20` : `${L.stage} · ${L.mood}${L.next ? ` · ${L.xp}/${L.next}` : ''}`),
+      h('div', { class: 'pet-menu-top' }, h('b', null, L.level === 0 ? 'Mystery egg' : L.name), L.level > 0 ? h('span', { class: 'pet-rar r-' + L.rarity.toLowerCase() }, L.rarity) : null),
+      h('span', null, L.level === 0 ? `Hatches at 20 messages · ${L.xp}/20` : `${L.stage} ${L.moodEmoji} ${L.mood}${L.next ? ` · ${L.xp}/${L.next} to grow` : ''}`),
+      L.level > 0 ? h('div', { class: 'pet-needs' }, bar('Food', L.hunger, 'food'), bar('Joy', L.happiness, 'joy'), bar('Energy', L.energy, 'energy')) : null,
+      L.favorite ? h('span', { class: 'pet-fav' }, `❤ Loves ${L.favorite.userId === me() ? 'you' : L.favorite.name.split(' ')[0]} most`) : null,
       h('div', { class: 'pet-menu-row' },
-        L.level > 0 && !L.caged ? h('button', { onclick: () => act('feed') }, 'Feed') : null,
-        L.level > 0 ? h('button', { onclick: () => act(L.caged ? 'release' : 'cage') }, L.caged ? 'Let it out' : 'Put in cage') : null,
+        L.level > 0 && !L.caged ? h('button', { onclick: () => act('feed') }, '🍖 Feed') : null,
+        L.level > 0 && !L.caged ? h('button', { onclick: () => act('play') }, '🎾 Play') : null,
+        L.level > 0 && !L.caged ? h('button', { onclick: () => { closeMenu(); react('happy', 1100); burst(HEART, 6); sound(kind); api('POST', `/api/chats/${chatId}/pet`, { action: 'poke' }).then((r) => { state = r.pet; }).catch(() => {}); } }, '🤚 Pet') : null),
+      h('div', { class: 'pet-menu-row small' },
+        L.level > 0 ? h('button', { onclick: rename }, 'Rename') : null,
+        L.level > 0 && L.outfits.length ? h('button', { onclick: chooseOutfit }, 'Outfit') : null,
+        L.level > 0 ? h('button', { onclick: () => act(L.caged ? 'release' : 'cage') }, L.caged ? 'Let out' : 'Cage') : null,
         h('button', { onclick: () => { closeMenu(); hideForMe(); } }, 'Hide')));
     const s = SIZE();
-    menu.style.left = Math.max(8, Math.min(W() - 230, x + s / 2 - 110)) + 'px';
-    menu.style.top = Math.max(4, y - 96) + 'px';
+    menu.style.left = Math.max(8, Math.min(W() - 250, x + s / 2 - 120)) + 'px';
+    menu.style.top = Math.max(4, y - 190) + 'px';
     zone.append(menu);
     setTimeout(() => document.addEventListener('pointerdown', outside, { once: true, capture: true }), 0);
   }
@@ -382,7 +480,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
     sound(kind === 'egg' ? 'egg' : kind);
     if (kind === 'egg') react('wobble', 900);
     else { react('happy', 1000); burst(HEART, 5); }
-    api('POST', `/api/chats/${chatId}/pet`, { action: 'poke' }).catch(() => {});
+    api('POST', `/api/chats/${chatId}/pet`, { action: 'poke' }).then((r) => { state = r.pet; }).catch(() => {});
     openMenu();
   });
 
@@ -396,11 +494,23 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
     facing = m.senderId === me() ? 1 : -1;
     place();
     if (state.name && t.includes(state.name.toLowerCase())) { targetX = W() / 2 - SIZE() / 2; setMode('run'); setTimeout(() => { react('happy', 1100); burst(HEART, 6); }, 700); return; }
+    // Tricks: party dance, morning stretch, and running to its favourite person's messages.
+    if (/(🎉|🎂|🥳|happy birthday|congrats|congratulations|party)/.test(t)) { party(); return; }
+    if (/\b(good morning|gm|morning)\b/.test(t) || t.includes('☀')) { react('stretch', 1600); say('morning! ☀️', 2000); return; }
+    if (/\b(good night|gn|sleep well)\b/.test(t) || t.includes('🌙')) { react('sit', 1500); say('night night 🌙', 2000); return; }
+    if (state.favorite && m.senderId === state.favorite.userId && Math.random() < 0.6) { targetX = facing > 0 ? W() - SIZE() - 12 : 12; setMode('run'); setTimeout(() => { react('happy', 1000); burst(HEART, 4); }, 900); return; }
     if (/(❤|😍|🥰|love|miss you|cute)/.test(t)) { react('happy', 1200); burst(HEART, 6); return; }
     if (/(😂|🤣|haha|lol|lmao|hehe)/.test(t)) { react('laugh', 1200); say('ha!'); return; }
     if (/\?\s*$/.test(t)) { react('tilt', 1300); say('?'); return; }
     if (m.kind === 'image' || m.kind === 'video') { react('react', 900); say('ooh'); return; }
     react('react', 700);
+  }
+  function party() {
+    trick = 'party'; draw(); place();
+    react('dance', 3200);
+    for (let i = 0; i < 3; i++) setTimeout(() => burst(CONFETTI[Math.floor(Math.random() * CONFETTI.length)], 6, 'confetti'), i * 350);
+    say('🎉 yay!', 2200);
+    setTimeout(() => { trick = null; draw(); place(); }, 3400);
   }
   function onTyping() { if (state && mode === 'sleep' && !state.caged) { setMode('idle'); } lastActivity = Date.now(); if (state && !state.caged && kind !== 'egg') react('perk', 900); }
   function onEvent(ev) {
@@ -411,6 +521,9 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
       if (was !== state.caged) setCage(state.caged, true);
       if (ev.by !== me()) toast(`${userName(ev.by)} ${state.caged ? 'put ' + (state.name || 'the pet') + ' in the cage' : 'let ' + (state.name || 'the pet') + ' out'}`, { timeout: 2200 });
     } else if (ev.action === 'feed') { feed(ev.by === me()); if (ev.by !== me()) say('yum!'); }
+    else if (ev.action === 'play') { fetchBall(ev.throwX ?? Math.random(), ev.by === me()); if (ev.by !== me()) toast(`${userName(ev.by)} is playing fetch with ${state.name}`, { timeout: 2000 }); }
+    else if (ev.action === 'rename') { draw(); place(); react('happy', 1200); burst(HEART, 6); say(`I'm ${state.name}!`, 2400); }
+    else if (ev.action === 'outfit') { draw(); place(); react('happy', 900); say(state.outfit ? 'how do I look?' : 'ahh, comfy', 1800); }
     else if (ev.action === 'poke' && ev.by !== me()) { react(state.caged ? 'shake' : kind === 'egg' ? 'wobble' : 'happy', 900); if (!state.caged && kind !== 'egg') burst(HEART, 3); }
   }
 
@@ -419,7 +532,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
 
   function destroy() {
     destroyed = true;
-    cancelAnimationFrame(raf); clearInterval(blink); ro.disconnect();
+    cancelAnimationFrame(raf); clearInterval(blink); clearInterval(hintTimer); ro.disconnect();
     zone.remove();
   }
 

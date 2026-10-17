@@ -432,19 +432,48 @@ module.exports = function features(x) {
 
   // ───────────────────── the pet that lives inside group chats ─────────────────────
   // Light-weight state for the roaming pet: who it is, how grown/happy, and whether someone caged it.
+  // Pet 2.0 — needs (hunger, happiness, energy), a name, outfits unlocked as it grows, and a favourite
+  // person (whoever feeds, plays with and pets it most). Care also helps it grow.
+  const OUTFITS = [['bow', 2, 'Bow'], ['glasses', 3, 'Sunglasses'], ['scarf', 4, 'Scarf'], ['crown', 5, 'Crown']];
+  const clamp = (v) => Math.max(0, Math.min(100, Math.round(v)));
+  const istHour = () => new Date(Date.now() + 5.5 * 3600000).getUTCHours();
   async function petState(chatId) {
     const all = await db.one("SELECT COUNT(*) n, MAX(created_at) last FROM messages WHERE chat_id=? AND deleted=0 AND kind<>'system'", [chatId]);
-    const row = await db.one('SELECT caged, caged_by, fed_at FROM chat_pets WHERE chat_id=?', [chatId]);
-    const p = petFor(chatId, Number(all.n), ms(all.last));
-    return { ...p, caged: !!row?.caged, cagedBy: row?.caged_by ? Number(row.caged_by) : null, fedAt: row?.fed_at ? ms(row.fed_at) : null };
+    const row = await db.one('SELECT caged, caged_by, fed_at, name_enc, outfit, played_at, petted_at, love_enc FROM chat_pets WHERE chat_id=?', [chatId]);
+    const love = (row?.love_enc && C.decJson(row.love_enc, {})) || {};
+    const care = Object.values(love).reduce((a, b) => a + b, 0);
+    const p = petFor(chatId, Number(all.n) + Math.round(care / 2), ms(all.last));
+    const hrs = (t) => (t ? (Date.now() - ms(t)) / 3600000 : 999);
+    const night = istHour() >= 23 || istHour() < 6;
+    const hunger = clamp(100 - hrs(row?.fed_at) * 8);                                   // full after a meal, hungry in ~10 h
+    const lastCare = Math.min(hrs(row?.fed_at), hrs(row?.played_at), hrs(row?.petted_at));
+    const chatH = all.last ? (Date.now() - ms(all.last)) / 3600000 : 999;
+    const happiness = clamp(0.4 * (chatH < 2 ? 100 : chatH < 12 ? 75 : chatH < 48 ? 45 : 15) + 0.3 * (lastCare < 1 ? 100 : lastCare < 6 ? 70 : lastCare < 24 ? 40 : 10) + 0.3 * hunger);
+    const energy = clamp((night ? 30 : 92) - (hrs(row?.played_at) < 0.25 ? 30 : 0));
+    let mood = p.mood, moodEmoji = p.moodEmoji;
+    if (p.level > 0) {
+      [mood, moodEmoji] = row?.caged ? ['Caged', '😿'] : hunger < 25 ? ['Hungry', '🍖'] : energy < 35 ? ['Sleepy', '😴'] : happiness >= 70 ? ['Happy', '😊'] : happiness >= 40 ? ['Content', '🙂'] : ['Lonely', '😢'];
+      if (mood === 'Sleepy' && chatH > 120) [mood, moodEmoji] = ['Sleeping', '💤'];
+    }
+    const fav = Object.entries(love).sort((a, b) => b[1] - a[1])[0];
+    const favorite = fav && fav[1] >= 3 ? { userId: Number(fav[0]), name: (await publicUser(Number(fav[0]))).name, love: fav[1] } : null;
+    const outfits = OUTFITS.filter(([, lvl]) => p.level >= lvl).map(([id, , label]) => ({ id, label }));
+    const outfit = row?.outfit && outfits.some((o) => o.id === row.outfit) ? row.outfit : null;
+    return { ...p, defaultName: p.name, name: (row?.name_enc && C.dec(row.name_enc)) || p.name, mood, moodEmoji, hunger, happiness, energy, night,
+      favorite, outfit, outfits, nextOutfit: OUTFITS.find(([, lvl]) => p.level < lvl)?.[2] || null,
+      caged: !!row?.caged, cagedBy: row?.caged_by ? Number(row.caged_by) : null, fedAt: row?.fed_at ? ms(row.fed_at) : null };
+  }
+  async function addLove(chatId, uid, n) {
+    const row = await db.one('SELECT love_enc FROM chat_pets WHERE chat_id=?', [chatId]);
+    const love = (row?.love_enc && C.decJson(row.love_enc, {})) || {};
+    love[uid] = Math.min(100000, (love[uid] || 0) + n);
+    await db.q('INSERT INTO chat_pets (chat_id, love_enc) VALUES (?,?) ON DUPLICATE KEY UPDATE love_enc=VALUES(love_enc)', [chatId, C.enc(love)]);
   }
 
   app.get('/api/chats/:id/pet', auth, wrap(async (req, res) => {
     const chatId = toInt(req.params.id);
     await requireMember(chatId, req.uid);
-    const chat = await db.one('SELECT type FROM chats WHERE id=?', [chatId]);
-    if (chat?.type !== 'group') throw notFound();
-    res.json({ pet: await petState(chatId) });
+    res.json({ pet: await petState(chatId) }); // groups and one-to-one chats both have a pet
   }));
 
   // cage / release / feed are shared with the whole group; poke just makes it react for everyone.
@@ -453,15 +482,37 @@ module.exports = function features(x) {
     await requireMember(chatId, req.uid);
     rateLimit('pet:' + req.uid, 40, 60000);
     const action = String(req.body.action || '');
-    if (!['cage', 'release', 'feed', 'poke'].includes(action)) throw bad('Unknown action');
+    if (!['cage', 'release', 'feed', 'poke', 'play', 'rename', 'outfit'].includes(action)) throw bad('Unknown action');
+    const extra = {};
+    if (action === 'rename') {
+      const name = clampStr(String(req.body.name || ''), 20).replace(/[\u0000-\u001f<>]/g, '').trim();
+      if (!name) throw bad('Give it a name');
+      rateLimit('petname:' + chatId, 6, 3600000);
+      await db.q('INSERT INTO chat_pets (chat_id, name_enc) VALUES (?,?) ON DUPLICATE KEY UPDATE name_enc=VALUES(name_enc)', [chatId, C.enc(name)]);
+      extra.name = name;
+      await insertMessage({ chatId, senderId: req.uid, kind: 'system', body: { sys: { type: 'pet-name', name } } });
+    } else if (action === 'outfit') {
+      const st = await petState(chatId);
+      const o = req.body.outfit ? String(req.body.outfit) : null;
+      if (o && !st.outfits.some((x) => x.id === o)) throw bad('That outfit unlocks later');
+      await db.q('INSERT INTO chat_pets (chat_id, outfit) VALUES (?,?) ON DUPLICATE KEY UPDATE outfit=VALUES(outfit)', [chatId, o]);
+    } else if (action === 'play') {
+      await db.q('INSERT INTO chat_pets (chat_id, played_at) VALUES (?, CURRENT_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE played_at=CURRENT_TIMESTAMP(3)', [chatId]);
+      await addLove(chatId, req.uid, 2);
+      extra.throwX = Math.random(); // where the ball lands — the same on every phone
+    } else if (action === 'poke') {
+      await db.q('INSERT INTO chat_pets (chat_id, petted_at) VALUES (?, CURRENT_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE petted_at=CURRENT_TIMESTAMP(3)', [chatId]);
+      try { rateLimit('petlove:' + req.uid + ':' + chatId, 10, 600000); await addLove(chatId, req.uid, 1); } catch {}
+    }
     if (action === 'cage' || action === 'release') {
       await db.q('INSERT INTO chat_pets (chat_id, caged, caged_by) VALUES (?,?,?) ON DUPLICATE KEY UPDATE caged=VALUES(caged), caged_by=VALUES(caged_by), updated_at=CURRENT_TIMESTAMP(3)',
         [chatId, action === 'cage' ? 1 : 0, action === 'cage' ? req.uid : null]);
     } else if (action === 'feed') {
       await db.q('INSERT INTO chat_pets (chat_id, fed_at) VALUES (?, CURRENT_TIMESTAMP(3)) ON DUPLICATE KEY UPDATE fed_at=CURRENT_TIMESTAMP(3)', [chatId]);
+      await addLove(chatId, req.uid, 3);
     }
     const pet = await petState(chatId);
-    io.to('c:' + chatId).emit('pet:event', { chatId, action, by: req.uid, pet, at: Date.now() });
+    io.to('c:' + chatId).emit('pet:event', { chatId, action, by: req.uid, pet, at: Date.now(), ...extra });
     res.json({ pet });
   }));
 

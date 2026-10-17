@@ -1738,3 +1738,41 @@ html, body { touch-action: manipulation; overscroll-behavior: none; -webkit-text
 .dpv-empty { display: grid; justify-items: center; gap: 8px; text-align: center; padding: 60px 24px; color: var(--text2); }
 .dpv-empty svg { width: 40px; height: 40px; }
 .dpv-empty b { color: var(--text); font-size: 17px; }
+
+/* Pet 2.0: needs, outfits, fetch, tricks */
+.pet-menu { width: 240px; gap: 3px; }
+.pet-menu-top { display: flex; align-items: center; gap: 8px; }
+.pet-rar { font-size: 10.5px; font-weight: 800; text-transform: uppercase; letter-spacing: .5px; padding: 2px 7px; border-radius: 8px; background: var(--fill); color: var(--text2); }
+.pet-rar.r-rare { color: #0a84ff; background: rgba(10,132,255,.14); } .pet-rar.r-epic { color: #af52de; background: rgba(175,82,222,.14); } .pet-rar.r-legendary { color: #c9a227; background: rgba(201,162,39,.16); }
+.pet-needs { display: grid; gap: 5px; margin-top: 8px; }
+.pet-need { display: grid; grid-template-columns: 48px 1fr 24px; align-items: center; gap: 8px; font-size: 12px; color: var(--text2); }
+.pet-need small { text-align: right; font-variant-numeric: tabular-nums; }
+.pn-track { height: 7px; border-radius: 4px; background: var(--fill); overflow: hidden; }
+.pn-track i { display: block; height: 100%; border-radius: 4px; transition: width .4s; }
+.pet-need.food i { background: linear-gradient(90deg, #ff9f0a, #ffd60a); }
+.pet-need.joy i { background: linear-gradient(90deg, #ff5c8a, #ff9fb8); }
+.pet-need.energy i { background: linear-gradient(90deg, #30d158, #8ce99a); }
+.pet-fav { font-size: 12.5px; color: #ff5c8a !important; font-weight: 600; margin-top: 4px; }
+.pet-menu-row.small { margin-top: 6px; }
+.pet-menu-row.small button { padding: 6px 4px; font-size: 12px; font-weight: 600; background: transparent; color: var(--text2); }
+.pet-menu-row.small button:first-child { background: transparent; color: var(--text2); }
+.pet-menu-row:not(.small) button:nth-child(2) { background: #c6f432; color: #1d1d1f; }
+.pet-svg .outfit { pointer-events: none; }
+.pet-ball { position: absolute; bottom: 6px; width: 22px; height: 22px; pointer-events: none; animation: petThrow .5s cubic-bezier(.2,.7,.4,1) both; }
+.pet-ball svg { width: 100%; height: 100%; display: block; }
+.pet-ball.carried { animation: none; bottom: 18px; transition: left .03s linear; }
+.pet-ball.drop { animation: petBallDrop .6s ease-out forwards; }
+.pet-particle.confetti { width: 9px; height: 7px; animation: petConfetti 1.6s ease-out forwards; }
+.pet-actor[data-mode="dance"] .pet-svg { animation: petDance .42s ease-in-out infinite alternate; }
+.pet-actor[data-mode="dance"] .tail { animation-duration: .25s; }
+.pet-actor[data-mode="stretch"] .body { animation: petStretch 1.5s ease-in-out; }
+.pet-actor[data-mode="stretch"] .head { transform: rotate(-12deg); }
+@keyframes petThrow { from { left: var(--from); bottom: 30px; transform: rotate(0) scale(.6); } 50% { bottom: 120px; } to { left: var(--to); bottom: 6px; transform: rotate(540deg) scale(1); } }
+@keyframes petBallDrop { 0% { bottom: 18px; } 40% { bottom: 4px; } 60% { bottom: 12px; } 100% { bottom: 4px; opacity: 0; } }
+@keyframes petConfetti { 0% { opacity: 0; transform: translate(0, 0) rotate(0); } 10% { opacity: 1; } 100% { opacity: 0; transform: translate(var(--dx, 0), -90px) rotate(400deg); } }
+@keyframes petDance { from { transform: rotate(-9deg) translateY(0); } to { transform: rotate(9deg) translateY(-6px); } }
+@keyframes petStretch { 30%, 60% { transform: scaleX(1.12) scaleY(.9) translateY(3px); } }
+
+.pet-chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.pet-chip { font-size: 12px; padding: 2px 8px; border-radius: 10px; background: var(--fill); color: var(--text2); font-weight: 600; }
+.pet-chip.fav { color: #ff5c8a; background: rgba(255,92,138,.13); }

@@ -922,7 +922,7 @@ addEventListener('offline', updateSmsBar);
 
 function startPet(chat) {
   S.pet?.destroy(); S.pet = null;
-  if (chat.type !== 'group' || !feature('groupPets') || petHidden(chat.id)) return;
+  if (!feature('groupPets') || petHidden(chat.id)) return; // every chat — group or one-to-one — has a pet
   S.pet = mountPet({
     conv: els.conv, msgs: els.msgs, chatId: chat.id, api,
     me: () => S.me?.id, userName: (id) => user(id).name.split(' ')[0], sounds: () => prefs().sounds,
@@ -1221,6 +1221,7 @@ function systemText(m, chat) {
     case 'added': return `${who} added ${names(s.users)}`;
     case 'removed': return `${who} removed ${names([s.user])}`;
     case 'left': return `${who === 'You' ? 'You' : user(s.user).name} left the conversation`;
+    case 'pet-name': return `${who} named the pet “${s.name}”`;
     case 'incognito': return s.on ? `${who} started an incognito chat · messages disappear when it ends`
       : s.reason === 'idle' ? 'Incognito chat ended · its messages were deleted' : `${who} ended the incognito chat · its messages were deleted`;
     case 'disappear': return s.secs ? `${who} turned on disappearing messages (${({ 30: '30 seconds', 300: '5 minutes', 3600: '1 hour', 86400: '24 hours', 604800: '7 days', 7776000: '90 days' })[s.secs]})` : `${who} turned off disappearing messages`;
