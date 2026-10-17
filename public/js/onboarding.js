@@ -2,7 +2,8 @@
 // The same list powers Settings → Features.
 import { h, icon, toggle, toast } from './ui.js';
 import { S, api } from './core.js';
-import { storyStrip } from './stories.js';
+import { storyStrip, openStories } from './stories.js';
+import { featureCards } from './cards.js';
 
 export const FEATURE_GROUPS = [
   {
@@ -75,8 +76,10 @@ export function showOnboarding(onDone) {
     strip.replaceChildren(storyStrip(FEATURE_GROUPS, features, (k, v) => { features[k] = v; draw(); }));
     drawList();
   };
+  const all = FEATURE_GROUPS.flatMap((g) => g.items);
+  const set = (k, v) => { features[k] = v; draw(); };
   const drawList = () => list.replaceChildren(
-    ...featureList(features, (k, v) => { features[k] = v; }).flat(),
+    ...featureCards(FEATURE_GROUPS, features, set, (key) => openStories(all, all.findIndex((it) => it[0] === key), features, set)),
     h('div', { class: 'group-label' }, 'Privacy'),
     h('div', { class: 'group feat-group' }, PRIVACY.map((it) => row(it, privacy[it[0]] !== false, (k, v) => { privacy[k] = v; }))));
   const btn = h('button', { class: 'btn', onclick: async () => {

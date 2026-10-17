@@ -11,8 +11,9 @@ import {
   send, setSendAt, sendPayload, jumpTo, setupPush, logout,
   setMessageOpts, messageOpts, setCheckin, startSosTracking,
 } from './app.js';
-import { featureList, FEATURE_GROUPS } from './onboarding.js';
-import { storyStrip } from './stories.js';
+import { FEATURE_GROUPS } from './onboarding.js';
+import { featureCards, collectCard, paintCard, DECK } from './cards.js';
+import { openStories } from './stories.js';
 import { lockEnabled, hasDuress, setPin, setDuressPin, disableLock, hiddenChats, setHiddenChats, checkPin } from './lock.js';
 import { signPhoto } from './keys.js';
 import { installApp } from './install.js';
@@ -914,10 +915,17 @@ export function openFeatures() {
       try { const { user: u } = await api('PATCH', '/api/me', { settings: { features } }); S.me = u; renderMessages(); } catch (e) { err(e); }
     }, 300);
   };
-  const draw = () => s.body.replaceChildren(
-    h('p', { class: 'muted small', style: { margin: '0 4px 12px' } }, 'Tap a circle to see what each feature does. Switch off anything you don’t need.'),
-    storyStrip(FEATURE_GROUPS, features, (k, v) => { features[k] = v; save(); draw(); }),
-    ...featureList(features, (k, v) => { features[k] = v; save(); draw(); }).flat());
+  // Features as collectible cards: one swipeable deck per section; tap a card for the full story.
+  const all = FEATURE_GROUPS.flatMap((g) => g.items);
+  const set = (k, v) => { features[k] = v; save(); draw(); };
+  const draw = () => {
+    const x = s.body.scrollTop;
+    const on = all.filter(([k]) => features[k] !== false).length;
+    s.body.replaceChildren(
+      h('div', { class: 'fc-intro' }, h('b', null, `${on} of ${all.length} cards on`), h('span', null, 'Swipe through each deck. Tap a card to see it in action, flip the switch to turn it off.')),
+      ...featureCards(FEATURE_GROUPS, features, set, (key) => openStories(all, all.findIndex((it) => it[0] === key), features, set)));
+    s.body.scrollTop = x;
+  };
   draw();
 }
 
@@ -1138,11 +1146,15 @@ export function openWrapped(chat) {
     let st;
     try { st = await api('GET', `/api/chats/${chat.id}/stats?period=${period}`); } catch (e) { return err(e); }
     const lines = wrappedLines(st);
+    const when = period === 'month' ? new Date().toLocaleDateString([], { month: 'long', year: 'numeric' }) : period === 'year' ? String(new Date().getFullYear()) : 'All time';
+    // The same collectible cards as Features: a cover card, then one card per highlight.
+    const deck = h('div', { class: 'fcards wr-deck' },
+      collectCard({ size: 'lg', color: 'Fun', ic: 'gift', kicker: `CHAT WRAPPED · ${when.toUpperCase()}`, big: st.total.toLocaleString(), title: 'messages', text: `${chatTitle(chat)} · ${period === 'month' ? 'last 30 days' : period === 'year' ? 'last 12 months' : 'since the start'}`, number: 1 }),
+      ...lines.map(([e, t, v], i) => collectCard({ size: 'lg', color: DECK[(i + 1) % DECK.length], ic: e, kicker: 'CHAT WRAPPED', big: v.length <= 9 ? v : null, title: v.length <= 9 ? t : v, text: v.length <= 9 ? null : t, number: i + 2 })));
     s.body.lastChild.replaceWith(h('div', { class: 'wrapped' },
-      st.total ? null : h('p', { class: 'muted' }, 'No messages in this period yet — chat a bit and come back!'),
-      h('div', { class: 'wr-big' }, st.total.toLocaleString()), h('div', { class: 'wr-sub' }, `messages ${period === 'month' ? 'in the last 30 days' : period === 'year' ? 'in the last year' : 'so far'}`),
-      ...lines.map(([e, t, v]) => h('div', { class: 'wr-row' }, h('span', { class: 'wr-e' }, icon(e)), h('span', { class: 'wr-t' }, t), h('b', null, v))),
-      st.total ? h('button', { class: 'btn', style: { marginTop: '18px' }, onclick: () => shareWrapped(chat, st, lines) }, icon('share'), 'Share card') : null));
+      st.total ? deck : h('p', { class: 'muted' }, 'No messages in this period yet — chat a bit and come back!'),
+      st.total ? h('div', { class: 'wr-hint' }, `${lines.length + 1} cards · swipe →`) : null,
+      st.total ? h('button', { class: 'btn', style: { marginTop: '14px' }, onclick: () => shareWrapped(chat, st, lines) }, icon('share'), 'Share card') : null));
   };
   draw();
 }
@@ -1165,23 +1177,11 @@ function wrappedLines(st) {
 }
 
 async function shareWrapped(chat, st, lines) {
+  // The shared image is the cover card itself (same look as in the app) with the highlights on it.
   const { c, x } = card();
-  const logo = await logoImage();
-  x.drawImage(logo, 80, 80, 130, 130 * (logo.naturalHeight / logo.naturalWidth || 1.06));
-  x.fillStyle = '#000'; x.font = F(800, 64);
-  x.fillText('Wrapped', 80, 330);
-  x.font = F(500, 36); x.fillStyle = '#666';
-  x.fillText(`${chatTitle(chat)} · ${st.period === 'month' ? new Date().toLocaleDateString([], { month: 'long', year: 'numeric' }) : st.period === 'year' ? new Date().getFullYear() : 'All time'}`.slice(0, 46), 80, 385);
-  x.fillStyle = '#000'; x.font = F(800, 150); x.fillText(st.total.toLocaleString(), 80, 560);
-  x.font = F(500, 36); x.fillStyle = '#666'; x.fillText('messages', 84, 610);
-  lines.forEach(([, t, v], i) => {
-    const y = 720 + i * 72;
-    x.fillStyle = '#000'; x.beginPath(); x.arc(92, y - 11, 6, 0, Math.PI * 2); x.fill();
-    x.font = F(500, 34); x.fillStyle = '#666'; x.fillText(t, 120, y);
-    x.font = F(700, 34); x.fillStyle = '#000'; x.textAlign = 'right'; x.fillText(String(v).slice(0, 28), 1000, y); x.textAlign = 'left';
-  });
-  x.font = F(500, 30); x.fillStyle = '#999'; x.fillText('Get yours on pingme', 80, 1290);
-  shareCanvas(c, 'pingme-wrapped.png', 'Our Ping Me Wrapped');
+  paintCard(x, { w: 1080, hgt: 1350, color: 'Fun', F, kicker: `CHAT WRAPPED · ${st.period === 'month' ? new Date().toLocaleDateString([], { month: 'short', year: 'numeric' }).toUpperCase() : st.period === 'year' ? new Date().getFullYear() : 'ALL TIME'}`,
+    big: st.total.toLocaleString(), title: 'messages', sub: chatTitle(chat), lines: lines.map(([, t, v]) => [t, v]) });
+  return shareCanvas(c, 'pingme-wrapped.png', 'Our Ping Me Wrapped');
 }
 
 // ═══════════════════════════ Group Pet ═══════════════════════════
