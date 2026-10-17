@@ -354,6 +354,8 @@ async function migrate(dbName) {
   if (!users.has('birth_enc')) await pool.query('ALTER TABLE users ADD COLUMN birth_enc TEXT NULL AFTER email_enc');
   const messages = await cols('messages');
   if (!messages.has('read_ttl')) await pool.query('ALTER TABLE messages ADD COLUMN read_ttl INT NULL AFTER deleted');
+  // Incognito chat: messages from an incognito session are deleted for everyone when it ends.
+  if (!messages.has('incognito')) await pool.query('ALTER TABLE messages ADD COLUMN incognito TINYINT NOT NULL DEFAULT 0 AFTER read_ttl');
   // New message kinds: the Ping and open-when letters.
   const [[kindCol]] = await pool.query("SELECT COLUMN_TYPE t FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=? AND TABLE_NAME='messages' AND COLUMN_NAME='kind'", [dbName]);
   if (!kindCol.t.includes("'letter'")) {
@@ -380,6 +382,9 @@ async function migrate(dbName) {
   }
   const chats = await cols('chats');
   if (!chats.has('extra_enc')) await pool.query('ALTER TABLE chats ADD COLUMN extra_enc TEXT NULL AFTER disappear_secs');
+  if (!chats.has('incognito_since')) {
+    await pool.query('ALTER TABLE chats ADD COLUMN incognito_since DATETIME(3) NULL, ADD COLUMN incognito_by BIGINT UNSIGNED NULL, ADD COLUMN incognito_last DATETIME(3) NULL, ADD INDEX (incognito_since)');
+  }
   await pool.query('ALTER TABLE users MODIFY pass_hash VARCHAR(255) NULL');
 }
 

@@ -240,6 +240,7 @@ async function serializeChats(viewerId, chatId = null) {
       avatarV: Number(r.avatar_v) || 0,
       createdBy: Number(r.created_by),
       disappearSecs: Number(r.disappear_secs) || 0,
+      incognito: r.incognito_since ? { since: ms(r.incognito_since), by: Number(r.incognito_by) } : null,
       lastMsgAt: ms(r.last_msg_at),
       role: r.role,
       mutedUntil: Number(r.muted_until) || 0,
@@ -394,6 +395,7 @@ async function serializeMessages(rows, viewerId, { light = false } = {}) {
       effect: r.effect || null,
       forwarded: !!r.forwarded,
       silent: !!r.silent,
+      incognito: !!r.incognito,
       pinned: !!r.pinned,
       replyTo: r.reply_to ? replies.get(Number(r.reply_to)) || { id: Number(r.reply_to), missing: true } : null,
       reactions: reactions.get(id) || [],
@@ -515,9 +517,12 @@ function readTtlFor(kind, body) {
 }
 
 async function insertMessage({ chatId, senderId, kind, body, replyTo = null, attachmentId = null, effect = null, forwarded = false, silent = false, clientId = null, vanish = false }) {
-  const chat = await db.one('SELECT id, disappear_secs FROM chats WHERE id=?', [chatId]);
+  const chat = await db.one('SELECT id, disappear_secs, incognito_since FROM chats WHERE id=?', [chatId]);
   if (!chat) throw notFound('Conversation not found');
   const created = now();
+  // Everything sent during an incognito session (incl. its "turned on" notice) goes when it ends.
+  const incognito = chat.incognito_since && !(kind === 'system' && body.sys?.type === 'incognito' && body.sys.on === false) ? 1 : 0;
+  if (incognito) await db.q('UPDATE chats SET incognito_last=? WHERE id=?', [created, chatId]);
   const expires = chat.disappear_secs > 0 && kind !== 'system' ? new Date(created.getTime() + chat.disappear_secs * 1000) : null;
   const readTtl = (vanish || chat.disappear_secs === -1) && !['system', 'call', 'poll'].includes(kind) ? readTtlFor(kind, body) : null;
   if (replyTo) {
@@ -525,9 +530,9 @@ async function insertMessage({ chatId, senderId, kind, body, replyTo = null, att
     if (!parent || Number(parent.chat_id) !== chatId) replyTo = null;
   }
   const res = await db.q(
-    `INSERT INTO messages (chat_id, sender_id, kind, body_enc, reply_to, attachment_id, effect, forwarded, silent, read_ttl, created_at, expires_at)
-     VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`,
-    [chatId, senderId, kind, C.enc(body), replyTo, attachmentId, effect, forwarded ? 1 : 0, silent ? 1 : 0, readTtl, created, expires]
+    `INSERT INTO messages (chat_id, sender_id, kind, body_enc, reply_to, attachment_id, effect, forwarded, silent, read_ttl, incognito, created_at, expires_at)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [chatId, senderId, kind, C.enc(body), replyTo, attachmentId, effect, forwarded ? 1 : 0, silent ? 1 : 0, readTtl, incognito, created, expires]
   );
   const id = Number(res.insertId);
   await db.q('UPDATE chats SET last_msg_at=? WHERE id=?', [created, chatId]);
@@ -559,7 +564,7 @@ async function insertMessage({ chatId, senderId, kind, body, replyTo = null, att
   if (kind !== 'system') notifyMembers(chatId, senderId, msg, members).catch(() => {});
   // Buzz personalisation from chats (only if the sender turned it on): topic keywords from their own
   // text messages — never private/eyes-only/ink messages, and the message itself isn't stored there.
-  if (kind === 'text' && body.text && !body.secure && !body.eyes && effect !== 'ink') {
+  if (kind === 'text' && body.text && !body.secure && !body.eyes && effect !== 'ink' && !incognito) {
     getUser(senderId).then((u) => { if (u?.settings?.buzzFromChats) buzz.learnFromChat(senderId, body.text); }).catch(() => {});
   }
   return msg;
@@ -601,7 +606,7 @@ async function notifyMembers(chatId, senderId, msg, members) {
     const previews = u.settings.previews;
     const urgent = msg.intent === 'urgent' || msg.sos;
     const hidden = msg.secure || msg.eyes || msg.effect === 'ink' || msg.readTtl;
-    let body = previews ? (msg.effect === 'ink' ? 'Sent with Invisible Ink' : notifyText(msg)) : 'New message';
+    let body = msg.incognito ? 'Incognito message' : previews ? (msg.effect === 'ink' ? 'Sent with Invisible Ink' : notifyText(msg)) : 'New message';
     if (msg.sos) body = 'SOS — needs help now. Tap to see their live location.';
     else if (msg.kind === 'ping') body = msg.ping?.long ? 'Pinged you — really missing you' : 'Pinged you — thinking of you';
     else if (msg.kind === 'letter') body = 'Sent you a letter: ' + (msg.letter?.title || '');
@@ -614,7 +619,7 @@ async function notifyMembers(chatId, senderId, msg, members) {
       body, tag: isMention ? 'mention-' + msg.id : 'chat-' + chatId, url: '/?chat=' + chatId, chatId, msgId: msg.id, ts: msg.createdAt, urgent, ping: msg.kind === 'ping',
       // Who + what, so the notification shows their face (or coloured initials) and a photo preview.
       kind: msg.kind, from: show ? { id: senderId, name: sender.name, avatar: sender.avatarV ? `/api/avatar/u/${senderId}?v=${sender.avatarV}` : null } : null,
-      image: show && !hidden && msg.kind === 'image' && msg.att?.id ? `/api/files/${msg.att.id}` : null,
+      image: show && !hidden && !msg.incognito && msg.kind === 'image' && msg.att?.id ? `/api/files/${msg.att.id}` : null,
     }, { urgency: 'high', ttl: 24 * 3600 }).catch(() => {}); // high = delivered right away even when the phone is idle (Doze)
   }
 }
@@ -1441,6 +1446,14 @@ app.post('/api/calls/:id/decline', auth, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+app.post('/api/chats/:id/incognito', auth, wrap(async (req, res) => {
+  const id = toInt(req.params.id);
+  await requireMember(id, req.uid);
+  rateLimit('incog:' + req.uid, 20, 60000);
+  if (req.body.on) await startIncognito(id, req.uid); else await endIncognito(id, req.uid, 'off');
+  res.json({ ok: true });
+}));
+
 app.post('/api/chats/:id/clear', auth, wrap(async (req, res) => {
   const id = toInt(req.params.id);
   await requireMember(id, req.uid);
@@ -1885,6 +1898,8 @@ io.on('connection', (socket) => {
       }
     }
     const { kind, body, attachmentId, vanish } = await buildBody(chatId, uid, d);
+    if (attachmentId && (await db.one('SELECT 1 x FROM messages WHERE attachment_id=? AND incognito=1 AND chat_id<>? LIMIT 1', [attachmentId, chatId]))) throw forbidden('Incognito messages can’t be forwarded');
+    if (d.sendAt && (await db.one('SELECT 1 x FROM chats WHERE id=? AND incognito_since IS NOT NULL', [chatId]))) throw bad('Scheduling is off during an incognito chat');
     const effect = VALID_EFFECTS.has(d.effect) ? d.effect : null;
     const replyTo = toInt(d.replyTo);
     if (d.sendAt) {
@@ -1987,6 +2002,13 @@ io.on('connection', (socket) => {
     await db.q('DELETE FROM poll_votes WHERE message_id=? AND user_id=?', [id, uid]);
     if (opts.length) await db.q('INSERT INTO poll_votes (message_id, user_id, option_idx) VALUES ?', [opts.map((o) => [id, uid, o])]);
     io.to('c:' + row.chat_id).emit('msg:update', await loadMessage(id, uid));
+  }));
+
+  // "I still have this incognito chat open" — keeps the session alive (see runIncognitoTimeouts).
+  socket.on('incognito:here', sockHandler(socket, async (d) => {
+    const chatId = toInt(d.chatId);
+    if (!chatId || !(await membership(chatId, uid))) return;
+    await db.q('UPDATE chats SET incognito_last=? WHERE id=? AND incognito_since IS NOT NULL', [now(), chatId]);
   }));
 
   socket.on('chat:read', sockHandler(socket, async (d) => {
@@ -2221,6 +2243,34 @@ async function runScheduled() {
   }
 }
 
+// ─── Incognito chat ───
+// Either person can turn it on or off. While it's on, every message is marked incognito; when it
+// ends (someone turns it off, or nobody has had the chat open for 3 minutes, or after 12 hours)
+// those messages are deleted for everyone — text, photos, reactions — leaving one "ended" notice.
+const INCOGNITO_IDLE_MS = 3 * 60000, INCOGNITO_MAX_MS = 12 * 3600000;
+
+async function startIncognito(chatId, uid) {
+  const r = await db.q('UPDATE chats SET incognito_since=?, incognito_by=?, incognito_last=? WHERE id=? AND incognito_since IS NULL', [now(), uid, now(), chatId]);
+  if (!r.affectedRows) return;
+  await systemMessage(chatId, uid, { type: 'incognito', on: true });
+  await emitChatChanged(chatId);
+}
+
+async function endIncognito(chatId, uid, reason) {
+  const r = await db.q('UPDATE chats SET incognito_since=NULL, incognito_by=NULL, incognito_last=NULL WHERE id=? AND incognito_since IS NOT NULL', [chatId]);
+  if (!r.affectedRows) return; // already ended (another tap or another server)
+  await db.q('UPDATE messages SET expires_at=? WHERE chat_id=? AND incognito=1', [now(), chatId]);
+  await runExpiry();
+  await systemMessage(chatId, uid, { type: 'incognito', on: false, reason });
+  await emitChatChanged(chatId);
+}
+
+async function runIncognitoTimeouts() {
+  const t = Date.now();
+  const rows = await db.q('SELECT id, incognito_by FROM chats WHERE incognito_since IS NOT NULL AND (incognito_last < ? OR incognito_since < ?)', [new Date(t - INCOGNITO_IDLE_MS), new Date(t - INCOGNITO_MAX_MS)]);
+  for (const r of rows) await endIncognito(Number(r.id), Number(r.incognito_by), 'idle').catch((e) => console.error('incognito end failed', e.message));
+}
+
 async function runExpiry() {
   const rows = await db.q('SELECT id, chat_id, attachment_id FROM messages WHERE expires_at IS NOT NULL AND expires_at<=? LIMIT 500', [now()]);
   if (!rows.length) return;
@@ -2267,6 +2317,7 @@ db.init().then(async () => {
   loop(runScheduled, 10000);
   advanced.start(loop);
   loop(runExpiry, 15000);
+  loop(runIncognitoTimeouts, 20000);
   loop(runCleanup, 3600000);
   server.on('error', (e) => {
     if (e.code === 'EADDRINUSE') {

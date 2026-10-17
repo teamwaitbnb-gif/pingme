@@ -238,6 +238,19 @@ textarea.field { height: auto; min-height: 80px; padding: 12px 16px; resize: ver
 .bubble code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 0.88em; background: rgba(127,127,127,0.18); padding: 1px 5px; border-radius: 5px; }
 .bubble pre { margin: 4px 0; padding: 8px 10px; background: rgba(127,127,127,0.16); border-radius: 10px; overflow-x: auto; white-space: pre; font-size: 0.85em; }
 .bubble .mention { font-weight: 600; }
+/* Incognito chat: a darker, violet look so it's obvious at a glance */
+.conv.incognito { --bg: #0e0b18; --bg2: #171225; --elev: #1d1730; --text: #efeafd; --text2: #a69fc0; --text3: #6f6890; --sep: rgba(160, 140, 255, 0.16); --fill: rgba(160, 140, 255, 0.14);
+  --them: #251e3a; --them-text: #efeafd; --me: #7b5cff; --me2: #5b3df0; --me-text: #ffffff; --accent: #a58bff; color: var(--text);
+  background: radial-gradient(120% 60% at 50% 0%, rgba(123, 92, 255, 0.16), transparent 60%), var(--bg); }
+.conv.incognito .cv-head, .conv.incognito .composer-wrap { background: var(--bg); }
+.conv.incognito .msgs { background: transparent; }
+.conv.incognito .cv-head .nm svg.i { color: #a58bff; }
+.incog-bar { display: flex; align-items: center; gap: 10px; padding: 8px 14px; background: linear-gradient(90deg, rgba(123, 92, 255, 0.28), rgba(91, 61, 240, 0.14)); border-bottom: 0.5px solid var(--sep); color: var(--text); }
+.incog-bar > svg { width: 22px; height: 22px; color: #b9a6ff; flex-shrink: 0; }
+.incog-bar .t { flex: 1; min-width: 0; display: grid; font-size: 13px; line-height: 1.25; }
+.incog-bar .t b { font-size: 14px; }
+.incog-bar .t span { color: var(--text2); }
+.incog-bar button { font-weight: 600; font-size: 13px; color: #fff; background: rgba(123, 92, 255, 0.55); padding: 6px 12px; border-radius: 14px; flex-shrink: 0; }
 /* Link previews */
 .bubble.has-card { width: min(300px, 74vw); }
 .bubble.only-card { padding: 4px; }

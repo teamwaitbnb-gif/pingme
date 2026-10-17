@@ -158,6 +158,7 @@ const P = {
   smile: '<circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2M9 9h.01M15 9h.01"/>',
   quote: '<path d="M3 21c3 0 7-1 7-8V5H3v8h4c0 4-2 5-4 5M14 21c3 0 7-1 7-8V5h-7v8h4c0 4-2 5-4 5"/>',
   zap: '<path d="M13 2L3 14h9l-1 8 10-12h-9z"/>',
+  incognito: '<path d="M2 11h20"/><path d="M5 11l2.2-6h9.6L19 11"/><circle cx="7" cy="16" r="3"/><circle cx="17" cy="16" r="3"/><path d="M10 16h4"/>',
   bubbles: '<path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>',
   heart: '<path d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 00-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 000-7.8z"/>',
   mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/>',

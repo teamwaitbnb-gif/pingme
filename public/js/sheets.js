@@ -7,7 +7,7 @@ import { cropImage, SCREEN_EFFECTS, BUBBLE_EFFECTS, playScreenEffect } from './m
 import { usernameField, googleButton, GOOGLE_LOGO } from './auth.js';
 import { S, api, emit, upload, user, userAvatar, fileUrl, otherMember, chatTitle, chatAvatar, isMuted, mergeUsers, prefs, applyPrefs, BUBBLES, feature } from './core.js';
 import {
-  openChat, closeChat, renderList, renderHeader, renderMessages, refreshChat, refreshMe, startDirect, deleteConversation,
+  openChat, closeChat, renderList, renderHeader, renderMessages, refreshChat, refreshMe, startDirect, deleteConversation, toggleIncognito,
   send, setSendAt, sendPayload, jumpTo, setupPush, logout,
   setMessageOpts, messageOpts, setCheckin, startSosTracking,
 } from './app.js';
@@ -497,6 +497,7 @@ export function openChatInfo(chatId) {
         cell({ icon: 'useradd', label: 'Add people', accent: true, onClick: () => addMembers(chat).then(draw) })) : null,
 
       h('div', { class: 'group' },
+        cell({ icon: 'incognito', color: '#6d4aff', label: chat.incognito ? 'End incognito chat' : 'Incognito chat', sub: chat.incognito ? 'On · messages are deleted when it ends' : 'Messages are deleted for both when it ends', onClick: async () => { s.close(); await toggleIncognito(chat); } }),
         cell({ icon: 'timer', color: '#5856d6', label: 'Disappearing messages', value: disappearLabel(chat.disappearSecs), chevron: true, onClick: async () => {
           const opts = [0, -1, 30, 300, 3600, 86400, 604800, 7776000];
           const v = await actionSheet({ title: 'New messages disappear after this time. “After read” removes each message once it’s read — longer messages stay a little longer.', actions: opts.map((x) => ({ label: disappearLabel(x) + (x === chat.disappearSecs ? ' ✓' : ''), value: String(x) })) });

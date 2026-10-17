@@ -771,6 +771,7 @@ export function closeChat() {
   setScreen(S.tab === 'buzz' ? 'buzz' : 'chats');
   S.pet?.destroy(); S.pet = null;
   S.current = null;
+  stopIncognitoBeat();
   els.main?.classList.remove('show-conv');
   setTimeout(() => { if (!S.current) { els.msgs = null; renderEmptyConv(); } }, innerWidth <= 760 ? 340 : 0);
   renderList();
@@ -886,11 +887,12 @@ function buildConv(chat) {
   els.head = h('header', { class: 'cv-head' });
   els.usBar = h('button', { class: 'us-bar', hidden: true, onclick: () => openUs(S.chats.get(S.current), renderUsBar) });
   els.pinBar = h('div', { class: 'pinned-bar', hidden: true });
+  els.incogBar = h('div', { class: 'incog-bar', hidden: true });
   els.msgs = h('div', { class: 'msgs', role: 'log', 'aria-live': 'polite' });
   els.typingRow = h('div', { class: 'typing-row', hidden: true });
   els.jump = h('button', { class: 'jump-btn', hidden: true, 'aria-label': 'Scroll to latest', onclick: () => { const st = S.msgs.get(S.current); if (st?.gapAfter) loadMessages(S.current, { reset: true }); else scrollToBottom(true); } }, icon('down'));
   els.composerWrap = h('div', { class: 'composer-wrap' });
-  els.conv.replaceChildren(els.head, els.usBar, els.pinBar, els.msgs, els.typingRow, els.jump, els.composerWrap);
+  els.conv.replaceChildren(els.head, els.incogBar, els.usBar, els.pinBar, els.msgs, els.typingRow, els.jump, els.composerWrap);
   els.msgs.addEventListener('scroll', onScroll, { passive: true });
   setupDrop();
   renderHeader();
@@ -905,6 +907,7 @@ function buildConv(chat) {
 export function renderHeader() {
   const chat = S.chats.get(S.current);
   if (!chat || !els.head) return;
+  renderIncognito(chat);
   const other = otherMember(chat);
   const u = other ? user(other) : null;
   const typers = [...(S.typing.get(chat.id)?.keys() || [])];
@@ -919,7 +922,7 @@ export function renderHeader() {
     h('div', { class: 'cv-who', onclick: () => openChatInfo(chat.id) },
       avatar({ id: chat.type === 'group' ? chat.id : other, name: chatTitle(chat), src: chatAvatar(chat), size: 38, online: on, group: chat.type === 'group' }),
       h('div', { class: 'txt' },
-        h('div', { class: 'nm' }, chatTitle(chat), isMuted(chat) ? icon('belloff') : null, chat.disappearSecs ? icon('timer') : null, icon('chev')),
+        h('div', { class: 'nm' }, chatTitle(chat), chat.incognito ? icon('incognito') : null, isMuted(chat) ? icon('belloff') : null, chat.disappearSecs ? icon('timer') : null, icon('chev')),
         h('div', { class: 'st' + (on && !typers.length ? ' on' : '') }, status))),
     chat.type === 'direct' && feature('ping') && !isBlocked(chat) && !u?.deleted ? h('button', { class: 'icon-btn ping-btn', title: 'Send a Ping — thinking of you', 'aria-label': 'Send a Ping', onclick: () => sendPing(chat) }, h('img', { src: '/icons/hand.svg', alt: '' })) : null,
     (() => {
@@ -1157,6 +1160,8 @@ function systemText(m, chat) {
     case 'added': return `${who} added ${names(s.users)}`;
     case 'removed': return `${who} removed ${names([s.user])}`;
     case 'left': return `${who === 'You' ? 'You' : user(s.user).name} left the conversation`;
+    case 'incognito': return s.on ? `${who} started an incognito chat · messages disappear when it ends`
+      : s.reason === 'idle' ? 'Incognito chat ended · its messages were deleted' : `${who} ended the incognito chat · its messages were deleted`;
     case 'disappear': return s.secs ? `${who} turned on disappearing messages (${({ 30: '30 seconds', 300: '5 minutes', 3600: '1 hour', 86400: '24 hours', 604800: '7 days', 7776000: '90 days' })[s.secs]})` : `${who} turned off disappearing messages`;
     default: return '';
   }
@@ -1671,7 +1676,7 @@ function openMessageMenu(m, el) {
   };
   const act = (fn) => () => { close(); fn(); };
   const items = [];
-  const priv = m.secure || m.eyes;
+  const priv = m.secure || m.eyes || m.incognito;
   if (!m.deleted) {
     items.push(['Reply', 'reply', () => setReply(m)]);
     if (m.text && !priv) items.push(['Copy', 'copy', () => navigator.clipboard?.writeText(m.text).then(() => toast('Copied'))]);
@@ -1939,7 +1944,8 @@ async function plusMenu() {
       { label: 'Poll', icon: 'poll', value: 'poll' },
       feature('whosRight') ? { label: 'Who’s Right?', icon: 'users', value: 'whosright' } : null,
       { label: 'Message options', icon: 'sparkle', value: 'opts' },
-      { label: 'Send later', icon: 'clock', value: 'sched' },
+      chat.incognito ? null : { label: 'Send later', icon: 'clock', value: 'sched' },
+      { label: chat.incognito ? 'End incognito chat' : 'Incognito chat', icon: 'incognito', value: 'incog' },
       feature('sos') || feature('checkIn') ? { label: 'Safety', icon: 'shield', value: 'safety' } : null,
     ],
   });
@@ -1959,6 +1965,36 @@ async function plusMenu() {
   if (r === 'safety') openSafety(chat.id);
   if (r === 'ping') sendPing(chat);
   if (r === 'letter') openLetterComposer(chat);
+  if (r === 'incog') toggleIncognito(chat);
+}
+
+// ─────── incognito chat ───────
+// Either person can turn it on or off. While on, the chat looks different, messages can't be
+// copied/forwarded/saved, and everything sent is deleted for both when it ends: someone turns it
+// off, or nobody has had the chat open for 3 minutes (the open chat sends a heartbeat).
+export async function toggleIncognito(chat) {
+  if (!chat.incognito) {
+    const ok = await confirmDialog('Start an incognito chat? Everything you both send will be deleted when it ends — when either of you turns it off, or a few minutes after you both leave the chat.', { ok: 'Start' });
+    if (!ok) return;
+  } else if (!(await confirmDialog('End the incognito chat? All its messages will be deleted for both of you.', { ok: 'End', danger: true }))) return;
+  try { await api('POST', `/api/chats/${chat.id}/incognito`, { on: !chat.incognito }); await refreshChat(chat.id); }
+  catch (e) { toast(e.message, { error: true }); }
+}
+let incogBeat = null;
+const beatIncognito = () => { if (S.current && S.chats.get(S.current)?.incognito && !document.hidden) S.socket?.emit('incognito:here', { chatId: S.current }); };
+function stopIncognitoBeat() { clearInterval(incogBeat); incogBeat = null; els.conv?.classList.remove('incognito'); }
+document.addEventListener('visibilitychange', beatIncognito);
+function renderIncognito(chat) {
+  const on = !!chat.incognito;
+  els.conv.classList.toggle('incognito', on);
+  if (els.ta) els.ta.placeholder = on ? 'Incognito message' : 'Message';
+  if (els.incogBar) {
+    els.incogBar.hidden = !on;
+    els.incogBar.replaceChildren(...(on ? [icon('incognito'), h('div', { class: 't' }, h('b', null, 'Incognito chat'), h('span', null, 'Messages are deleted for both of you when it ends')),
+      h('button', { onclick: () => toggleIncognito(S.chats.get(S.current) || chat) }, 'Turn off')] : []));
+  }
+  if (on && !incogBeat) { beatIncognito(); incogBeat = setInterval(beatIncognito, 30000); }
+  if (!on && incogBeat) { clearInterval(incogBeat); incogBeat = null; }
 }
 
 function setupDrop() {
