@@ -222,7 +222,9 @@ textarea.field { height: auto; min-height: 80px; padding: 12px 16px; resize: ver
 .m .fwd, .m .meta-top { font-size: 12px; color: var(--text2); margin: 0 12px 2px; display: flex; align-items: center; gap: 4px; }
 .m .fwd svg, .m .meta-top svg { width: 12px; height: 12px; }
 .bubble { position: relative; padding: 8px 13px; border-radius: var(--radius); background: var(--them); color: var(--them-text); line-height: 1.32; word-wrap: break-word; overflow-wrap: anywhere; white-space: pre-wrap; font-size: var(--fs); user-select: text; -webkit-user-select: text; -webkit-touch-callout: none; max-width: 100%; }
-.m.me .bubble { background: linear-gradient(180deg, var(--me), var(--me2)); color: var(--me-text); background-attachment: fixed; }
+/* No background-attachment: fixed — iOS Safari doesn't paint fixed backgrounds inside a scroll area,
+   so sent bubbles vanished while scrolling (dark text on the dark page). */
+.m.me .bubble { background: linear-gradient(180deg, var(--me), var(--me2)); color: var(--me-text); }
 .m.me .bubble a { color: inherit; text-decoration: underline; }
 /* Bubble tails on the last bubble of a run */
 .m.last .bubble.tail::before, .m.last .bubble.tail::after { content: ""; position: absolute; bottom: 0; height: 20px; }
