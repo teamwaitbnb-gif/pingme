@@ -679,7 +679,7 @@ export function initCalls(ctx) {
 
   function sendMedia() {
     if (!call?.id) return;
-    socket.emit('call:media', { callId: call.id, audio: call.audioOn, video: call.videoOn || !!call.screen, screen: !!call.screen });
+    socket.emit('call:media', { callId: call.id, audio: call.audioOn, video: (call.videoOn || !!call.screen) && !call.away, screen: !!call.screen, away: !!call.away });
   }
 
   // ───────── controls ─────────
@@ -941,13 +941,15 @@ export function initCalls(ctx) {
 
   function renderTile(peer) {
     if (!peer.tile) return;
-    const vid = hasVideo(peer);
+    const vid = hasVideo(peer) && !peer.away;
     const u = ctx.user(peer.userId);
     peer.videoEl.style.visibility = vid ? 'visible' : 'hidden';
     peer.tile.querySelector('.ph').hidden = vid;
+    peer.tile.classList.toggle('away', !!peer.away);
     peer.tile.classList.toggle('screen', !!peer.media.screen);
     const st = peer.pc.connectionState;
-    peer.tile.querySelector('.phs').textContent = st === 'connected' ? (peer.media.audio ? '' : 'Muted') : st === 'failed' || st === 'disconnected' ? 'Reconnecting…' : 'Connecting…';
+    peer.tile.querySelector('.phs').textContent = peer.away ? `Video paused — ${(u?.name || 'they').split(' ')[0]} ${u?.name ? 'is' : 'are'} in another app`
+      : st === 'connected' ? (peer.media.audio ? '' : 'Muted') : st === 'failed' || st === 'disconnected' ? 'Reconnecting…' : 'Connecting…';
     const nm = peer.tile.querySelector('.nm');
     nm.replaceChildren(peer.media.audio ? '' : icon('micoff'), u?.name || '');
     peer.tile.classList.toggle('speaking', peer.level > 0.04 && call.peers.size > 1);
@@ -1113,21 +1115,22 @@ export function initCalls(ctx) {
       if (call.id === inv.callId) return;
       socket.emit('call:decline', { callId: inv.callId, busy: true });
       const u = ctx.user(inv.from);
-      return toast(`Missed call from ${u?.name || 'someone'} (you were on a call)`);
+      return toast(`Missed call from ${u?.name || inv.fromName || 'someone'} (you were on a call)`);
     }
     if (incoming?.invite.callId === inv.callId) return;
     closeIncoming();
     const chat = ctx.chat(inv.chatId);
     const from = ctx.user(inv.from);
-    const name = inv.group && chat ? ctx.chatTitle(chat) : from?.name || 'Someone';
-    const src = inv.group && chat ? ctx.chatAvatar(chat) : ctx.userAvatar(inv.from);
+    const callerName = from?.name && from.name !== 'User' ? from.name : inv.fromName || from?.name || 'Someone';
+    const name = inv.group ? (chat ? ctx.chatTitle(chat) : inv.groupTitle || 'Group call') : callerName;
+    const src = inv.group && chat ? ctx.chatAvatar(chat) : ctx.userAvatar(inv.from) || (inv.group ? null : inv.fromAvatar);
     const bg = h('div', { class: 'bgblur' + (src ? '' : ' grad'), style: src ? { backgroundImage: `url("${src}")` } : null });
     const root = h('div', { class: 'call' },
       bg,
       h('div', { class: 'ring-center' },
         avatar({ id: inv.group ? inv.chatId : inv.from, name, src, size: 130, group: inv.group }),
         h('h2', null, name),
-        h('p', null, `Ping Me ${inv.video ? 'Video' : 'Audio'}${inv.group ? ' · ' + (from?.name || '') : ''}`),
+        h('p', null, `Ping Me ${inv.video ? 'Video' : 'Audio'}${inv.group ? ' · ' + callerName : ''}`),
         inv.reason ? h('div', { class: 'call-reason' + (inv.reason === 'SOS' ? ' sos' : '') }, inv.reason === 'SOS' ? 'SOS — they need help' : `“${inv.reason}”`) : null),
       h('div', { class: 'bottom', style: { position: 'relative' } },
         h('div', { class: 'incoming-actions' },
@@ -1190,10 +1193,11 @@ export function initCalls(ctx) {
     const chat = ctx.chat(call.chatId);
     if (chat?.type === 'group') toast(`${ctx.user(userId)?.name || 'Someone'} ${busy ? 'is busy' : 'declined'}`);
   });
-  socket.on('call:media', ({ callId, socketId, audio, video, screen }) => {
+  socket.on('call:media', ({ callId, socketId, audio, video, screen, away }) => {
     const p = call?.id === callId && call.peers.get(socketId);
     if (!p) return;
     p.media = { audio, video, screen };
+    p.away = !!away;
     renderTile(p);
     scheduleHide();
   });
@@ -1252,9 +1256,16 @@ export function initCalls(ctx) {
       render();
     });
   }
+  // The other phone left the app: phones stop the camera of a web app in the background, so say so
+  // instead of showing a frozen or black picture. Cleared when they're back (call:media / peer-moved).
+  socket.on('call:peer-away', ({ callId, socketId }) => {
+    const p = call?.id === callId && call.peers.get(socketId);
+    if (p) { p.away = true; renderTile(p); }
+  });
   socket.on('call:peer-moved', ({ callId, from, to }) => {
     const p = call?.id === callId && call.peers.get(from);
     if (!p) return;
+    p.away = false;
     call.peers.delete(from); p.socketId = to; call.peers.set(to, p);
     if (call.pendingIce?.has(from)) { call.pendingIce.set(to, call.pendingIce.get(from)); call.pendingIce.delete(from); }
   });
@@ -1289,9 +1300,10 @@ export function initCalls(ctx) {
   }
   if (typeof document !== 'undefined') document.addEventListener('visibilitychange', () => {
     if (!call) return;
-    if (document.hidden) { autoPip(); return; }
+    if (document.hidden) { autoPip(); call.away = true; sendMedia(); return; }
+    call.away = false;
     if (!socket.connected) socket.connect();
-    recoverMedia();
+    recoverMedia().then(() => call && sendMedia());
   });
   // Leaving the app during a video call: float the other person's video (where the browser allows).
   function pipVideo() { return [...(call?.peers.values() || [])].find((p) => p.videoEl && p.media?.video)?.videoEl; }

@@ -2071,7 +2071,7 @@ io.on('connection', (socket) => {
   socket.on('call:media', (d) => {
     const call = calls.get(toInt(d?.callId));
     if (!call || !call.participants.has(socket.id)) return;
-    const state = { audio: !!d.audio, video: !!d.video, screen: !!d.screen };
+    const state = { audio: !!d.audio, video: !!d.video, screen: !!d.screen, away: !!d.away };
     call.participants.get(socket.id).media = state;
     for (const sid of call.participants.keys()) if (sid !== socket.id) io.to(sid).emit('call:media', { callId: call.id, socketId: socket.id, userId: uid, ...state });
   });
@@ -2107,7 +2107,10 @@ const CALL_GRACE_MS = 2 * 60000; // how long a dropped phone keeps its place in 
 const MAX_CALL_PARTICIPANTS = 8;
 
 function callInvite(call) {
-  return { callId: call.id, chatId: call.chatId, from: call.startedBy, video: call.video, group: call.group, reason: call.reason || null };
+  // The caller's name and photo travel with the call, so the phone can show who's calling even when
+  // the app was just opened from the notification and hasn't loaded contacts yet.
+  return { callId: call.id, chatId: call.chatId, from: call.startedBy, video: call.video, group: call.group, reason: call.reason || null,
+    fromName: call.fromName || null, fromAvatar: call.fromAvatar || null, groupTitle: call.groupTitle || null };
 }
 
 function userInCall(userId) {
@@ -2131,11 +2134,11 @@ async function ringUsers(call, userIds) {
     let rings = 0;
     const t = setInterval(() => {
       if (!calls.has(call.id) || !call.ringing.has(u) || ++rings > 8) return clearInterval(t);
-      push.send(u, { type: 'call', title: title0, body: `Incoming ${call.video ? 'video' : 'audio'} call` + (call.reason ? ` — “${call.reason}”` : ''), tag: 'call-' + call.id, url: `/?call=${call.id}&chat=${call.chatId}`, callId: call.id, chatId: call.chatId, video: call.video, ts: Date.now(), ring: rings, from: { id: caller.id, name: caller.name, avatar: caller.avatarV ? `/api/avatar/u/${caller.id}?v=${caller.avatarV}` : null } }, { urgency: 'high', ttl: 10 }).catch(() => {});
+      push.send(u, { type: 'call', title: title0, body: `${chat.type === 'group' ? `${caller.name} is calling the group` : `${caller.name} is calling you`} · ${call.video ? 'Video' : 'Audio'} call` + (call.reason ? ` — “${call.reason}”` : ''), tag: 'call-' + call.id, url: `/?call=${call.id}&chat=${call.chatId}`, callId: call.id, chatId: call.chatId, video: call.video, ts: Date.now(), ring: rings, from: { id: caller.id, name: caller.name, avatar: caller.avatarV ? `/api/avatar/u/${caller.id}?v=${caller.avatarV}` : null } }, { urgency: 'high', ttl: 10 }).catch(() => {});
     }, 5000);
     (call.ringTimers ||= []).push(t);
     const title = chat.type === 'group' ? `${caller.name} · ${C.dec(chat.title_enc) || 'Group'}` : caller.name;
-    push.send(u, { type: 'call', title, body: `Incoming ${call.video ? 'video' : 'audio'} call` + (call.reason ? ` — “${call.reason}”` : ''), tag: 'call-' + call.id, url: `/?call=${call.id}&chat=${call.chatId}`, callId: call.id, chatId: call.chatId, video: call.video, ts: Date.now(), from: { id: caller.id, name: caller.name, avatar: caller.avatarV ? `/api/avatar/u/${caller.id}?v=${caller.avatarV}` : null } }, { urgency: 'high', ttl: 45 }).catch(() => {});
+    push.send(u, { type: 'call', title, body: `${chat.type === 'group' ? `${caller.name} is calling the group` : `${caller.name} is calling you`} · ${call.video ? 'Video' : 'Audio'} call` + (call.reason ? ` — “${call.reason}”` : ''), tag: 'call-' + call.id, url: `/?call=${call.id}&chat=${call.chatId}`, callId: call.id, chatId: call.chatId, video: call.video, ts: Date.now(), from: { id: caller.id, name: caller.name, avatar: caller.avatarV ? `/api/avatar/u/${caller.id}?v=${caller.avatarV}` : null } }, { urgency: 'high', ttl: 45 }).catch(() => {});
   }
 }
 
@@ -2157,8 +2160,12 @@ async function startCall(socket, d) {
     const known = await db.one("SELECT 1 x FROM messages WHERE chat_id=? AND sender_id=? AND kind<>'system' LIMIT 1", [chatId, members[0]]);
     if (!known && callee?.settings.features.reasonToCall) return { needReason: true };
   }
+  const caller = await publicUser(socket.uid);
   const call = {
     reason: reason || null,
+    fromName: caller.name,
+    fromAvatar: caller.avatarV ? `/api/avatar/u/${socket.uid}?v=${caller.avatarV}` : null,
+    groupTitle: chat.type === 'group' ? C.dec((await db.one('SELECT title_enc FROM chats WHERE id=?', [chatId]))?.title_enc) || 'Group' : null,
     id: nextCallId++,
     chatId,
     video: !!d.video,

@@ -194,7 +194,8 @@ async function renderMessage(d) {
 
 async function showCall(d) {
   await self.registration.showNotification(d.title || 'Ping Me', {
-    body: (d.video ? 'Incoming video call' : 'Incoming voice call') + (d.body && /—/.test(d.body) ? ` ${d.body.slice(d.body.indexOf('—'))}` : ''),
+    // "Asha is calling you · Video call" (title = caller's name), so it's clear who's calling.
+    body: d.body || (d.video ? 'Incoming video call' : 'Incoming voice call'),
     tag: d.tag,
     renotify: true,
     requireInteraction: true,
