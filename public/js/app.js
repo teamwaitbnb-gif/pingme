@@ -289,6 +289,10 @@ function startApp() {
     if (!S.current) renderList();
   });
   addEventListener('focus', () => S.me && markRead());
+  // Safety net for a connection that died without noticing: re-check the open chat every minute,
+  // and everything when the network comes back.
+  setInterval(() => { if (S.me && S.current && !document.hidden) refreshRecent(S.current); }, 60000);
+  addEventListener('online', () => { if (S.me) resync(); });
   addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (!closeTop() && S.current) { if (history.state?.chat) history.back(); else closeChat(); } } });
   addEventListener('mm:unlocked', () => { if (S.current && isHidden(S.current)) closeChat(); S.msgs.clear(); loadChats().then(() => { if (S.current) loadMessages(S.current, { reset: true }); }); });
   setInterval(tickCountdowns, 1000);
@@ -446,16 +450,41 @@ async function resync() {
   const id = S.current;
   if (!id) return;
   const st = S.msgs.get(id);
-  if (!st || st.gapAfter) return loadMessages(id, { reset: true });
-  const last = [...st.list].reverse().find((m) => typeof m.id === 'number');
-  if (last) {
-    try {
-      const { messages } = await api('GET', `/api/chats/${id}/messages?after=${last.id}&limit=100`);
-      messages.forEach((m) => upsertMessage(m, false));
+  if (!st || st.gapAfter || !st.loaded) return loadMessages(id, { reset: true });
+  await refreshRecent(id);
+}
+
+// Bring a chat's saved messages up to date with the server: the latest 60 replace the saved copy of
+// that range (so new, edited and unsent messages are all correct); older saved messages are kept
+// only when they connect to it. Runs every time a chat is opened and after every reconnect, so a
+// chat can never show an out-of-date copy.
+async function refreshRecent(chatId) {
+  const st = S.msgs.get(chatId);
+  if (!st || !st.loaded || st.loading || st.gapAfter) return;
+  st.refreshing = true;
+  try {
+    const { messages, hasMore } = await api('GET', `/api/chats/${chatId}/messages?limit=60`);
+    if (S.msgs.get(chatId) !== st || st.loading) return;
+    const box = S.current === chatId ? els.msgs : null;
+    const atBottom = !box || box.scrollHeight - box.scrollTop - box.clientHeight < 160;
+    const firstId = messages[0]?.id;
+    const saved = st.list.filter((m) => typeof m.id === 'number');
+    const fetched = new Set(messages.map((m) => m.id));
+    const pending = st.list.filter((m) => m.pending && !fetched.has(m.id));
+    const lastSaved = saved.length ? saved[saved.length - 1].id : 0;
+    // Saved copy ends before the fetched window starts → there may be a hole: start from the window.
+    const connects = !hasMore || !firstId || saved.some((m) => m.id >= firstId) || !saved.length;
+    const older = connects && firstId ? saved.filter((m) => m.id < firstId) : [];
+    const changed = JSON.stringify(saved.filter((m) => !firstId || m.id >= firstId).map((m) => [m.id, m.editedAt, m.deleted, m.text, m.reactions?.length, m.pinned]))
+      !== JSON.stringify(messages.map((m) => [m.id, m.editedAt, m.deleted, m.text, m.reactions?.length, m.pinned])) || lastSaved !== (messages[messages.length - 1]?.id || lastSaved);
+    st.list = [...older, ...messages, ...pending];
+    if (!connects) st.hasMore = true; else if (!older.length) st.hasMore = hasMore;
+    if (changed && S.current === chatId) {
       renderMessages();
+      if (atBottom) scrollToBottom();
       markRead();
-    } catch {}
-  }
+    }
+  } catch {} finally { st.refreshing = false; }
 }
 
 // ─────── chats ───────
@@ -468,6 +497,13 @@ async function loadChats() {
     const keep = new Set(chats.map((c) => c.id));
     for (const id of S.chats.keys()) if (!keep.has(id)) S.chats.delete(id);
     for (const c of chats) S.chats.set(c.id, c);
+    // A saved chat that's missing its latest message is out of date: drop it so opening the chat
+    // loads it fresh (this was the "list shows the new message, chat doesn't" bug).
+    for (const [id, st] of S.msgs) {
+      if (id === S.current) continue;
+      const c = S.chats.get(id);
+      if (!c || (c.lastMessage && !st.list.some((m) => m.id === c.lastMessage.id))) S.msgs.delete(id);
+    }
     renderList();
     updateBadge();
     if (S.current && !S.chats.has(S.current)) closeChat();
@@ -593,7 +629,7 @@ export function renderList() {
 function chatRow(c) {
   const other = otherMember(c);
   const u = other ? S.users.get(other) : null;
-  const row = h('div', { class: 'chat-item' + (S.current === c.id ? ' active' : ''), onclick: () => openChat(c.id) },
+  const row = h('div', { class: 'chat-item' + (S.current === c.id ? ' active' : ''), 'data-id': c.id, onclick: () => openChat(c.id) },
     h('span', { class: 'ub-dot' + (c.unread && !isMuted(c) ? '' : ' none') }),
     avatar({ id: c.type === 'group' ? c.id : other, name: chatTitle(c), src: chatAvatar(c), size: 50, online: u?.online, group: c.type === 'group', zoom: true }),
     h('div', { class: 'body' },
@@ -761,7 +797,7 @@ export function openChat(id, { around = null, push = true } = {}) {
     if (st?.list.some((m) => m.id === around)) { renderMessages(); flashMessage(around); }
     else loadMessages(id, { around });
   } else if (!st || !st.loaded) loadMessages(id, { reset: true });
-  else { renderMessages(); scrollToBottom(); markRead(); }
+  else { renderMessages(); scrollToBottom(); markRead(); refreshRecent(id); }
   loadScheduled(id);
   clearChatNotifications(id);
 }
@@ -969,6 +1005,9 @@ async function loadMessages(chatId, { reset = false, around = null, older = fals
     else if (older) { st.list = [...messages, ...st.list]; st.hasMore = hasMore; }
     else { st.list = [...messages, ...st.list.filter((m) => m.pending)]; st.hasMore = hasMore; st.gapAfter = false; conv.nodes.clear(); }
     st.loaded = true;
+    // Messages that arrived while this was loading (the fetch may have started before they existed).
+    if (!older && !around && st.early?.length) for (const m of st.early) upsertMessage(m, false);
+    st.early = null;
     if (around && messages.length && messages[messages.length - 1].id === S.chats.get(chatId)?.lastMessage?.id) st.gapAfter = false;
   } catch (e) {
     st.loading = false;
@@ -1098,6 +1137,7 @@ async function onNewMessage(m) {
   if (S.pet && S.current === m.chatId && m.kind !== 'system') S.pet.onMessage(m);
   const st = S.msgs.get(m.chatId);
   if (st && st.loaded && !st.gapAfter) upsertMessage(m, false);
+  else if (st && st.loading) (st.early ||= []).push(m); // added once the load finishes
   if (chat) {
     chat.lastMessage = m;
     chat.lastMsgAt = m.createdAt;
@@ -1140,6 +1180,8 @@ export function upsertMessage(m, render = true) {
     const old = st.list[i];
     if (old.att && old.localUrl && m.att) S.localMedia.set(m.att.id, old.localUrl);
     st.list[i] = { ...m, clientId: undefined };
+    // The same message can arrive twice (catch-up fetch + its send confirmation): keep one copy.
+    st.list = st.list.filter((x, k) => k === i || x.id !== m.id);
   } else {
     // insert in id order (pending items stay at the end)
     let j = st.list.length;
