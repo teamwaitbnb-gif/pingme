@@ -18,6 +18,9 @@ if [ -z "$PROJECT" ]; then
   exit 1
 fi
 echo "Project: $PROJECT  Service: $SERVICE  Region: $REGION"
+if ! grep -qE '^MEDIA_BUCKET=.+' .env; then
+  echo "WARNING: MEDIA_BUCKET is not set in .env — photos and videos are stored in MySQL and can fill the database disk." >&2
+fi
 
 gcloud services enable run.googleapis.com cloudbuild.googleapis.com artifactregistry.googleapis.com --quiet
 

@@ -680,56 +680,142 @@ export function openUserProfile(userId) {
 
 // ═══════════════════════════ media viewer ═══════════════════════════
 
+// Save a photo/video to the phone's gallery. On iPhone the share sheet's "Save Image / Save Video"
+// is the only way a web app can put it in Photos; Android saves it to Downloads, which the
+// Gallery shows. The file is fetched ahead (prefetchMedia) so the share sheet opens on the tap.
+const mediaBlobs = new Map(); // attachment id → Promise<File>
+export function prefetchMedia(att) {
+  if (!att?.id) return null;
+  if (!mediaBlobs.has(att.id)) {
+    const p = fetch(`/api/files/${att.id}`).then((r) => { if (!r.ok) throw new Error('fetch'); return r.blob(); })
+      .then((b) => new File([b], att.name || (b.type.startsWith('video/') ? 'video.mp4' : 'photo.jpg'), { type: b.type || att.mime || '' }));
+    p.catch(() => mediaBlobs.delete(att.id));
+    mediaBlobs.set(att.id, p);
+    if (mediaBlobs.size > 6) mediaBlobs.delete(mediaBlobs.keys().next().value);
+  }
+  return mediaBlobs.get(att.id);
+}
+export async function saveToGallery(att) {
+  if (!att?.id) return;
+  const downloadIt = (url) => { const a = h('a', { href: url, download: att.name || 'file' }); document.body.append(a); a.click(); a.remove(); };
+  if (!isIOS()) { downloadIt(`/api/files/${att.id}?dl=1`); toast('Saved to your phone · find it in Gallery → Downloads', { timeout: 2600 }); return; }
+  const stop = toast('Getting it ready…', { timeout: 20000 });
+  let file;
+  try { file = await prefetchMedia(att); } catch { stop(); return toast('Could not save — check your connection', { error: true }); }
+  stop();
+  if (!navigator.canShare?.({ files: [file] })) return downloadIt(`/api/files/${att.id}?dl=1`);
+  try { await navigator.share({ files: [file] }); }
+  catch (e) {
+    if (e.name === 'AbortError') return;
+    // Safari only opens the share sheet straight from a tap; the file is ready now, so one more tap does it.
+    toast(null, { timeout: 6000, onClick: () => navigator.share({ files: [file] }).catch(() => {}), node: h('div', { class: 'row upd-toast' }, icon('download'), h('div', null, h('b', null, 'Tap to save to Photos'), h('span', null, 'Then choose “Save Image” or “Save Video”'))) });
+  }
+}
+
 export function openViewer(m, list = null) {
   const items = list || (S.msgs.get(m.chatId)?.list || []).filter((x) => (x.kind === 'image' || x.kind === 'video') && !x.deleted && !x.pending);
   let idx = Math.max(0, items.findIndex((x) => x.id === m.id));
-  const body = h('div', { class: 'vb' });
+  if (!items.length) items.push(m);
+  // A strip of slides that follows the finger and snaps to the next/previous photo. Only the
+  // photo on screen and its neighbours exist; each shows its small preview at once and swaps to
+  // the full picture once it has decoded off the main thread — so swiping never stutters.
+  const track = h('div', { class: 'vtrack' });
+  const body = h('div', { class: 'vb' }, track);
   const title = h('div', { class: 't' });
+  const counter = h('div', { class: 'vcount' });
   const cap = h('div', { class: 'cap', hidden: true });
-  let scale = 1, tx = 0, ty = 0;
+  let scale = 1, tx = 0, ty = 0, closed = false;
   const root = h('div', { class: 'viewer', role: 'dialog' },
     h('div', { class: 'vh' },
       h('button', { 'aria-label': 'Close', onclick: () => close() }, icon('x')),
       title,
       h('button', { 'aria-label': 'Share', onclick: () => share() }, icon('share')),
       h('button', { 'aria-label': 'Forward', onclick: () => { close(); openForward(items[idx]); } }, icon('fwd')),
-      h('a', { 'aria-label': 'Download', style: { color: '#fff', width: '40px', height: '40px', display: 'grid', placeItems: 'center' }, class: 'dl' }, icon('download'))),
-    body, cap);
-  const show = () => {
-    const it = items[idx] || m;
-    scale = 1; tx = 0; ty = 0;
+      h('button', { 'aria-label': 'Save to gallery', onclick: () => saveToGallery(items[idx]?.att) }, icon('download'))),
+    body, counter, cap);
+  const W = () => body.clientWidth || innerWidth;
+  const slides = new Map(); // index → slide element
+  const thumbOf = (it) => it.thumbUrl || (it.att?.thumbId ? fileUrl({ id: it.att.thumbId }) : null);
+
+  function makeSlide(i) {
+    const it = items[i];
+    const slide = h('div', { class: 'vs' });
+    slide.style.transform = `translateX(${i * 100}%)`;
+    const src = fileUrl(it.att), thumb = thumbOf(it);
+    if (it.kind === 'image') {
+      const img = h('img', { alt: it.att?.name || '', draggable: false, decoding: 'async', src: thumb || src });
+      if (thumb && thumb !== src) {
+        // Keep a reference (an unreferenced Image can be dropped before it finishes decoding).
+        const full = slide._full = new Image(); full.decoding = 'async';
+        const swap = () => { if (!closed) img.src = src; slide._full = null; };
+        full.onload = () => (full.decode ? full.decode().then(swap, swap) : swap());
+        full.onerror = swap;
+        full.src = src;
+      }
+      slide.append(img);
+    } else {
+      // Neighbouring videos are just their poster; the one on screen gets a real player.
+      slide.append(thumb ? h('img', { src: thumb, alt: '', draggable: false, class: 'vposter' }) : h('div', { class: 'vposter' }), h('span', { class: 'vplay' }, icon('play', 'fill')));
+    }
+    return slide;
+  }
+  function mountVideo(i) {
+    const it = items[i], slide = slides.get(i);
+    if (!slide || it.kind !== 'video' || slide.querySelector('video')) return;
     const src = fileUrl(it.att);
-    // Trimmed videos play as a real clip (own length + timeline); others use the normal player.
-    const trimmed = it.kind === 'video' && Array.isArray(it.att?.trim);
-    const el = trimmed ? clipPlayer(src, it.att) : it.kind === 'video' ? h('video', { src, controls: true, autoplay: true, playsinline: true }) : h('img', { src, alt: it.att?.name || '' });
-    if (it.kind === 'video' && !trimmed) applyVideoEdits(el, it.att); // mute
-    body.replaceChildren(el);
+    const trimmed = Array.isArray(it.att?.trim);
+    const el = trimmed ? clipPlayer(src, it.att) : h('video', { src, controls: true, autoplay: true, playsinline: true, poster: thumbOf(it) || undefined });
+    if (!trimmed) applyVideoEdits(el, it.att);
+    slide.replaceChildren(el);
+  }
+  function unmountVideo(i) {
+    const slide = slides.get(i);
+    if (slide?.querySelector('video')) slide.replaceWith(slides.set(i, makeSlide(i)).get(i));
+  }
+  function layout(animate) {
+    for (const [i, el] of slides) if (Math.abs(i - idx) > 2) { el.remove(); slides.delete(i); }
+    for (let i = idx - 1; i <= idx + 1; i++) if (items[i] && !slides.has(i)) { const el = makeSlide(i); slides.set(i, el); track.append(el); }
+    track.style.transition = animate ? 'transform .3s cubic-bezier(.2,.8,.2,1)' : 'none';
+    track.style.transform = `translateX(${-idx * 100}%)`;
+  }
+  function show(animate = false) {
+    const it = items[idx];
+    scale = 1; tx = 0; ty = 0;
+    for (const [i, el] of slides) { if (i !== idx) unmountVideo(i); const media = el.firstChild; if (media) media.style.transform = ''; }
+    layout(animate);
+    mountVideo(idx);
     title.replaceChildren(it.senderId === S.me.id ? 'You' : user(it.senderId).name, h('small', null, new Date(it.createdAt).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })));
+    counter.hidden = items.length < 2; counter.textContent = `${idx + 1} of ${items.length}`;
     cap.hidden = !it.text; cap.textContent = it.text || '';
-    const a = root.querySelector('.dl');
-    a.href = `/api/files/${it.att.id}?dl=1`; a.setAttribute('download', it.att.name || 'file');
-  };
-  const apply = () => { const el = body.firstChild; if (el) el.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`; };
-  const close = () => { root.remove(); document.removeEventListener('keydown', onKey); };
-  const go = (d) => { if (items[idx + d]) { idx += d; show(); } };
+    if (isIOS() && it.att) prefetchMedia(it.att); // so "Save" opens the share sheet straight away
+  }
+  const cur = () => slides.get(idx)?.firstChild;
+  const apply = () => { const el = cur(); if (el) el.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`; };
+  const close = () => { closed = true; root.remove(); document.removeEventListener('keydown', onKey); };
+  const go = (d) => { if (items[idx + d]) { idx += d; show(true); } else layout(true); };
   const onKey = (e) => { if (e.key === 'Escape') close(); if (e.key === 'ArrowRight') go(1); if (e.key === 'ArrowLeft') go(-1); };
   async function share() {
     const it = items[idx];
     try {
-      const blob = await fetch(`/api/files/${it.att.id}`).then((r) => r.blob());
-      const file = new File([blob], it.att.name || 'media', { type: blob.type });
+      const file = await prefetchMedia(it.att);
       if (navigator.canShare?.({ files: [file] })) await navigator.share({ files: [file] });
-      else toast('Sharing is not supported here — use download');
+      else toast('Sharing is not supported here — use save');
     } catch (e) { if (e.name !== 'AbortError') toast('Could not share', { error: true }); }
   }
-  // gestures: double-tap zoom, drag to pan / swipe to navigate / swipe down to close, pinch zoom
-  let pts = new Map(), start = null, lastTap = 0, pinch0 = null;
+  // Gestures: swipe sideways (follows the finger, snaps by distance or flick speed), swipe down
+  // to close, double-tap / pinch to zoom, drag to pan a zoomed photo.
+  const pts = new Map();
+  let start = null, axis = null, lastTap = 0, pinch0 = null, lastMove = null, vx = 0;
   body.addEventListener('pointerdown', (e) => {
+    // Leave a video's own controls (bottom strip) alone.
+    if (e.target.tagName === 'VIDEO') { const r = e.target.getBoundingClientRect(); if (e.clientY > r.bottom - 64) return; }
     pts.set(e.pointerId, { x: e.clientX, y: e.clientY });
-    if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch0 = { d: Math.hypot(a.x - b.x, a.y - b.y), s: scale }; }
-    start = { x: e.clientX, y: e.clientY, tx, ty, t: Date.now() };
+    if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch0 = { d: Math.hypot(a.x - b.x, a.y - b.y), s: scale }; start = null; return; }
+    start = { x: e.clientX, y: e.clientY, tx, ty }; axis = null; vx = 0; lastMove = { x: e.clientX, t: performance.now() };
+    track.style.transition = 'none';
     const now = Date.now();
-    if (now - lastTap < 280 && items[idx]?.kind === 'image') { scale = scale > 1 ? 1 : 2.5; tx = ty = 0; apply(); lastTap = 0; } else lastTap = now;
+    if (now - lastTap < 280 && items[idx]?.kind === 'image') { scale = scale > 1 ? 1 : 2.5; tx = ty = 0; const el = cur(); if (el) { el.style.transition = 'transform .2s'; apply(); setTimeout(() => (el.style.transition = ''), 220); } lastTap = 0; start = null; }
+    else lastTap = now;
   });
   body.addEventListener('pointermove', (e) => {
     if (!pts.has(e.pointerId)) return;
@@ -737,8 +823,17 @@ export function openViewer(m, list = null) {
     if (pts.size === 2 && pinch0) { const [a, b] = [...pts.values()]; scale = Math.min(5, Math.max(1, pinch0.s * Math.hypot(a.x - b.x, a.y - b.y) / pinch0.d)); apply(); return; }
     if (!start) return;
     const dx = e.clientX - start.x, dy = e.clientY - start.y;
-    if (scale > 1) { tx = start.tx + dx; ty = start.ty + dy; apply(); }
-    else if (items[idx]?.kind === 'image') { body.firstChild.style.transform = `translate(${dx}px, ${Math.max(0, dy)}px)`; root.style.background = `rgba(0,0,0,${1 - Math.min(0.6, Math.max(0, dy) / 400)})`; }
+    if (scale > 1) { tx = start.tx + dx; ty = start.ty + dy; apply(); return; }
+    if (!axis) { if (Math.abs(dx) < 8 && Math.abs(dy) < 8) return; axis = Math.abs(dx) > Math.abs(dy) ? 'x' : 'y'; }
+    const t = performance.now();
+    if (t > lastMove.t) { vx = (e.clientX - lastMove.x) / (t - lastMove.t); lastMove = { x: e.clientX, t }; }
+    if (axis === 'x') {
+      const edge = (dx > 0 && !items[idx - 1]) || (dx < 0 && !items[idx + 1]);
+      track.style.transform = `translateX(calc(${-idx * 100}% + ${edge ? dx / 3 : dx}px))`;
+    } else if (dy > 0) {
+      const el = cur(); if (el) el.style.transform = `translateY(${dy}px) scale(${1 - Math.min(0.25, dy / 1600)})`;
+      root.style.background = `rgba(0,0,0,${1 - Math.min(0.6, dy / 400)})`;
+    }
   });
   const up = (e) => {
     pts.delete(e.pointerId);
@@ -748,10 +843,14 @@ export function openViewer(m, list = null) {
     start = null;
     if (scale > 1) return;
     root.style.background = '';
-    if (items[idx]?.kind !== 'image') return;
-    if (dy > 120 && Math.abs(dy) > Math.abs(dx)) return close();
-    if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy)) return go(dx < 0 ? 1 : -1);
-    if (body.firstChild) body.firstChild.style.transform = '';
+    if (axis === 'x') {
+      const flick = Math.abs(vx) > 0.35 && Math.sign(vx) === Math.sign(dx);
+      if (Math.abs(dx) > W() * 0.22 || flick) go(dx < 0 ? 1 : -1); else layout(true);
+    } else if (axis === 'y') {
+      if (dy > 110) return close();
+      const el = cur(); if (el) { el.style.transition = 'transform .2s'; el.style.transform = ''; setTimeout(() => (el.style.transition = ''), 220); }
+    }
+    axis = null;
   };
   body.addEventListener('pointerup', up);
   body.addEventListener('pointercancel', up);

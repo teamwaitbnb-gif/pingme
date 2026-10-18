@@ -288,7 +288,9 @@ async function previewId(raw, chatId, senderId) {
   const id = toInt(raw);
   if (!id) return undefined;
   const a = await db.one('SELECT chat_id, uploader_id, size FROM attachments WHERE id=? AND complete=1', [id]);
-  return a && Number(a.chat_id) === chatId && Number(a.uploader_id) === senderId && Number(a.size) <= 2 * 1024 * 1024 ? id : undefined;
+  if (!(a && Number(a.chat_id) === chatId && Number(a.uploader_id) === senderId && Number(a.size) <= 2 * 1024 * 1024)) return undefined;
+  await db.q('UPDATE attachments SET used=1 WHERE id=?', [id]);
+  return id;
 }
 
 // Notification text: says plainly what kind of message it is.
@@ -1696,6 +1698,14 @@ app.post('/api/upload', auth, express.raw({ type: () => true, limit: MAX_UPLOAD 
   const name = clampStr(decodeURIComponent(req.get('x-file-name') || 'file'), 200).replace(/[\\/\r\n]/g, '_');
   const mime = clampStr(req.get('content-type') || 'application/octet-stream', 100).split(';')[0];
   const meta = { name, mime };
+  // With a storage bucket, even small files go there as one piece, so photos never fill the database.
+  if (media.bucket()) {
+    const r = await db.q("INSERT INTO attachments (chat_id, uploader_id, meta_enc, size, data, chunks, store, complete) VALUES (?,?,?,?,NULL,1,'gcs',0)", [chatId, req.uid, C.enc(meta), req.body.length]);
+    const id = Number(r.insertId);
+    await media.putChunk(id, 0, req.body);
+    await db.q('UPDATE attachments SET complete=1 WHERE id=?', [id]);
+    return res.json({ id, name, mime, size: req.body.length });
+  }
   const r = await db.q('INSERT INTO attachments (chat_id, uploader_id, meta_enc, size, data) VALUES (?,?,?,?,?)', [chatId, req.uid, C.enc(meta), req.body.length, C.encBuf(req.body)]);
   res.json({ id: Number(r.insertId), name, mime, size: req.body.length });
 }));
@@ -2427,7 +2437,7 @@ async function runExpiry() {
 async function runCleanup() {
   // Drop uploads that were never attached to a message (e.g. abandoned sends).
   const stale = await db.q(
-    `SELECT a.id FROM attachments a WHERE a.created_at < ? AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.attachment_id=a.id)
+    `SELECT a.id FROM attachments a WHERE a.created_at < ? AND a.used=0 AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.attachment_id=a.id)
        AND NOT EXISTS (SELECT 1 FROM scheduled_messages s WHERE s.chat_id=a.chat_id) LIMIT 200`,
     [new Date(Date.now() - 24 * 3600 * 1000)]
   );

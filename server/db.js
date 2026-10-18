@@ -424,6 +424,9 @@ async function migrate(dbName) {
     // Large files are stored in encrypted 8 MiB pieces (see media.js); 0 = whole file in `data`.
     await pool.query("ALTER TABLE attachments ADD COLUMN chunks INT UNSIGNED NOT NULL DEFAULT 0, ADD COLUMN store VARCHAR(8) NOT NULL DEFAULT 'db', ADD COLUMN complete TINYINT NOT NULL DEFAULT 1, MODIFY data LONGBLOB NULL");
   }
+  // Chat-bubble previews (thumbId inside the message) aren't the message's own attachment;
+  // `used` keeps the clean-up of abandoned uploads from deleting them.
+  if (!atts.has('used')) await pool.query('ALTER TABLE attachments ADD COLUMN used TINYINT NOT NULL DEFAULT 0');
   const sessions = await cols('sessions');
   if (!sessions.has('device_hash')) await pool.query('ALTER TABLE sessions ADD COLUMN device_hash CHAR(64) NULL AFTER ua_enc');
   const fitems = await cols('feed_items');

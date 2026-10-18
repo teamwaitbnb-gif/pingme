@@ -18,6 +18,7 @@ import {
   openEmojiPicker, openMessageInfo, sendLocation, muteMenu, openSendOptions,
   openMessageOptions, openWhosRight, openVerifiedCamera, openSafety, openRecoveryRequests, shareWhosRight,
   openUs, openLetterComposer, openInviteLink, openUpgrade, viewLetter,
+  saveToGallery,
 } from './sheets.js';
 import { showOnboarding } from './onboarding.js';
 import { lockEnabled, showLock, isHidden } from './lock.js';
@@ -1895,7 +1896,8 @@ function openMessageMenu(m, el) {
     if (mine && m.text !== undefined && ['text', 'image', 'video', 'file'].includes(m.kind)) items.push(['Edit', 'edit', () => startEdit(m)]);
     items.push([m.pinned ? 'Unpin' : 'Pin', 'pin', () => emit('msg:pin', { id: m.id, pinned: !m.pinned }).catch((e) => toast(e.message, { error: true }))]);
     if (!priv && ['text', 'image', 'video', 'file', 'audio', 'location'].includes(m.kind)) items.push(['Forward', 'fwd', () => openForward(m)]);
-    if (m.att && !m.pending && !priv) items.push(['Save', 'download', () => { const a = h('a', { href: fileUrl(m.att).replace(/^blob:.*/, `/api/files/${m.att.id}`) + '?dl=1', download: m.att.name || 'file' }); document.body.append(a); a.click(); a.remove(); }]);
+    if (m.att && !m.pending && !priv && (m.kind === 'image' || m.kind === 'video')) items.push(['Save to Photos', 'download', () => saveToGallery(m.att)]);
+    else if (m.att && !m.pending && !priv) items.push(['Save', 'download', () => { const a = h('a', { href: fileUrl(m.att).replace(/^blob:.*/, `/api/files/${m.att.id}`) + '?dl=1', download: m.att.name || 'file' }); document.body.append(a); a.click(); a.remove(); }]);
     if (m.text && !priv && 'speechSynthesis' in window) items.push(['Speak', 'speak', () => { speechSynthesis.cancel(); speechSynthesis.speak(new SpeechSynthesisUtterance(m.text)); }]);
     if (m.effect && m.effect !== 'ink') items.push(['Replay Effect', 'sparkle', () => { if (SCREEN_EFFECTS[m.effect]) playScreenEffect(m.effect); else { const b = el.querySelector('.bubble'); b?.classList.remove('fx-' + m.effect); void b?.offsetWidth; b?.classList.add('fx-' + m.effect); } }]);
     items.push(['Info', 'info', () => openMessageInfo(m)]);
@@ -1939,7 +1941,7 @@ function renderComposer() {
   els.micBtn = h('button', { class: 'mic', 'aria-label': 'Record voice message', onclick: startRecording }, icon('mic'));
   els.camBtn = navigator.mediaDevices?.getUserMedia ? h('button', { class: 'cam-btn', 'aria-label': 'Camera', onclick: () => openChatCamera(chat) }, icon('camera')) : null;
   els.plus = h('button', { class: 'plus', 'aria-label': 'Attach', onclick: plusMenu }, icon('plus'));
-  els.fileInput = h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => { window.__pmPicking = false; addFiles([...e.target.files]); e.target.value = ''; }, oncancel: () => { window.__pmPicking = false; }, onclick: () => { window.__pmPicking = true; } });
+  els.fileInput = h('input', { type: 'file', multiple: true, hidden: true, onchange: (e) => { window.__pmPicking = false; addFiles([...e.target.files]); e.target.value = ''; }, oncancel: () => { window.__pmPicking = false; pickingDone(); }, onclick: () => { window.__pmPicking = true; pickingStart(); } });
   els.composer = h('div', { class: 'composer' }, els.plus, h('div', { class: 'inputbox' }, els.intentBtn, els.ta, els.sendBtn, els.camBtn, els.micBtn), els.fileInput);
   els.blockedNote = h('div', { class: 'blocked-note', hidden: true });
   els.smsBar = h('div', { class: 'sms-bar', hidden: true });
@@ -2217,14 +2219,45 @@ function setupDrop() {
   els.conv.addEventListener('drop', (e) => { e.preventDefault(); hint?.remove(); hint = null; depth = 0; addFiles([...(e.dataTransfer?.files || [])]); });
 }
 
+// The phone can take a while to hand over a big pick (iPhone converts photos first). As soon as
+// the picker closes, show that we're getting them, instead of a composer that looks like nothing happened.
+let pickWait = null;
+function pickingStart() {
+  pickingDone();
+  const back = () => {
+    if (document.hidden) return;
+    setTimeout(() => {
+      if (!window.__pmPicking || conv.tray.length || !els.tray) return;
+      els.tray.hidden = false;
+      els.tray.replaceChildren(h('div', { class: 'tray-wait' }, h('div', { class: 'spinner' }), h('span', null, 'Getting your photos ready…')));
+      pickWait.timer = setTimeout(pickingDone, 30000);
+    }, 600);
+  };
+  pickWait = { back, timer: 0 };
+  document.addEventListener('visibilitychange', back);
+  addEventListener('focus', back);
+}
+function pickingDone() {
+  if (!pickWait) return;
+  document.removeEventListener('visibilitychange', pickWait.back);
+  removeEventListener('focus', pickWait.back);
+  clearTimeout(pickWait.timer);
+  pickWait = null;
+  if (!conv.tray.length && els.tray?.querySelector('.tray-wait')) renderTray();
+}
+
 const TRAY_MAX = 150; // photos/videos/files in one go
 function addFiles(files) {
   let skipped = 0;
   for (const f of files) {
     if (f.size > S.config.maxUpload) { toast(`${f.name} is larger than ${fmtSize(S.config.maxUpload)}`, { error: true }); continue; }
     if (conv.tray.length >= TRAY_MAX) { skipped++; continue; }
-    conv.tray.push({ file: f, url: URL.createObjectURL(f), id: Math.random().toString(36).slice(2) });
+    const t = { file: f, url: URL.createObjectURL(f), id: Math.random().toString(36).slice(2) };
+    // Upload starts now, while the person looks at the tray or types a caption.
+    if (S.current && !f.pmViewOnce) { t.job = startUpload(S.current, f); t.job.listeners.add(() => trayProgress(t)); }
+    conv.tray.push(t);
   }
+  pickingDone();
   if (skipped) toast(`Up to ${TRAY_MAX} at once — ${skipped} not added`, { error: true });
   renderTray();
   updateSendBtn();
@@ -2280,8 +2313,23 @@ function smallPreview(file, url) {
     } else { clearTimeout(timer); resolve(null); }
   });
 }
+// Each tile has a thin upload bar; the header counts how many are already up.
+let trayHeadTimer = 0;
+function trayProgress(t) {
+  const bar = els.tray.querySelector(`[data-tid="${t.id}"] .ti-prog`);
+  if (bar) { bar.style.setProperty('--p', t.job.progress); bar.classList.toggle('done', t.job.progress >= 1); }
+  if (!trayHeadTimer) trayHeadTimer = setTimeout(() => {
+    trayHeadTimer = 0;
+    const head = els.tray.querySelector('.tray-head span');
+    const jobs = conv.tray.filter((x) => x.job);
+    if (!head || !jobs.length) return;
+    const up = jobs.filter((x) => x.job.progress >= 1).length;
+    head.textContent = up === jobs.length ? 'all uploaded · tap send' : `uploading ${up} of ${jobs.length} · send any time`;
+  }, 250);
+}
+
 function clearTray() {
-  conv.tray.forEach((t) => { URL.revokeObjectURL(t.url); if (t.thumb) URL.revokeObjectURL(t.thumb); });
+  conv.tray.forEach((t) => { if (t.job) t.job.cancelled = true; URL.revokeObjectURL(t.url); if (t.thumb) URL.revokeObjectURL(t.thumb); });
   conv.tray = []; renderTray(); updateSendBtn();
 }
 
@@ -2298,7 +2346,8 @@ function renderTray() {
       return h('div', { class: 'ti', 'data-tid': t.id },
         visual ? h('div', { class: 'ti-img' + (t.thumb ? ' ready' : ''), style: t.thumb ? { backgroundImage: `url(${t.thumb})` } : null }) : h('span', null, t.file.name),
         t.file.type.startsWith('video/') ? h('span', { class: 'ti-vid' }, icon('play', 'fill')) : null,
-        h('button', { class: 'rm', 'aria-label': 'Remove', onclick: () => { URL.revokeObjectURL(t.url); if (t.thumb) URL.revokeObjectURL(t.thumb); conv.tray = conv.tray.filter((x) => x !== t); renderTray(); updateSendBtn(); } }, icon('x')));
+        t.job ? h('i', { class: 'ti-prog' + (t.job.progress >= 1 ? ' done' : ''), style: { '--p': t.job.progress } }) : null,
+        h('button', { class: 'rm', 'aria-label': 'Remove', onclick: () => { if (t.job) t.job.cancelled = true; URL.revokeObjectURL(t.url); if (t.thumb) URL.revokeObjectURL(t.thumb); conv.tray = conv.tray.filter((x) => x !== t); renderTray(); updateSendBtn(); } }, icon('x')));
     }),
     n > TRAY_TILES ? h('div', { class: 'ti ti-more' }, h('b', null, `+${n - TRAY_TILES}`), h('small', null, 'more')) : null);
 }
@@ -2359,7 +2408,7 @@ export async function send(opts = {}) {
     // Camera "View once" switch sends this photo/video as a vanish-after-viewing message.
     const vanish = base.vanish || (f.pmViewOnce && feature('vanishAfterRead'));
     const inAlbum = album && /^(image|video)\//.test(f.type) && !vanish;
-    sendFile(chatId, f, { ...base, vanish, secure: false, text: caption, replyTo: i === 0 ? replyTo : null, album: inAlbum ? album : undefined, albumIndex: inAlbum ? i : undefined }, tray[i].url);
+    sendFile(chatId, f, { ...base, vanish, secure: false, text: caption, replyTo: i === 0 ? replyTo : null, album: inAlbum ? album : undefined, albumIndex: inAlbum ? i : undefined }, tray[i].url, tray[i].job);
   }
 }
 
@@ -2394,54 +2443,76 @@ function slots(max) {
 }
 const prepQ = slots(2), upQ = slots(5);
 
-async function sendFile(chatId, file, base, localUrl) {
+const fileKind = (type = '') => (type.startsWith('image/') ? 'image' : type.startsWith('video/') ? 'video' : 'file');
+
+// Prepares (preview + size) and uploads one file. Starts the moment a photo is picked, so by the
+// time send is tapped most of the album is already on its way; sending just attaches the result.
+function startUpload(chatId, file) {
+  const kind = fileKind(file.type);
+  const job = { chatId, kind, progress: 0, media: {}, thumbUrl: null, cancelled: false, listeners: new Set() };
+  const ping = () => job.listeners.forEach((f) => f());
+  job.done = (async () => {
+    let thumb = null;
+    if (kind === 'image' || kind === 'video') {
+      await prepQ.take();
+      try {
+        if (kind === 'video') {
+          job.media = await videoMeta(file);
+          // Camera edits: trim/mute are playback instructions — the original video is sent untouched.
+          if (file.pmMeta?.trim) job.media.trim = file.pmMeta.trim;
+          if (file.pmMeta?.muted) job.media.muted = true;
+        }
+        // Small preview for chat bubbles (the original stays untouched and opens in the viewer).
+        // Photos are always sent as the original file, byte for byte — never re-compressed.
+        if (!job.cancelled) thumb = await makeThumb(file, kind, { at: job.media.trim ? job.media.trim[0] : 0.1 });
+        if (kind === 'image' && thumb?.srcW) job.media = { w: thumb.srcW, h: thumb.srcH };
+        if (thumb) job.thumbUrl = URL.createObjectURL(thumb);
+      } finally { prepQ.free(); }
+      ping();
+    }
+    if (job.cancelled) throw new Error('cancelled');
+    await upQ.take();
+    try {
+      if (job.cancelled) throw new Error('cancelled');
+      const [tu, up] = await Promise.all([
+        thumb ? upload(chatId, thumb, 'preview.jpg').catch(() => null) : null,
+        upload(chatId, file, file.name, (p) => { job.progress = p; ping(); }),
+      ]);
+      if (tu) { job.media.thumbId = tu.id; S.localMedia.set(tu.id, job.thumbUrl); }
+      job.progress = 1; ping();
+      return up.id;
+    } finally { upQ.free(); }
+  })();
+  job.done.catch(() => {});
+  return job;
+}
+
+async function sendFile(chatId, file, base, localUrl, job = null) {
+  const kind = fileKind(file.type || '');
   const type = file.type || '';
-  let kind = type.startsWith('image/') ? 'image' : type.startsWith('video/') ? 'video' : type.startsWith('audio/') ? 'audio' : 'file';
-  if (kind === 'audio') kind = 'file';
   const pending = pendingMessage(chatId, { kind, text: base.text, att: { name: file.name, size: file.size, mime: type }, localUrl, progress: 0, effect: base.effect, intent: base.intent, eyes: !!base.eyes, readTtl: base.vanish ? 1 : null, album: base.album || null, albumIndex: base.albumIndex ?? null });
   const st = S.msgs.get(chatId);
   if (!base.sendAt && st) { st.list.push(pending); if (S.current === chatId) { renderMessages(); scrollToBottom(true); } }
-  let blob = file, media = {}, thumb = null, prep = false, slot = false;
+  if (!job || job.chatId !== chatId || job.cancelled) job = startUpload(chatId, file);
+  let lastRender = 0;
+  const sync = () => {
+    pending.progress = job.progress;
+    if (job.thumbUrl) pending.thumbUrl = job.thumbUrl;
+    Object.assign(pending.att, job.media);
+    if (Date.now() - lastRender > 150 && S.current === chatId) { lastRender = Date.now(); renderMessages(); }
+  };
+  job.listeners.add(sync); sync();
   try {
-    if (kind === 'image' || kind === 'video') {
-      await prepQ.take(); prep = true;
-      if (kind === 'video') {
-        media = await videoMeta(file);
-        // Camera edits: trim/mute are playback instructions — the original video is sent untouched.
-        if (file.pmMeta?.trim) media.trim = file.pmMeta.trim;
-        if (file.pmMeta?.muted) media.muted = true;
-        Object.assign(pending.att, media);
-      }
-      // Small preview for chat bubbles (the original stays untouched and opens in the viewer).
-      // Photos are always sent as the original file, byte for byte — never re-compressed.
-      thumb = await makeThumb(file, kind, { at: media.trim ? media.trim[0] : 0.1 });
-      if (kind === 'image' && thumb?.srcW) { media = { w: thumb.srcW, h: thumb.srcH }; pending.att.w = thumb.srcW; pending.att.h = thumb.srcH; }
-      if (thumb) { pending.thumbUrl = URL.createObjectURL(thumb); if (S.current === chatId) renderMessages(); }
-      prepQ.free(); prep = false;
-    }
-    await upQ.take(); slot = true;
-    let lastRender = 0;
-    // The preview and the original upload side by side.
-    const [tu, up] = await Promise.all([
-      thumb ? upload(chatId, thumb, 'preview.jpg').catch(() => null) : null,
-      upload(chatId, blob, file.name, (p) => {
-        pending.progress = p;
-        if (Date.now() - lastRender > 150 && S.current === chatId) { lastRender = Date.now(); renderMessages(); }
-      }),
-    ]);
-    if (tu) { media.thumbId = tu.id; S.localMedia.set(tu.id, pending.thumbUrl); }
-    S.localMedia.set(up.id, localUrl);
+    const attachmentId = await job.done;
+    S.localMedia.set(attachmentId, localUrl);
     pending.progress = 1;
-    await dispatch(chatId, { kind, attachmentId: up.id, media, ...base }, base.sendAt ? null : pending);
-    upQ.free(); slot = false;
+    await dispatch(chatId, { kind, attachmentId, media: job.media, ...base }, base.sendAt ? null : pending);
   } catch (e) {
-    if (prep) prepQ.free();
-    if (slot) upQ.free();
     pending.failed = true;
     pending._file = { file, base, localUrl };
     if (S.current === chatId) renderMessages();
     toast(e.message, { error: true });
-  }
+  } finally { job.listeners.delete(sync); }
 }
 
 async function retrySend(m) {
