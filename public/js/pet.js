@@ -233,7 +233,9 @@ const VOICE = {
 };
 
 // ───── the pet ─────
-export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, personal = false, onCustomize }) {
+// Every pet on screen (the group pet and your companions) registers here so they can play together.
+const PALS = new Set();
+export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, personal = false, onCustomize, slot = 0 }) {
   const zone = h('div', { class: 'pet-zone' + (personal ? ' personal-pet-zone' : '') });
   const inner = h('div', { class: 'pet-inner' });
   const pet = h('div', { class: 'pet-actor', role: 'button', tabindex: '0', 'aria-label': personal ? 'Your personal pet' : 'Group pet' }, inner);
@@ -285,7 +287,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
     if (destroyed) return;
     if (!state) { destroy(); return; }
     draw(); fit();
-    x = Math.max(10, W() * (personal ? 0.72 : 0.15)); targetX = x; place();
+    x = Math.max(10, W() * (personal ? Math.max(0.3, 0.74 - slot * 0.2) : 0.15)); targetX = x; place();
     if ((state.mood === 'Sleeping' || (state.night && state.energy < 35)) && !state.caged) setMode('sleep');
     raf = requestAnimationFrame(loop);
     // Its favourite person gets a hello.
@@ -429,6 +431,11 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
     // Never settle on top of a message (unless this already is the least-covering spot).
     if (covering()) { const sp = bestSpot(); if (sp.perch || Math.abs(sp.x - x) > 8) { goTo(sp, true); nextThink = now + 1800; return; } }
     if (Date.now() - lastActivity > 4 * 60000 || state.mood === 'Sleeping') { setMode('sleep'); nextThink = now + 15000; return; }
+    // Another pet nearby and free? Sometimes they play together instead.
+    if (Math.random() < 0.22 && pal.free()) {
+      const other = [...PALS].find((o) => o !== pal && o.conv === conv && o.free());
+      if (other) { playWith(other); nextThink = now + 7000; return; }
+    }
     const r = Math.random();
     if (r < 0.3) {
       const spans = freeSpans();
@@ -754,7 +761,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
         !egg ? { label: 'Rename', value: 'rename' } : null,
         !egg && L.outfits?.length ? { label: 'Outfit', value: 'outfit' } : null,
         !egg ? { label: L.caged ? 'Let out of cage' : 'Put in cage', value: 'cage' } : null,
-        { label: personal ? 'Hide in all chats' : 'Hide for me', value: 'hide', danger: true },
+        { label: personal ? 'Leave at home' : 'Hide for me', value: 'hide', danger: true },
       ].filter(Boolean) });
       if (v === 'style') onCustomize?.(); else if (v === 'rename') rename(); else if (v === 'outfit') chooseOutfit();
       else if (v === 'cage') act(L.caged ? 'release' : 'cage'); else if (v === 'hide') hideForMe();
@@ -778,12 +785,12 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
   const outside = (e) => { if (menu && !menu.contains(e.target)) closeMenu(); else if (menu) document.addEventListener('pointerdown', outside, { once: true, capture: true }); };
 
   async function hideForMe() {
-    const ok = await actionSheet({ title: personal ? 'Hide your companion in all chats?' : 'Hide the pet in this group?', actions: [{ label: 'Hide for me', value: 'hide' }] });
+    const ok = await actionSheet({ title: personal ? `Leave ${state.name} at home?` : 'Hide the pet in this group?', actions: [{ label: personal ? 'Leave at home' : 'Hide for me', value: 'hide' }] });
     if (ok !== 'hide') return;
-    if (personal) { try { await api('POST', '', { action: 'visibility', hidden: true }); } catch (e) { toast(e.message); return; } }
+    if (personal) { try { await api('POST', '', { action: 'team', on: false }); } catch (e) { toast(e.message); return; } }
     else try { localStorage.setItem('mm:petHidden:' + chatId, '1'); } catch {}
     destroy();
-    toast(personal ? 'Companion hidden — show it again in Pet shop' : 'Pet hidden — turn it back on from the group info', { timeout: 3500 });
+    toast(personal ? `${state.name} stays home — bring it back from PingCoins` : 'Pet hidden — turn it back on from the group info', { timeout: 3500 });
   }
 
   // Tap = poke (sound + jump + hearts, everyone sees it), and the little menu.
@@ -865,8 +872,54 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
   // Blink now and then.
   const blink = setInterval(() => { if (mode !== 'sleep') { pet.classList.add('blink'); setTimeout(() => pet.classList.remove('blink'), 140); } }, 3800);
 
+  // ───── playing with other pets ─────
+  function arrive(then, ms = 4500) {
+    const t0 = performance.now();
+    const iv = setInterval(() => {
+      if (destroyed) return clearInterval(iv);
+      if ((mode !== 'run' && mode !== 'walk') || Math.abs(targetX - x) < 4 || performance.now() - t0 > ms) { clearInterval(iv); then?.(); }
+    }, 60);
+  }
+  const pal = {
+    conv,
+    x: () => x, size: () => SIZE(),
+    free: () => !!state && !destroyed && !busyPhys && !jump && !fall && !drag?.on && !state.caged && kind !== 'egg' && !['sleep', 'eat', 'held'].includes(mode),
+    come(tx, face, then) { hold(); perch = null; targetX = Math.max(-SIZE() * 0.2, Math.min(W() - SIZE() * 0.8, tx)); facing = targetX > x ? 1 : -1; setMode('run'); arrive(() => { facing = face; place(); setMode('sit'); then?.(); }); },
+    flee(tx) { hold(); perch = null; targetX = tx; facing = tx > x ? 1 : -1; setMode('run'); arrive(() => setMode('idle'), 3000); },
+    cheer(m = 'happy', ms = 1200) { setMode(m); burst(HEART, 3); sound(kind); setTimeout(() => { if (mode === m) setMode('idle'); }, ms); },
+    startle() { setMode('shake'); say('!', 900); setTimeout(() => setMode('idle'), 800); },
+    done(ms = 2500) { release(ms); },
+  };
+  PALS.add(pal);
+  function playWith(o) {
+    const s = SIZE(), g = Math.random();
+    if (g < 0.45) {
+      // Nuzzle: they walk up to each other, touch noses and share hearts.
+      const meLeft = x < o.x(), mid = (x + o.x() + s) / 2;
+      let n = 0;
+      const both = () => { if (++n < 2) return; setTimeout(() => { pal.cheer(); o.cheer(); burst(HEART, 4); setTimeout(() => { pal.done(); o.done(); }, 1400); }, 300); };
+      pal.come(meLeft ? mid - s * 0.95 : mid - s * 0.05, meLeft ? 1 : -1, both);
+      o.come(meLeft ? mid - s * 0.05 : mid - s * 0.95, meLeft ? -1 : 1, both);
+    } else if (g < 0.85) {
+      // Chase: the other one runs off, this one chases it around, then they both laugh.
+      hold();
+      o.flee(o.x() < W() / 2 ? W() - o.size() - 10 : 10);
+      const iv = setInterval(() => {
+        if (destroyed) return clearInterval(iv);
+        perch = null; targetX = o.x() + (o.x() > x ? -s * 0.85 : s * 0.85); setMode('run');
+      }, 90);
+      setTimeout(() => { clearInterval(iv); setMode('idle'); pal.cheer('laugh', 1000); o.cheer('laugh', 1000); setTimeout(() => { pal.done(); o.done(); }, 1100); }, 2600);
+    } else {
+      // Pounce: a playful leap right next to the other one, who jumps in surprise.
+      hold();
+      leapTo(null, o.x() + (o.x() > x ? -s * 0.45 : s * 0.45));
+      setTimeout(() => { o.startle(); pal.cheer('happy', 900); setTimeout(() => pal.done(), 1000); }, 760);
+    }
+  }
+
   function destroy() {
     destroyed = true;
+    PALS.delete(pal);
     cancelAnimationFrame(raf); clearInterval(blink); clearInterval(hintTimer); clearInterval(guard); ro.disconnect();
     conv.removeEventListener('pointermove', onPointer); conv.removeEventListener('pointerdown', onPointer);
     document.removeEventListener('pointerdown', outside, true);
@@ -889,4 +942,18 @@ export function petPreview(p) {
     const g = document.createElementNS(NS, 'g'); g.innerHTML = PROPS[id](ANCHOR.quad); head.append(g);
   }
   return el;
+}
+
+// Small drawings of each outfit for the shop (same art the pets wear).
+const ICON_ANCHOR = { top: [20, 31], eyes: [20, 20, 15], neck: [20, 13] };
+export function outfitIcon(id) {
+  const el = document.createElementNS(NS, 'svg');
+  el.setAttribute('viewBox', '0 0 40 40'); el.setAttribute('class', 'outfit-icon');
+  el.innerHTML = id && PROPS[id] ? PROPS[id](ICON_ANCHOR) : '<circle cx="20" cy="20" r="11" fill="none" stroke="currentColor" stroke-width="2.4"/><path d="M12.5 27.5 L27.5 12.5" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"/>';
+  return el;
+}
+
+// Coat swatches for the shop: the species' own colour first, then the coats.
+export function coatSwatches(kind) {
+  return { natural: (TOON[kind] || TOON.cat).fur, ...COATS };
 }

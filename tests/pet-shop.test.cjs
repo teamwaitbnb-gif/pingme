@@ -58,3 +58,20 @@ test('back-pay for past chats follows the live rules: per-minute and per-10-minu
   assert.equal(r.days, 2);
   assert.equal(pastCoins([], []).coins, 0);
 });
+
+test('up to three companions come along; actions apply to the pet they name', () => {
+  const s = fresh(); s.balance = 1000;
+  for (const k of ['cat', 'dog', 'bunny', 'fox']) mutate(s, { action: 'buy', kind: k }, bad);
+  assert.deepEqual(s.team.length, 3);
+  assert.throws(() => mutate(s, { action: 'team', kind: s.team.includes('fox') ? 'dog' : 'fox', on: true }, bad), /Up to 3/);
+  const out = s.team[0];
+  mutate(s, { action: 'team', kind: out, on: false }, bad);
+  assert.ok(!s.team.includes(out));
+  const missing = ['cat', 'dog', 'bunny', 'fox'].find((k) => !s.team.includes(k));
+  mutate(s, { action: 'team', kind: missing, on: true }, bad);
+  assert.equal(s.team.length, 3);
+  mutate(s, { action: 'customize', kind: 'dog', color: 'mint' }, bad);
+  assert.equal(s.owned.dog.color, 'mint');
+  assert.notEqual(s.owned.fox.color, 'mint');
+  assert.throws(() => mutate(s, { action: 'team', kind: 'unicorn', on: true }, bad));
+});

@@ -579,20 +579,22 @@ module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, pu
     // Every group and its pet.
     const groups = await db.q("SELECT c.id, c.title_enc, (SELECT COUNT(*) FROM chat_members m WHERE m.chat_id=c.id AND m.active=1) members FROM chats c WHERE c.type='group'");
     const msgs = new Map((await db.q("SELECT chat_id, COUNT(*) n FROM messages WHERE created_at >= ? AND kind NOT IN ('system','call') AND chat_id IN (SELECT id FROM chats WHERE type='group') GROUP BY chat_id", [since])).map((r) => [Number(r.chat_id), n(r.n)]));
-    const out = [];
-    let mentionsTotal = 0;
+    // Pets for every group in parallel, then one pass over recent group texts for each pet's name.
+    const pets = new Map(await Promise.all(groups.map(async (g) => { try { return [Number(g.id), petState ? await petState(Number(g.id)) : null]; } catch { return [Number(g.id), null]; } })));
+    const names = new Map([...pets].filter(([, p]) => p?.name && p.level > 0).map(([cid, p]) => [cid, p.name.toLowerCase()]));
+    const mentionsBy = new Map();
     const talkers = new Set();
-    for (const g of groups) {
-      const cid = Number(g.id);
-      let p = null; try { p = petState ? await petState(cid) : null; } catch {}
-      let mentions = 0;
-      if (p?.name && p.level > 0) {
-        const name = p.name.toLowerCase();
-        for (const m of await db.q("SELECT sender_id, body_enc FROM messages WHERE chat_id=? AND kind='text' AND deleted=0 AND created_at >= ? ORDER BY id DESC LIMIT 3000", [cid, since])) {
-          const b = C.decJson(m.body_enc, {}) || {};
-          if (!b.secure && !b.eyes && typeof b.text === 'string' && b.text.toLowerCase().includes(name)) { mentions++; talkers.add(Number(m.sender_id)); }
-        }
+    if (names.size) {
+      for (const m of await db.q("SELECT chat_id, sender_id, body_enc FROM messages WHERE chat_id IN (?) AND kind='text' AND deleted=0 AND created_at >= ? ORDER BY id DESC LIMIT 30000", [[...names.keys()], since])) {
+        const cid = Number(m.chat_id), name = names.get(cid);
+        const b = C.decJson(m.body_enc, {}) || {};
+        if (!b.secure && !b.eyes && typeof b.text === 'string' && b.text.toLowerCase().includes(name)) { mentionsBy.set(cid, (mentionsBy.get(cid) || 0) + 1); talkers.add(Number(m.sender_id)); }
       }
+    }
+    let mentionsTotal = 0;
+    const out = [];
+    for (const g of groups) {
+      const cid = Number(g.id), p = pets.get(cid), mentions = mentionsBy.get(cid) || 0;
       mentionsTotal += mentions;
       const pc = perChat.get(cid);
       out.push({ chatId: cid, title: C.dec(g.title_enc) || 'Group', members: n(g.members), messages: msgs.get(cid) || 0,

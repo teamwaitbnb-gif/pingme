@@ -45,8 +45,16 @@ function award(s, type, now = Date.now()) {
   s.last[type] = now; s.earned += coins; s.balance += coins;
   return coins;
 }
+const TEAM_MAX = 3; // companions that come along into chats at the same time (they play together)
+const isPet = (s, kind) => typeof kind === 'string' && CATALOG.some((p) => p.kind === kind) && Object.hasOwn(s.owned, kind);
+function team(s) {
+  if (!Array.isArray(s.team)) s.team = s.active && s.owned[s.active] ? [s.active] : [];
+  s.team = s.team.filter((k) => isPet(s, k)).slice(0, TEAM_MAX);
+  return s.team;
+}
 function mutate(s, body, bad) {
   const { action, kind } = body;
+  team(s);
   if (action === 'buy') {
     const item = CATALOG.find(p => p.kind === kind);
     if (!item) throw bad('Choose a pet from the shop');
@@ -54,15 +62,23 @@ function mutate(s, body, bad) {
       if (s.balance < item.price) throw bad('Keep chatting to earn more PingCoins');
       s.balance -= item.price;
       s.owned[kind] = { kind, name: item.name, color: 'natural', outfit: null, glasses: false };
+      if (s.team.length < TEAM_MAX && !s.team.includes(kind)) s.team.push(kind); // new pets come along
     }
     s.active = kind; s.hidden = false;
   } else if (action === 'equip') {
     if (!CATALOG.some(p => p.kind === kind) || !Object.hasOwn(s.owned, kind)) throw bad('Adopt this pet first');
     s.active = kind; s.hidden = false;
+    if (!s.team.includes(kind)) { if (s.team.length >= TEAM_MAX) s.team.pop(); s.team.unshift(kind); }
+  } else if (action === 'team') {
+    // Bring a pet along into chats, or leave it home (up to three at once).
+    if (!isPet(s, kind)) throw bad('Adopt this pet first');
+    if (body.on) { if (!s.team.includes(kind)) { if (s.team.length >= TEAM_MAX) throw bad(`Up to ${TEAM_MAX} pets can come along at once`); s.team.push(kind); } s.hidden = false; }
+    else s.team = s.team.filter((k) => k !== kind);
   } else if (action === 'visibility') s.hidden = !!body.hidden;
   else if (action === 'seen-backfill') { if (s.backfill) s.backfill.seen = true; }
   else {
-    const p = s.owned[s.active];
+    // Actions apply to the pet named in the request (a companion in chat), else the selected one.
+    const p = isPet(s, kind) ? s.owned[kind] : s.owned[s.active];
     if (!p) throw bad('Adopt a pet first');
     if (action === 'customize' || action === 'rename' || action === 'outfit') {
       if (body.name !== undefined) {
@@ -78,12 +94,13 @@ function mutate(s, body, bad) {
   }
 }
 function view(s) {
-  const p = s.owned[s.active];
+  team(s);
   const need = (at) => Math.max(15, Math.round(100 - (Date.now() - (at || Date.now())) / 3600000 * 4));
-  return { ...s, catalog: CATALOG, colors: COLORS, outfits: OUTFITS,
-    pet: !p || s.hidden ? null : { ...p, level: 3, stage: 'Companion', rarity: 'Personal', defaultName: CATALOG.find(i => i.kind === p.kind).name,
-      xp: 0, next: null, mood: 'Happy', moodEmoji: '♡', hunger: need(p.feed), happiness: need(p.play), energy: 90,
-      outfits: [...OUTFITS, 'glasses'].map(id => ({ id, label: id })), night: false, favorite: null } };
+  const petView = (p) => ({ ...p, level: 3, stage: 'Companion', rarity: 'Personal', defaultName: CATALOG.find((i) => i.kind === p.kind).name,
+    xp: 0, next: null, mood: 'Happy', moodEmoji: '', hunger: need(p.feed), happiness: need(p.play), energy: 90,
+    outfits: [...OUTFITS, 'glasses'].map((id) => ({ id, label: id[0].toUpperCase() + id.slice(1) })), night: false, favorite: null });
+  const pets = s.hidden ? [] : s.team.map((k) => petView(s.owned[k]));
+  return { ...s, catalog: CATALOG, colors: COLORS, outfits: OUTFITS, teamMax: TEAM_MAX, pets, pet: pets[0] || null };
 }
 module.exports = function ({ app, db, C, auth, wrap, bad, rateLimit, emitToUser, monitor }) {
   // One-time back-pay for chats and calls before the wallet existed (or before today, for wallets
@@ -102,25 +119,42 @@ module.exports = function ({ app, db, C, auth, wrap, bad, rateLimit, emitToUser,
     }
     return pastCoins(msgs.map((r) => new Date(r.created_at).getTime()), callTimes);
   }
+  // Every change locks the wallet row once (SELECT … FOR UPDATE) and retries if MySQL reports a
+  // deadlock or two first-time inserts race — so a purchase or a style change is never lost.
+  const RETRY = new Set(['ER_LOCK_DEADLOCK', 'ER_LOCK_WAIT_TIMEOUT', 'ER_DUP_ENTRY']);
   async function transaction(uid, fn) {
-    const conn = await db.pool.getConnection();
-    try {
-      await conn.beginTransaction();
-      await conn.query('INSERT IGNORE INTO pet_wallets (user_id,state_enc) VALUES (?,?)', [uid, C.enc(fresh())]);
-      const [[row]] = await conn.query('SELECT state_enc FROM pet_wallets WHERE user_id=? FOR UPDATE', [uid]);
-      const s = C.decJson(row.state_enc);
-      if (!s) throw new Error('Pet wallet could not be read');
-      if (!s.backfill) {
-        const r = await backfill(conn, uid, s);
-        s.balance += r.coins;
-        s.backfill = { ...r, at: Date.now(), seen: r.coins === 0 };
-      }
-      await fn(s);
-      await conn.query('UPDATE pet_wallets SET state_enc=? WHERE user_id=?', [C.enc(s), uid]);
-      await conn.commit(); return view(s);
-    } catch (e) { await conn.rollback(); throw e; } finally { conn.release(); }
+    for (let attempt = 0; ; attempt++) {
+      const conn = await db.pool.getConnection();
+      try {
+        await conn.beginTransaction();
+        const [[row]] = await conn.query('SELECT state_enc FROM pet_wallets WHERE user_id=? FOR UPDATE', [uid]);
+        let s;
+        if (row) s = C.decJson(row.state_enc);
+        else { s = fresh(); await conn.query('INSERT INTO pet_wallets (user_id,state_enc) VALUES (?,?)', [uid, C.enc(s)]); }
+        if (!s) throw new Error('Pet wallet could not be read');
+        if (!s.backfill) {
+          const r = await backfill(conn, uid, s);
+          s.balance += r.coins;
+          s.backfill = { ...r, at: Date.now(), seen: r.coins === 0 };
+        }
+        await fn(s);
+        await conn.query('UPDATE pet_wallets SET state_enc=? WHERE user_id=?', [C.enc(s), uid]);
+        await conn.commit();
+        return view(s);
+      } catch (e) {
+        await conn.rollback().catch(() => {});
+        if (RETRY.has(e.code) && attempt < 4) { await new Promise((r) => setTimeout(r, 30 + Math.random() * 80 * (attempt + 1))); continue; }
+        throw e;
+      } finally { conn.release(); }
+    }
   }
-  app.get('/api/pets/me', auth, wrap(async (req, res) => res.json(await transaction(req.uid, () => {}))));
+  // Reading never locks: a wallet that exists (and has had its back-pay) is just read.
+  async function read(uid) {
+    const row = await db.one('SELECT state_enc FROM pet_wallets WHERE user_id=?', [uid]);
+    const s = row && C.decJson(row.state_enc);
+    return s?.backfill ? view(s) : transaction(uid, () => {});
+  }
+  app.get('/api/pets/me', auth, wrap(async (req, res) => res.json(await read(req.uid))));
   app.post('/api/pets/me', auth, wrap(async (req, res) => {
     rateLimit('personal-pet:' + req.uid, 60, 60000);
     const result = await transaction(req.uid, s => mutate(s, req.body, bad));

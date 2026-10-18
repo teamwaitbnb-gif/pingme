@@ -1973,3 +1973,76 @@ html.fp-cw { --sat: env(safe-area-inset-right); --sab: env(safe-area-inset-left)
 .sb-head .spacer { flex-shrink: 1; min-width: 0; }
 @media (max-width: 420px) { .coin-chip { padding: 0 9px 0 6px; } .sb-head .icon-btn { width: 36px; } }
 @media (max-width: 370px) { .get-app .ga-t { display: none; } .get-app { padding: 0 9px; } }
+
+/* ───── PingCoins screen (redesign) ───── */
+.ps-wrap { max-width: 640px; margin: 0 auto; padding: 4px 16px 40px; display: grid; gap: 22px; }
+.ps-loading { display: grid; place-items: center; padding: 80px 0; }
+.pc-card-gold { position: relative; overflow: hidden; border-radius: 26px; padding: 18px 18px 16px; color: #3b2600;
+  background: radial-gradient(120% 90% at 85% 0%, #fff3b0 0%, transparent 55%), linear-gradient(140deg, #ffd84d, #ffb800 60%, #f59e0b);
+  box-shadow: 0 14px 34px rgba(245,158,11,.35), inset 0 1px 0 rgba(255,255,255,.6); }
+.pc-card-gold::after { content: ''; position: absolute; right: -40px; bottom: -60px; width: 200px; height: 200px; border-radius: 50%; background: rgba(255,255,255,.18); }
+.pc-top { display: flex; align-items: center; justify-content: space-between; font-size: 13px; font-weight: 700; opacity: .85; position: relative; z-index: 1; }
+.pc-what { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; border-radius: 14px; background: rgba(255,255,255,.45); color: #3b2600; font-weight: 700; font-size: 12px; }
+.pc-what svg { width: 15px; height: 15px; }
+.pc-balance-big { display: flex; align-items: center; gap: 10px; margin: 12px 0 14px; position: relative; z-index: 1; }
+.pc-balance-big b { font-size: 46px; font-weight: 900; letter-spacing: -1.5px; line-height: 1; font-variant-numeric: tabular-nums; }
+.pc-earn { display: flex; flex-wrap: wrap; gap: 6px; position: relative; z-index: 1; }
+.pc-earn span { display: inline-flex; align-items: center; gap: 5px; padding: 6px 10px; border-radius: 12px; background: rgba(255,255,255,.4); font-size: 12.5px; font-weight: 600; }
+.pc-earn svg { width: 15px; height: 15px; } .pc-earn b { font-weight: 900; }
+.pc-info { padding: 12px 4px 0; display: grid; gap: 4px; } .pc-info p { margin: 0; color: var(--text2); font-size: 14px; line-height: 1.5; } .pc-info small { color: var(--text2); font-size: 12px; }
+.ps-backpay { display: flex; align-items: center; gap: 10px; margin: 0; padding: 12px 14px; border-radius: 16px; background: rgba(255,196,0,.12); font-size: 13.5px; line-height: 1.35; }
+.ps-backpay svg { width: 22px; height: 22px; color: #f5b400; flex-shrink: 0; }
+.ps-section { display: grid; gap: 12px; } .ps-section:empty { display: none; }
+.ps-head { display: grid; gap: 2px; } .ps-head h3 { margin: 0; font-size: 20px; letter-spacing: -.3px; } .ps-head small { color: var(--text2); font-size: 13px; }
+.ps-team { display: flex; gap: 10px; overflow-x: auto; padding: 2px 2px 6px; margin: 0 -16px; padding-left: 16px; padding-right: 16px; scrollbar-width: none; }
+.ps-team::-webkit-scrollbar { display: none; }
+.ps-pet { flex: 0 0 132px; display: grid; justify-items: center; gap: 6px; padding: 10px 8px 10px; border-radius: 20px; background: var(--bg2); box-shadow: 0 0 0 1.5px var(--fill2); cursor: pointer; }
+.ps-pet.sel { box-shadow: 0 0 0 2.5px #f5b400, 0 8px 20px rgba(245,180,0,.18); }
+.ps-pet-art { width: 110px; height: 88px; } .ps-pet-art svg { width: 100%; height: 100%; }
+.ps-pet b { font-size: 14.5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-along { display: inline-flex; align-items: center; gap: 4px; padding: 5px 9px; border-radius: 12px; font-size: 11.5px; font-weight: 700; background: var(--fill); color: var(--text2); }
+.ps-along svg { width: 13px; height: 13px; stroke-width: 2.6; }
+.ps-along.on { background: rgba(48,209,88,.16); color: #1fa24a; }
+.ps-studio { display: grid; gap: 14px; padding: 14px; border-radius: 24px; background: var(--bg2); box-shadow: 0 0 0 1.5px var(--fill2); }
+.ps-stage { height: 190px; border-radius: 18px; display: grid; place-items: center; background: radial-gradient(60% 18% at 50% 88%, rgba(0,0,0,.14), transparent 70%), radial-gradient(90% 90% at 50% 20%, rgba(255,214,77,.22), transparent 70%), var(--fill); }
+.ps-stage svg { width: 210px; height: 178px; animation: psBob 2.8s ease-in-out infinite; }
+@keyframes psBob { 50% { transform: translateY(-4px); } }
+.ps-name { display: flex; align-items: center; gap: 8px; padding: 0 12px; height: 46px; border-radius: 14px; background: var(--fill); }
+.ps-name svg { width: 18px; height: 18px; color: var(--text2); flex-shrink: 0; }
+.ps-name-input { flex: 1; min-width: 0; border: 0; background: transparent; outline: none; font: inherit; font-size: 16px; font-weight: 700; color: var(--text); }
+.ps-label { display: flex; justify-content: space-between; font-size: 12.5px; font-weight: 700; color: var(--text2); margin: 4px 2px 8px; text-transform: uppercase; letter-spacing: .6px; }
+.ps-label span { text-transform: none; letter-spacing: 0; font-weight: 600; }
+.ps-swatches { display: flex; flex-wrap: wrap; gap: 10px; }
+.ps-swatch { width: 38px; height: 38px; border-radius: 50%; background: var(--sw); box-shadow: inset 0 0 0 2px rgba(0,0,0,.18), 0 0 0 0 transparent; display: grid; place-items: center; color: #fff; transition: transform .15s, box-shadow .15s; }
+.ps-swatch svg { width: 18px; height: 18px; stroke-width: 3; filter: drop-shadow(0 1px 1px rgba(0,0,0,.5)); }
+.ps-swatch.on { box-shadow: inset 0 0 0 2px rgba(0,0,0,.18), 0 0 0 3px var(--bg2), 0 0 0 5.5px #f5b400; transform: scale(1.06); }
+.ps-outfits { display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 8px; }
+.ps-outfit { display: grid; justify-items: center; gap: 4px; padding: 10px 4px 8px; border-radius: 16px; background: var(--fill); color: var(--text2); }
+.ps-outfit .outfit-icon { width: 38px; height: 38px; }
+.ps-outfit small { font-size: 11.5px; font-weight: 700; color: var(--text); }
+.ps-outfit.on { background: rgba(245,180,0,.16); box-shadow: inset 0 0 0 2px #f5b400; }
+.ps-outfit:active, .ps-swatch:active { transform: scale(.94); }
+.ps-toggle { display: flex; align-items: center; gap: 12px; width: 100%; padding: 10px 12px; border-radius: 16px; background: var(--fill); text-align: left; color: var(--text); margin-top: 4px; }
+.ps-toggle-ic { width: 40px; height: 40px; display: grid; place-items: center; border-radius: 12px; background: var(--bg2); }
+.ps-toggle-ic .outfit-icon { width: 34px; height: 34px; }
+.ps-toggle-t { flex: 1; display: grid; } .ps-toggle-t b { font-size: 15px; } .ps-toggle-t small { font-size: 12px; color: var(--text2); }
+.ps-switch { width: 46px; height: 28px; border-radius: 14px; background: var(--fill2); position: relative; transition: background .2s; flex-shrink: 0; }
+.ps-switch::after { content: ''; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .2s; }
+.ps-toggle.on .ps-switch { background: #34c759; } .ps-toggle.on .ps-switch::after { transform: translateX(18px); }
+.ps-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.ps-card { display: flex; flex-direction: column; align-items: stretch; gap: 3px; padding: 12px; border-radius: 22px; background: var(--bg2); box-shadow: 0 0 0 1.5px var(--fill2); border: 0; }
+.ps-card .ps-art { height: 118px; border-radius: 16px; background: radial-gradient(70% 20% at 50% 90%, rgba(0,0,0,.12), transparent 70%), var(--fill); display: grid; place-items: center; }
+.ps-card .ps-art svg { width: 130px; height: 110px; }
+.ps-card-name { font-size: 16px; margin-top: 6px; }
+.ps-species { text-transform: capitalize; font-size: 12px; color: var(--text2); }
+.ps-card p { margin: 4px 0 8px; font-size: 12.5px; line-height: 1.4; color: var(--text2); flex: 1; }
+.ps-buy { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 42px; padding: 0 10px; border-radius: 14px; background: linear-gradient(180deg, #ffd84d, #f5b400); color: #3b2600; font-weight: 800; font-size: 13px; box-shadow: inset 0 -2px 0 rgba(0,0,0,.1); }
+.ps-buy:disabled { background: var(--fill); color: var(--text2); box-shadow: none; font-weight: 700; }
+.ps-buy:disabled .pcoin { filter: grayscale(1); opacity: .6; }
+.ps-empty { display: flex; align-items: center; gap: 8px; color: var(--text2); padding: 14px; border-radius: 16px; background: var(--fill); }
+.ps-empty svg { width: 20px; height: 20px; color: #ff5c8a; }
+@media (prefers-reduced-motion: reduce) { .ps-stage svg { animation: none; } }
+.ps-swatches { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 8px; }
+.ps-swatch { width: auto; height: auto; aspect-ratio: 1; max-width: 42px; justify-self: center; width: 100%; }
+.ps-toggle-ic { background: linear-gradient(180deg, #fff6d6, #ffe48a); }
+.ps-outfit .outfit-icon, .ps-toggle-ic .outfit-icon { filter: drop-shadow(0 1px 0 rgba(255,255,255,.5)); }

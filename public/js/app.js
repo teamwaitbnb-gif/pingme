@@ -130,7 +130,7 @@ async function boot() {
 
 function showAuth(mode) {
   S.pet?.destroy(); S.pet = null;
-  S.personalPet?.destroy(); S.personalPet = null;
+  stopPersonalPets();
   S.socket?.disconnect();
   S.socket = null;
   S.current = null;
@@ -847,7 +847,7 @@ export function closeChat() {
   saveDraft();
   setScreen(S.tab === 'buzz' ? 'buzz' : 'chats');
   S.pet?.destroy(); S.pet = null;
-  S.personalPet?.destroy(); S.personalPet = null;
+  stopPersonalPets();
   S.current = null;
   stopIncognitoBeat();
   els.main?.classList.remove('show-conv');
@@ -970,17 +970,23 @@ async function showBackPay() {
   } catch {}
 }
 
-function startPersonalPet(chat) {
-  S.personalPet?.destroy(); S.personalPet = null;
-  S.personalPet = mountPet({ conv: els.conv, msgs: els.msgs, chatId: chat.id, personal: true,
-    api: (method, _url, body) => api(method, '/api/pets/me', body),
-    me: () => S.me?.id, userName: id => user(id).name.split(' ')[0], sounds: () => prefs().sounds,
-    onCustomize: openPetShop });
+// Your companions (up to three) come along into every chat — only you see them — and play together.
+function stopPersonalPets() { (S.personalPets || []).forEach((p) => p.destroy()); S.personalPets = []; }
+let petsLoad = 0;
+async function startPersonalPet(chat) {
+  stopPersonalPets();
+  const ticket = ++petsLoad;
+  let w; try { w = await api('GET', '/api/pets/me'); } catch { return; }
+  if (ticket !== petsLoad || S.current !== chat.id || !els.msgs) return;
+  S.personalPets = (w.pets || []).map((p, i) => mountPet({ conv: els.conv, msgs: els.msgs, chatId: chat.id, personal: true, slot: i,
+    api: async (method, _url, body) => { const r = await api(method, '/api/pets/me', method === 'POST' ? { ...body, kind: p.kind } : undefined); return { ...r, pet: (r.pets || []).find((x) => x.kind === p.kind) || null }; },
+    me: () => S.me?.id, userName: (id) => user(id).name.split(' ')[0], sounds: () => prefs().sounds,
+    onCustomize: () => openPetShop({ intro: true }) }));
 }
 
 function startPet(chat) {
   S.pet?.destroy(); S.pet = null;
-  S.personalPet?.destroy(); S.personalPet = null;
+  stopPersonalPets();
   startPersonalPet(chat);
   if (chat.type !== 'group' || !feature('groupPets') || petHidden(chat.id)) return; // pets live in group chats only
   S.pet = mountPet({
@@ -1187,7 +1193,7 @@ function setTyping(chatId, userId, on) {
   if (on) m.set(userId, setTimeout(() => setTyping(chatId, userId, false), 6000));
   else m.delete(userId);
   if (on && S.pet && S.current === chatId) S.pet.onTyping();
-  if (on && S.personalPet && S.current === chatId) S.personalPet.onTyping();
+  if (on && S.current === chatId) (S.personalPets || []).forEach((p) => p.onTyping());
   renderList();
   if (S.current === chatId) { renderHeader(); renderTyping(); }
 }
@@ -1215,7 +1221,7 @@ async function onNewMessage(m) {
   }
   const mine = m.senderId === S.me.id;
   if (S.pet && S.current === m.chatId && m.kind !== 'system') S.pet.onMessage(m);
-  if (S.personalPet && S.current === m.chatId && m.kind !== 'system') S.personalPet.onMessage(m);
+  if (S.current === m.chatId && m.kind !== 'system') (S.personalPets || []).forEach((p) => p.onMessage(m));
   const st = S.msgs.get(m.chatId);
   if (st && st.loaded && !st.gapAfter) upsertMessage(m, false);
   else if (st && st.loading) (st.early ||= []).push(m); // added once the load finishes
