@@ -420,7 +420,8 @@ export async function makeThumb(blob, kind, { at = 0.1 } = {}) {
   try {
     if (kind === 'image') {
       const bmp = await createImageBitmap(blob);
-      try { return await drawThumb(bmp, bmp.width, bmp.height); } finally { bmp.close?.(); }
+      // One decode gives both the preview and the photo's real size (srcW/srcH) for the layout.
+      try { const b = await drawThumb(bmp, bmp.width, bmp.height); if (b) { b.srcW = bmp.width; b.srcH = bmp.height; } return b; } finally { bmp.close?.(); }
     }
     if (kind === 'video') {
       // A string is a server URL: the video element streams just the start (range requests).

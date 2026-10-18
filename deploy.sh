@@ -33,6 +33,15 @@ done < .env
 
 # One instance keeps realtime state (sockets, calls) in one place; session affinity + long
 # timeout keep WebSockets alive; no CPU throttling lets scheduled/disappearing-message workers run.
+# Stamp this release so people can see which version they're on (Settings → About Ping Me).
+node -e '
+const { execSync } = require("child_process");
+const run = (c) => { try { return execSync(c, { encoding: "utf8" }).trim(); } catch { return ""; } };
+const v = { commit: run("git rev-parse --short HEAD"), date: run("git log -1 --format=%cI"), title: run("git log -1 --format=%s"), deployedAt: new Date().toISOString() };
+require("fs").writeFileSync("server/version.json", JSON.stringify(v));
+console.log("Release:", v.commit, "-", v.title);
+'
+
 gcloud run deploy "$SERVICE" \
   --source . \
   --region "$REGION" \

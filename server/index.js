@@ -1856,6 +1856,13 @@ const BUILD = (() => {
   return h.digest('hex').slice(0, 12);
 })();
 const swSource = (() => { try { return require('fs').readFileSync(path.join(pub, 'sw.js'), 'utf8').replace(/const VERSION = '[^']*';/, `const VERSION = 'pm-${BUILD}';`); } catch { return null; } })();
+// Release info (written by deploy.sh) + the page stamped with its build, so the app knows its version.
+const RELEASE = (() => { try { return JSON.parse(require('fs').readFileSync(path.join(__dirname, 'version.json'), 'utf8')); } catch { return { commit: null, title: null, date: null, deployedAt: null }; } })();
+const RELEASE_INFO = { build: BUILD, startedAt: new Date().toISOString(), ...RELEASE };
+const indexHtml = (() => { try { return require('fs').readFileSync(path.join(pub, 'index.html'), 'utf8').replace('<head>', `<head>\n  <meta name="pm-build" content="${BUILD}">\n  <meta name="pm-release" content="${encodeURIComponent(JSON.stringify(RELEASE_INFO))}">`); } catch { return null; } })();
+const sendIndex = (req, res) => { res.set({ 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' }); res.send(indexHtml); };
+app.get(['/', '/index.html'], (req, res, next) => (indexHtml ? sendIndex(req, res) : next()));
+app.get('/release.json', (req, res) => { res.set('Cache-Control', 'no-store'); res.json(RELEASE_INFO); });
 app.get('/sw.js', (req, res, next) => {
   if (!swSource) return next();
   res.set({ 'Content-Type': 'application/javascript; charset=utf-8', 'Cache-Control': 'no-cache, no-store, must-revalidate', 'Service-Worker-Allowed': '/' });
@@ -1873,7 +1880,7 @@ app.use(express.static(pub, {
     else res.setHeader('Cache-Control', 'public, max-age=86400');
   },
 }));
-app.get('*', (req, res) => res.sendFile(path.join(pub, 'index.html'), { headers: { 'Cache-Control': 'no-cache' } }));
+app.get('*', (req, res) => (indexHtml ? sendIndex(req, res) : res.sendFile(path.join(pub, 'index.html'), { headers: { 'Cache-Control': 'no-cache' } })));
 
 app.use((err, req, res, next) => {
   if (err.type === 'entity.too.large') return res.status(413).json({ error: 'File is too large' });

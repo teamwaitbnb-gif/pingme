@@ -59,8 +59,36 @@ document.addEventListener('touchmove', (e) => {
 
 // ═══════════════════════════ boot ═══════════════════════════
 
+// ─────── which version am I on? ───────
+// The page is stamped with its build when served (meta pm-release). After an update, a one-time
+// "Ping Me updated ✓" toast says what changed; when a newer release exists, offer to update now.
+export function runningRelease() {
+  try { return JSON.parse(decodeURIComponent(document.querySelector('meta[name="pm-release"]')?.content || '')); } catch { return null; }
+}
+export const releaseState = { latest: null, updateReady: false };
+let releaseToasted = false;
+async function checkRelease(first = false) {
+  const mine = runningRelease();
+  if (!mine?.build) return;
+  if (first) {
+    let last = null; try { last = localStorage.getItem('pm:build'); localStorage.setItem('pm:build', mine.build); } catch {}
+    if (last && last !== mine.build) setTimeout(() => toast(null, { timeout: 6500, node: h('div', { class: 'row upd-toast' }, icon('check'), h('div', null, h('b', null, 'Ping Me updated'), mine.title ? h('span', null, mine.title.slice(0, 90)) : null)) }), 1500);
+  }
+  try {
+    const latest = await (await fetch('/release.json', { cache: 'no-store' })).json();
+    releaseState.latest = latest;
+    releaseState.updateReady = !!latest.build && latest.build !== mine.build;
+    if (releaseState.updateReady && !releaseToasted && !first) {
+      releaseToasted = true;
+      toast(null, { timeout: 8000, onClick: () => window.__pmUpdateNow?.(), node: h('div', { class: 'row upd-toast' }, icon('download'), h('div', null, h('b', null, 'New version ready'), h('span', null, 'Tap to update now · or it updates next time you leave the app'))) });
+    }
+  } catch {}
+}
+setInterval(() => checkRelease(), 10 * 60000);
+
 async function boot() {
   applyPrefs();
+  checkRelease(true);
   if ('serviceWorker' in navigator) {
     // Check for a new release on open, whenever the app comes back to the foreground, and every
     // 30 minutes — an app that's only ever resumed (never reopened) still updates itself.
@@ -70,17 +98,19 @@ async function boot() {
     // screen never reloads in front of you.
     const safeNow = () => !S.calls?.active() && !window.__pmPicking && !(els.ta && els.ta.value.trim()) && !document.querySelector('.cam, .ed, .sheet');
     const applyWaiting = () => reg.then((r) => { if (r?.waiting && document.hidden && safeNow()) r.waiting.postMessage('skip-waiting'); }).catch(() => {});
-    document.addEventListener('visibilitychange', () => { if (document.hidden) applyWaiting(); else checkUpdate(); });
+    document.addEventListener('visibilitychange', () => { if (document.hidden) applyWaiting(); else { checkUpdate(); checkRelease(); } });
+    // "Update now" (Settings or the update toast): switch to the downloaded release right away.
+    window.__pmUpdateNow = () => reg.then((r) => { window.__pmForceReload = true; if (r?.waiting) r.waiting.postMessage('skip-waiting'); else location.reload(); setTimeout(() => location.reload(), 4000); });
     setInterval(checkUpdate, 30 * 60000);
     // A new release took over: reload onto it when it won't interrupt anything (never mid-call or
     // mid-typing) so old and new app files are never mixed.
     let hadController = !!navigator.serviceWorker.controller;
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       if (!hadController) { hadController = true; return; }
-      const safe = () => document.hidden && !S.calls?.active() && !window.__pmPicking && !(els.ta && els.ta.value.trim()) && !document.querySelector('.cam, .ed, .sheet');
+      const safe = () => (document.hidden || window.__pmForceReload) && !S.calls?.active() && !window.__pmPicking && !(els.ta && els.ta.value.trim()) && !document.querySelector('.cam, .ed, .sheet');
       // Only ever reload while the app is off screen.
       const go = () => { if (safe()) location.reload(); else if (document.hidden) setTimeout(go, 4000); };
-      if (document.hidden) go(); else document.addEventListener('visibilitychange', function v() { if (document.hidden) { document.removeEventListener('visibilitychange', v); go(); } });
+      if (document.hidden || window.__pmForceReload) go(); else document.addEventListener('visibilitychange', function v() { if (document.hidden) { document.removeEventListener('visibilitychange', v); go(); } });
     });
   }
   // The app is running: tell the start-up watchdog in index.html (and forget an earlier retry).
@@ -2201,17 +2231,76 @@ function addFiles(files) {
   els.ta.focus();
 }
 
+// The tray shows small previews, made one at a time from a downscaled copy — 150 full-size photos
+// as <img> tags would run an iPhone out of memory and Safari would reload the page (losing the pick).
+const TRAY_TILES = 24;
+const thumbQueue = [];
+let thumbBusy = false;
+function trayThumb(t) {
+  if (t.thumb !== undefined || t.queued) return;
+  t.queued = true; thumbQueue.push(t);
+  if (!thumbBusy) pumpThumbs();
+}
+async function pumpThumbs() {
+  thumbBusy = true;
+  while (thumbQueue.length) {
+    const t = thumbQueue.shift();
+    if (!conv.tray.includes(t)) continue;
+    t.thumb = await smallPreview(t.file, t.url).catch(() => null);
+    const img = els.tray.querySelector(`[data-tid="${t.id}"] .ti-img`);
+    if (img && t.thumb) { img.style.backgroundImage = `url(${t.thumb})`; img.classList.add('ready'); }
+  }
+  thumbBusy = false;
+}
+function smallPreview(file, url) {
+  return new Promise((resolve, reject) => {
+    const draw = (src, w, h) => {
+      const k = Math.min(1, 200 / Math.max(w, h));
+      const c = document.createElement('canvas');
+      c.width = Math.max(1, Math.round(w * k)); c.height = Math.max(1, Math.round(h * k));
+      c.getContext('2d').drawImage(src, 0, 0, c.width, c.height);
+      c.toBlob((b) => (b ? resolve(URL.createObjectURL(b)) : reject()), 'image/jpeg', 0.7);
+      c.width = c.height = 0;
+    };
+    const timer = setTimeout(() => reject(new Error('preview timeout')), 8000);
+    const done = (fn) => (...a) => { clearTimeout(timer); fn(...a); };
+    if (file.type.startsWith('image/')) {
+      const img = new Image();
+      img.decoding = 'async';
+      img.onload = done(() => { img.onerror = null; draw(img, img.naturalWidth, img.naturalHeight); img.removeAttribute('src'); });
+      img.onerror = done(reject);
+      img.src = url;
+    } else if (file.type.startsWith('video/')) {
+      const v = document.createElement('video');
+      v.muted = true; v.playsInline = true; v.preload = 'auto';
+      v.onloadeddata = () => { try { v.currentTime = Math.min(0.1, (v.duration || 1) / 2); } catch { done(reject)(); } };
+      v.onseeked = done(() => { v.onerror = null; draw(v, v.videoWidth, v.videoHeight); v.removeAttribute('src'); v.load(); });
+      v.onerror = done(reject);
+      v.src = url;
+    } else { clearTimeout(timer); resolve(null); }
+  });
+}
+function clearTray() {
+  conv.tray.forEach((t) => { URL.revokeObjectURL(t.url); if (t.thumb) URL.revokeObjectURL(t.thumb); });
+  conv.tray = []; renderTray(); updateSendBtn();
+}
+
 function renderTray() {
   els.tray.hidden = !conv.tray.length;
   const n = conv.tray.length, media = conv.tray.filter((t) => /^(image|video)\//.test(t.file.type)).length;
+  const shown = conv.tray.slice(0, TRAY_TILES);
   els.tray.replaceChildren(
     n > 1 ? h('div', { class: 'tray-head' }, h('b', null, `${n} ${media === n ? (n === 1 ? 'item' : 'items') : 'files'}`), h('span', null, media > 1 ? 'sent as one album · original quality' : 'original quality'),
-      h('button', { onclick: () => { conv.tray.forEach((t) => URL.revokeObjectURL(t.url)); conv.tray = []; renderTray(); updateSendBtn(); } }, 'Clear')) : null,
-    ...conv.tray.map((t) => h('div', { class: 'ti' },
-      t.file.type.startsWith('image/') ? h('img', { src: t.url, alt: '', loading: 'lazy', decoding: 'async' }) : t.file.type.startsWith('video/') ? h('video', { src: t.url + '#t=0.1', muted: true, playsinline: true, preload: 'metadata' }) : h('span', null, t.file.name),
-      t.file.type.startsWith('video/') ? h('span', { class: 'ti-vid' }, icon('play', 'fill')) : null,
-      h('button', { class: 'rm', 'aria-label': 'Remove', onclick: () => { URL.revokeObjectURL(t.url); conv.tray = conv.tray.filter((x) => x !== t); renderTray(); updateSendBtn(); } }, icon('x')))),
-''); // photos always go in original quality
+      h('button', { onclick: clearTray }, 'Clear')) : null,
+    ...shown.map((t) => {
+      const visual = /^(image|video)\//.test(t.file.type);
+      if (visual) trayThumb(t);
+      return h('div', { class: 'ti', 'data-tid': t.id },
+        visual ? h('div', { class: 'ti-img' + (t.thumb ? ' ready' : ''), style: t.thumb ? { backgroundImage: `url(${t.thumb})` } : null }) : h('span', null, t.file.name),
+        t.file.type.startsWith('video/') ? h('span', { class: 'ti-vid' }, icon('play', 'fill')) : null,
+        h('button', { class: 'rm', 'aria-label': 'Remove', onclick: () => { URL.revokeObjectURL(t.url); if (t.thumb) URL.revokeObjectURL(t.thumb); conv.tray = conv.tray.filter((x) => x !== t); renderTray(); updateSendBtn(); } }, icon('x')));
+    }),
+    n > TRAY_TILES ? h('div', { class: 'ti ti-more' }, h('b', null, `+${n - TRAY_TILES}`), h('small', null, 'more')) : null);
 }
 
 // ─────── sending ───────
@@ -2293,10 +2382,17 @@ async function dispatch(chatId, payload, pending) {
   }
 }
 
-// At most three files upload at the same time (150 at once would choke the phone and the network).
-let upActive = 0; const upWaiting = [];
-const upSlot = () => (upActive < 4 ? (upActive++, Promise.resolve()) : new Promise((r) => upWaiting.push(r)));
-const upFree = () => { const next = upWaiting.shift(); if (next) next(); else upActive--; };
+// Two queues: previews are made on the phone two at a time (decoding big photos is heavy on
+// memory), and up to five files upload at once. Previews run ahead, so every photo shows in the
+// chat right away and the network never waits on the phone.
+function slots(max) {
+  let active = 0; const waiting = [];
+  return {
+    take: () => (active < max ? (active++, Promise.resolve()) : new Promise((r) => waiting.push(r))),
+    free: () => { const next = waiting.shift(); if (next) next(); else active--; },
+  };
+}
+const prepQ = slots(2), upQ = slots(5);
 
 async function sendFile(chatId, file, base, localUrl) {
   const type = file.type || '';
@@ -2305,40 +2401,42 @@ async function sendFile(chatId, file, base, localUrl) {
   const pending = pendingMessage(chatId, { kind, text: base.text, att: { name: file.name, size: file.size, mime: type }, localUrl, progress: 0, effect: base.effect, intent: base.intent, eyes: !!base.eyes, readTtl: base.vanish ? 1 : null, album: base.album || null, albumIndex: base.albumIndex ?? null });
   const st = S.msgs.get(chatId);
   if (!base.sendAt && st) { st.list.push(pending); if (S.current === chatId) { renderMessages(); scrollToBottom(true); } }
-  let blob = file, media = {}, slot = false;
+  let blob = file, media = {}, thumb = null, prep = false, slot = false;
   try {
-    await upSlot(); slot = true;
-    if (kind === 'image') {
-      // Always the original file, byte for byte — never re-compressed (only its size is read for the layout).
-      const bmp = await createImageBitmap(file).catch(() => null);
-      if (bmp) { media = { w: bmp.width, h: bmp.height }; pending.att.w = bmp.width; pending.att.h = bmp.height; bmp.close?.(); }
-    } else if (kind === 'video') {
-      media = await videoMeta(file);
-      // Camera edits: trim/mute are playback instructions — the original video is sent untouched.
-      if (file.pmMeta?.trim) media.trim = file.pmMeta.trim;
-      if (file.pmMeta?.muted) media.muted = true;
-      Object.assign(pending.att, media);
-    }
     if (kind === 'image' || kind === 'video') {
-      // Small preview for chat bubbles (the original stays untouched and opens in the viewer).
-      const thumb = await makeThumb(kind === 'image' ? blob : file, kind, { at: media.trim ? media.trim[0] : 0.1 });
-      if (thumb) {
-        pending.thumbUrl = URL.createObjectURL(thumb);
-        if (S.current === chatId) renderMessages();
-        try { const tu = await upload(chatId, thumb, 'preview.jpg'); media.thumbId = tu.id; S.localMedia.set(tu.id, pending.thumbUrl); } catch {}
+      await prepQ.take(); prep = true;
+      if (kind === 'video') {
+        media = await videoMeta(file);
+        // Camera edits: trim/mute are playback instructions — the original video is sent untouched.
+        if (file.pmMeta?.trim) media.trim = file.pmMeta.trim;
+        if (file.pmMeta?.muted) media.muted = true;
+        Object.assign(pending.att, media);
       }
+      // Small preview for chat bubbles (the original stays untouched and opens in the viewer).
+      // Photos are always sent as the original file, byte for byte — never re-compressed.
+      thumb = await makeThumb(file, kind, { at: media.trim ? media.trim[0] : 0.1 });
+      if (kind === 'image' && thumb?.srcW) { media = { w: thumb.srcW, h: thumb.srcH }; pending.att.w = thumb.srcW; pending.att.h = thumb.srcH; }
+      if (thumb) { pending.thumbUrl = URL.createObjectURL(thumb); if (S.current === chatId) renderMessages(); }
+      prepQ.free(); prep = false;
     }
+    await upQ.take(); slot = true;
     let lastRender = 0;
-    const up = await upload(chatId, blob, file.name.replace(/\.(heic|heif|png|jpe?g)$/i, blob.type === 'image/webp' ? '.webp' : blob.type === 'image/jpeg' ? '.jpg' : '$&'), (p) => {
-      pending.progress = p;
-      if (Date.now() - lastRender > 150 && S.current === chatId) { lastRender = Date.now(); renderMessages(); }
-    });
+    // The preview and the original upload side by side.
+    const [tu, up] = await Promise.all([
+      thumb ? upload(chatId, thumb, 'preview.jpg').catch(() => null) : null,
+      upload(chatId, blob, file.name, (p) => {
+        pending.progress = p;
+        if (Date.now() - lastRender > 150 && S.current === chatId) { lastRender = Date.now(); renderMessages(); }
+      }),
+    ]);
+    if (tu) { media.thumbId = tu.id; S.localMedia.set(tu.id, pending.thumbUrl); }
     S.localMedia.set(up.id, localUrl);
     pending.progress = 1;
     await dispatch(chatId, { kind, attachmentId: up.id, media, ...base }, base.sendAt ? null : pending);
-    upFree(); slot = false;
+    upQ.free(); slot = false;
   } catch (e) {
-    if (slot) upFree();
+    if (prep) prepQ.free();
+    if (slot) upQ.free();
     pending.failed = true;
     pending._file = { file, base, localUrl };
     if (S.current === chatId) renderMessages();

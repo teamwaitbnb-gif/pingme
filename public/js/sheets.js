@@ -7,11 +7,7 @@ import {
 import { cropImage, SCREEN_EFFECTS, BUBBLE_EFFECTS, playScreenEffect } from './media.js';
 import { usernameField, googleButton, GOOGLE_LOGO } from './auth.js';
 import { S, api, emit, upload, user, userAvatar, fileUrl, otherMember, chatTitle, chatAvatar, isMuted, mergeUsers, prefs, applyPrefs, BUBBLES, feature } from './core.js';
-import {
-  openChat, closeChat, renderList, renderHeader, renderMessages, refreshChat, refreshMe, startDirect, deleteConversation, toggleIncognito,
-  send, setSendAt, sendPayload, jumpTo, setupPush, logout,
-  setMessageOpts, messageOpts, setCheckin, startSosTracking,
-} from './app.js';
+import { openChat, closeChat, renderList, renderHeader, renderMessages, refreshChat, refreshMe, startDirect, deleteConversation, toggleIncognito, send, setSendAt, sendPayload, jumpTo, setupPush, logout, setMessageOpts, messageOpts, setCheckin, startSosTracking, runningRelease, releaseState } from './app.js';
 import { FEATURE_GROUPS } from './onboarding.js';
 import { featureCards, collectCard, paintCard, DECK } from './cards.js';
 import { openStories } from './stories.js';
@@ -138,9 +134,10 @@ export function openSettings() {
 
       h('div', { class: 'group' },
         !isStandalone() ? cell({ icon: 'download', color: '#0a84ff', label: 'Install Ping Me app', sub: 'One tap on Android · quick guide on iPhone', onClick: () => installApp() }) : null,
+        aboutCell(),
         cell({ icon: 'logout', color: '#8e8e93', label: 'Sign out', onClick: async () => { if (await confirmDialog('Sign out of Ping Me on this device?', { ok: 'Sign Out', danger: true })) logout(); } }),
         cell({ icon: 'trash', color: '#ff3b30', label: 'Delete account', danger: true, onClick: deleteAccount })),
-      h('div', { class: 'muted small center', style: { margin: '10px 0 20px' } }, 'Ping Me · v1.0'));
+      h('div', { class: 'muted small center', style: { margin: '10px 0 20px' } }, 'Ping Me · ' + (runningRelease()?.commit || 'v1.0')));
   };
 
   function signInCell(provider, color, label, logo) {
@@ -288,6 +285,22 @@ async function shareLink(url, me, text) {
   if (navigator.share) { try { await navigator.share(data); return; } catch (e) { if (e.name === 'AbortError') return; } }
   await navigator.clipboard?.writeText(url);
   toast('Invite link copied');
+}
+
+// Settings → About Ping Me: the version on this phone, when it was deployed, and whether it's the latest.
+function aboutCell() {
+  const mine = runningRelease();
+  const when = (d) => (d ? new Date(d).toLocaleString([], { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : '');
+  const ver = mine?.commit || mine?.build?.slice(0, 7) || 'dev';
+  const sub = h('span', null, `Version ${ver}${mine?.deployedAt ? ' · deployed ' + when(mine.deployedAt) : ''}`);
+  const value = h('span', { class: 'ver-state' }, '…');
+  const c = cell({ icon: 'info', color: '#8e8e93', label: 'About Ping Me', sub, right: value, onClick: () => { if (releaseState.updateReady) window.__pmUpdateNow?.(); else toast(mine?.title ? `This version: ${mine.title}` : 'You’re on the latest version', { timeout: 3500 }); } });
+  fetch('/release.json', { cache: 'no-store' }).then((r) => r.json()).then((latest) => {
+    releaseState.latest = latest; releaseState.updateReady = !!latest.build && latest.build !== mine?.build;
+    value.className = 'ver-state ' + (releaseState.updateReady ? 'upd' : 'ok');
+    value.textContent = releaseState.updateReady ? 'Update now' : 'Latest ✓';
+  }).catch(() => { value.textContent = ''; });
+  return c;
 }
 
 function dpViewsButton() {

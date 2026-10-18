@@ -32,7 +32,7 @@ self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
   // Never cache API / realtime traffic (private, and must be fresh).
-  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io/') || url.pathname.startsWith('/admin')) return;
+  if (url.pathname.startsWith('/api/') || url.pathname.startsWith('/socket.io/') || url.pathname.startsWith('/admin') || url.pathname === '/release.json') return;
 
   // App files come from this version's complete saved set (installed all at once), so the page never
   // mixes old and new files — mixing caused missing icons and blank screens. A new release installs a
