@@ -17,89 +17,120 @@ const LOOK = {
   unicorn: { fur: '#fbf7ff', dark: '#d9cdea', belly: '#ffffff', ear: 'point', tail: 'mane', horn: true, mane: true, treat: 'apple' },
 };
 
-let artId = 0;
+// ───── art: chunky cartoon stickers — big head, thick outline, huge glossy eyes (faces right) ─────
+const INK = '#2b1d16';
+const O = `stroke="${INK}" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"`;
+const OT = `stroke="${INK}" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round"`;
+function shade(hex, k) { // k < 0 darker, k > 0 lighter
+  const n = parseInt(hex.slice(1), 16); const f = (c) => Math.round(k < 0 ? c * (1 + k) : c + (255 - c) * k);
+  return '#' + [n >> 16, (n >> 8) & 255, n & 255].map((c) => f(c).toString(16).padStart(2, '0')).join('');
+}
+const TOON = {
+  dog: { fur: '#8b4a22', dark: '#5a2d12', belly: '#f5c98e', muzzle: '#f5c98e' },
+  cat: { fur: '#f2892e', dark: '#c9631a', belly: '#ffffff', muzzle: '#ffffff' },
+  bunny: { fur: '#fbf3ea', dark: '#e2cfc0', belly: '#ffffff', muzzle: '#ffffff' },
+  fox: { fur: '#f07a2a', dark: '#3a2418', belly: '#ffffff', muzzle: '#ffffff' },
+  panda: { fur: '#ffffff', dark: '#2b2b2e', belly: '#ffffff', muzzle: '#ffffff' },
+  dragon: { fur: '#6fcf6f', dark: '#3a9a4a', belly: '#e9f7b8', muzzle: '#c9efa0' },
+  unicorn: { fur: '#fff7fd', dark: '#e3d3ea', belly: '#ffffff', muzzle: '#ffffff' },
+};
+const COATS = { caramel: '#c58b51', snow: '#eee9e0', midnight: '#555c71', rose: '#d995a1', lavender: '#a599c9', mint: '#8bbba5' };
+
 function quadruped(kind, color = 'natural') {
-  const coats = { caramel: '#c58b51', snow: '#eee9e0', midnight: '#555c71', rose: '#d995a1', lavender: '#a599c9', mint: '#8bbba5' };
-  const L = { ...LOOK[kind], ...(coats[color] ? { fur: coats[color] } : {}) };
-  const coatId = 'coat-' + (++artId);
-  const fur = L.fur; L.fur = `url(#${coatId})`;
-  const legFill = L.darkLegs ? L.dark : L.fur;
-  const ears = {
-    point: `<path d="M70 30 L74 12 L84 26 Z" fill="${L.fur}"/><path d="M73 27 L75 17 L80 25 Z" fill="${L.tips ? '#2b2b2b' : '#f4b6c2'}"/>
-            <path d="M88 26 L98 12 L100 30 Z" fill="${L.fur}"/><path d="M91 26 L97 17 L98 28 Z" fill="${L.tips ? '#2b2b2b' : '#f4b6c2'}"/>`,
-    flop: `<path d="M68 30 C58 30 58 52 66 54 C72 50 74 38 74 32 Z" fill="${L.dark}"/><path d="M96 28 C106 28 108 50 100 53 C94 49 92 38 92 31 Z" fill="${L.dark}"/>`,
-    long: `<path d="M74 28 C68 6 72 -6 78 -4 C84 -2 84 14 80 28 Z" fill="${L.fur}"/><path d="M76 24 C72 8 74 0 77 1 C80 2 80 14 78 24 Z" fill="#f4b6c2"/>
-           <path d="M86 27 C86 4 92 -6 97 -2 C101 2 96 16 91 28 Z" fill="${L.fur}"/><path d="M88 24 C89 8 93 1 95 3 C97 6 93 16 90 24 Z" fill="#f4b6c2"/>`,
-    round: `<circle cx="71" cy="27" r="8" fill="${L.dark}"/><circle cx="97" cy="26" r="8" fill="${L.dark}"/>`,
-    horn: `<path d="M72 28 L66 12 L78 24 Z" fill="#f4d58d"/><path d="M94 26 L100 10 L100 26 Z" fill="#f4d58d"/>`,
-  }[L.ear];
-  const tails = {
-    long: `<path d="M30 66 C14 64 10 46 18 36" stroke="${L.fur}" stroke-width="7" fill="none" stroke-linecap="round"/>`,
-    short: `<path d="M30 62 C22 58 20 50 24 46" stroke="${L.fur}" stroke-width="7" fill="none" stroke-linecap="round"/>`,
-    puff: `<circle cx="28" cy="62" r="8" fill="${L.belly}"/>`,
-    bushy: `<path d="M32 66 C10 68 2 46 14 34 C22 44 28 52 32 58 Z" fill="${L.fur}"/><path d="M14 34 C10 40 9 46 11 50 C14 46 16 40 14 34 Z" fill="#fff"/>`,
-    spade: `<path d="M30 66 C16 66 12 54 16 44" stroke="${L.fur}" stroke-width="6" fill="none" stroke-linecap="round"/><path d="M16 44 L8 40 L14 34 L20 40 Z" fill="${L.dark}"/>`,
-    mane: `<path d="M30 60 C16 58 12 66 10 78 C18 72 24 70 30 66 Z" fill="#c7a8ff"/><path d="M30 63 C20 64 16 72 16 82 C22 76 26 72 31 68 Z" fill="#8fd3ff"/>`,
-  }[L.tail];
+  const T = { ...(TOON[kind] || TOON.cat) };
+  if (COATS[color] && kind !== 'panda') { T.fur = COATS[color]; T.dark = shade(COATS[color], -0.32); }
+  const { fur, dark, belly, muzzle } = T;
+  const legFill = kind === 'panda' || kind === 'fox' ? dark : fur;
+  const leg = (cls, lx) => `<g class="leg ${cls}"><path d="M${lx} 79 h11 v12 a5.5 5.5 0 0 1 -11 0 Z" fill="${legFill}" ${O}/><ellipse cx="${lx + 5.5}" cy="94.2" rx="3.4" ry="1.6" fill="#f7a8b8"/></g>`;
+  const tail = {
+    dog: `<path d="M28 72 C18 70 14 60 18 52" fill="none" stroke="${INK}" stroke-width="9" stroke-linecap="round"/><path d="M28 72 C18 70 14 60 18 52" fill="none" stroke="${fur}" stroke-width="4.4" stroke-linecap="round"/>`,
+    cat: `<path d="M28 76 C10 76 6 58 14 46" fill="none" stroke="${INK}" stroke-width="10" stroke-linecap="round"/><path d="M28 76 C10 76 6 58 14 46" fill="none" stroke="${fur}" stroke-width="5.4" stroke-linecap="round"/><path d="M12 62 l5 -1 M11 54 l5 0" stroke="${dark}" stroke-width="2.6" stroke-linecap="round"/>`,
+    bunny: `<circle cx="25" cy="72" r="8" fill="#fff" ${O}/>`,
+    fox: `<path d="M30 76 C8 82 0 58 12 44 C18 52 24 62 30 68 Z" fill="${fur}" ${O}/><path d="M12 44 C7 50 6 56 8 60 C12 56 15 50 12 44 Z" fill="#fff" ${OT}/>`,
+    panda: `<circle cx="26" cy="72" r="6.5" fill="${dark}" ${O}/>`,
+    dragon: `<path d="M30 78 C14 80 8 66 12 54" fill="none" stroke="${INK}" stroke-width="9" stroke-linecap="round"/><path d="M30 78 C14 80 8 66 12 54" fill="none" stroke="${fur}" stroke-width="4.6" stroke-linecap="round"/><path d="M12 54 L4 50 L10 42 L18 48 Z" fill="${dark}" ${OT}/>`,
+    unicorn: `<path d="M30 70 C14 68 8 78 8 90 C16 84 22 80 30 76 Z" fill="#c7a8ff" ${OT}/><path d="M30 74 C20 76 16 84 16 94 C22 88 26 84 31 80 Z" fill="#8fd3ff" ${OT}/>`,
+  }[kind] || '';
+  const earsBack = {
+    cat: `<path d="M57 34 L60 9 L78 22 Z" fill="${fur}" ${O}/><path d="M61.5 28 L62.5 16 L72 23 Z" fill="#f7a8b8"/><path d="M107 34 L104 9 L86 22 Z" fill="${fur}" ${O}/><path d="M102.5 28 L101.5 16 L92 23 Z" fill="#f7a8b8"/>`,
+    fox: `<path d="M56 34 L58 4 L80 22 Z" fill="${fur}" ${O}/><path d="M58 13 L58 4 L66 11 Z" fill="${dark}"/><path d="M61 27 L61.5 15 L72 22 Z" fill="#fff"/><path d="M108 34 L106 4 L84 22 Z" fill="${fur}" ${O}/><path d="M106 13 L106 4 L98 11 Z" fill="${dark}"/><path d="M103 27 L102.5 15 L92 22 Z" fill="#fff"/>`,
+    bunny: `<path d="M68 24 C60 0 63 -12 71 -11 C79 -10 80 6 76 24 Z" fill="${fur}" ${O}/><path d="M70.5 20 C66 4 68 -5 71.5 -5 C75 -5 75.5 6 73.5 20 Z" fill="#f7b6c4"/><path d="M88 24 C88 0 94 -11 101 -8 C107 -4 100 10 94 26 Z" fill="${fur}" ${O}/><path d="M91 20 C92 4 96 -3 99 -2 C101 0 97 10 93 21 Z" fill="#f7b6c4"/>`,
+    panda: `<circle cx="61" cy="24" r="9" fill="${dark}" ${O}/><circle cx="103" cy="24" r="9" fill="${dark}" ${O}/>`,
+    dragon: `<path d="M64 24 L56 4 L72 18 Z" fill="#f6d36b" ${O}/><path d="M100 24 L108 4 L92 18 Z" fill="#f6d36b" ${O}/>`,
+    unicorn: `<path d="M58 32 L62 12 L77 23 Z" fill="${fur}" ${O}/><path d="M106 32 L102 12 L87 23 Z" fill="${fur}" ${O}/><path d="M62 28 L63.5 18 L71 24 Z" fill="#f7b6c4"/><path d="M102 28 L100.5 18 L93 24 Z" fill="#f7b6c4"/>`,
+  }[kind] || '';
+  const earsFront = kind === 'dog'
+    ? `<path d="M60 26 C46 22 41 42 47 58 C54 61 59 50 61 39 Z" fill="${dark}" ${O}/><path d="M104 26 C118 22 123 42 117 58 C110 61 105 50 103 39 Z" fill="${dark}" ${O}/>` : '';
+  const marks = {
+    dog: `<ellipse cx="70" cy="26" rx="5.5" ry="3.2" fill="${dark}" opacity=".75"/><circle cx="92" cy="25" r="3" fill="${dark}" opacity=".75"/>`,
+    cat: `<path d="M76 21 q2 5 0 9 M82 19.5 v10 M88 21 q-2 5 0 9" stroke="${dark}" stroke-width="3" fill="none" stroke-linecap="round"/>`,
+    fox: `<path d="M53 50 C60 64 72 66 82 64 C92 66 104 64 111 50 C104 58 92 58 82 56 C72 58 60 58 53 50 Z" fill="#fff"/>`,
+    panda: `<ellipse cx="69" cy="48" rx="12" ry="14.5" fill="${dark}" transform="rotate(-24 69 48)"/><ellipse cx="95" cy="48" rx="12" ry="14.5" fill="${dark}" transform="rotate(24 95 48)"/>`,
+    unicorn: `<path d="M80 20 L86 -6 L91 20 Z" fill="#f6d36b" ${O}/><path d="M82 13 L89 11 M83 6 L88 4.5" stroke="#d9a92f" stroke-width="1.6"/><path d="M60 26 C52 30 50 44 54 56 C58 44 64 36 72 32 Z" fill="#c7a8ff" ${OT}/><path d="M66 22 C60 26 58 36 60 44 C64 36 68 30 76 28 Z" fill="#8fd3ff" ${OT}/>`,
+    dragon: `<path d="M72 22 l3 -6 l3 6 M82 20 l3 -7 l3 7" stroke="${dark}" stroke-width="2.4" fill="none" stroke-linejoin="round"/>`,
+  }[kind] || '';
+  const bodyExtra = {
+    cat: `<path d="M44 60 q3 5 0 10 M52 59 q3 5 0 11 M60 60 q3 5 0 10" stroke="${dark}" stroke-width="3" fill="none" stroke-linecap="round"/>`,
+    panda: `<path d="M44 58 C50 56 62 56 68 60 L66 72 C58 68 50 68 44 70 Z" fill="${dark}"/>`,
+    dragon: `<path d="M32 62 l4 -7 l4 6 l4 -7 l4 6 l4 -7 l4 6" fill="${dark}" ${OT}/><path class="wing" d="M46 62 C40 40 58 34 66 48 C58 48 54 54 52 64 Z" fill="${dark}" ${O}/>`,
+    dog: `<ellipse cx="40" cy="70" rx="7" ry="5" fill="${dark}" opacity=".55"/>`,
+  }[kind] || '';
+  const whiskers = kind === 'cat' || kind === 'fox' || kind === 'bunny'
+    ? `<path d="M64 56 l-11 -2 M64 59.5 l-11 1.5 M100 56 l11 -2 M100 59.5 l11 1.5" stroke="${INK}" stroke-width="1.6" stroke-linecap="round"/>` : '';
+  const whites = `<ellipse cx="71" cy="45" rx="8" ry="9.2" fill="#fff" ${O}/><ellipse cx="93" cy="45" rx="8" ry="9.2" fill="#fff" ${O}/>`;
   return `
-<svg class="pet-svg" viewBox="-4 -10 128 112" xmlns="${NS}">
-  <defs><radialGradient id="${coatId}" cx="35%" cy="20%" r="85%"><stop offset="0" stop-color="${fur}"/><stop offset=".55" stop-color="${fur}"/><stop offset="1" stop-color="${L.dark}"/></radialGradient></defs>
-  <ellipse class="pet-shadow" cx="58" cy="96" rx="34" ry="4.5" fill="rgba(0,0,0,.28)"/>
-  <g class="tail">${tails}</g>
+<svg class="pet-svg toon k-${kind}" viewBox="-4 -14 128 116" xmlns="${NS}">
+  <ellipse class="pet-shadow" cx="56" cy="97" rx="32" ry="4.5" fill="rgba(0,0,0,.25)"/>
+  <g class="tail">${tail}</g>
   <g class="body">
-    <g class="leg back a"><rect x="38" y="76" width="9" height="18" rx="4.5" fill="${legFill}"/></g>
-    <g class="leg back b"><rect x="62" y="76" width="9" height="18" rx="4.5" fill="${legFill}"/></g>
-    ${L.wings ? `<path class="wing" d="M50 58 C46 36 62 30 70 44 C62 44 58 50 56 60 Z" fill="${L.dark}" opacity=".9"/>` : ''}
-    <ellipse cx="56" cy="70" rx="30" ry="19" fill="${L.fur}"/>
-    <ellipse cx="62" cy="76" rx="18" ry="10" fill="${L.belly}"/>
-    ${L.stripes ? `<path d="M44 54 q4 6 0 12 M52 52 q4 7 0 14 M60 52 q4 7 0 14" stroke="${L.dark}" stroke-width="3" fill="none" stroke-linecap="round" opacity=".6"/>` : ''}
-    ${L.spot ? `<ellipse cx="46" cy="62" rx="9" ry="7" fill="${L.dark}" opacity=".8"/>` : ''}
-    ${L.spikes ? `<path d="M34 56 l5 -8 l5 8 l5 -9 l5 9 l5 -9 l5 9" fill="${L.dark}"/>` : ''}
-    ${L.patches ? `<ellipse cx="56" cy="58" rx="22" ry="7" fill="${L.dark}"/>` : ''}
-    <g class="leg front a"><rect x="44" y="77" width="9" height="18" rx="4.5" fill="${legFill}"/></g>
-    <g class="leg front b"><rect x="70" y="77" width="9" height="18" rx="4.5" fill="${legFill}"/></g>
-    ${L.mane ? `<path d="M76 30 C64 30 60 44 62 56 C66 48 70 42 78 40 Z" fill="#c7a8ff"/><path d="M80 32 C72 36 70 46 72 54 C74 46 78 42 84 40 Z" fill="#8fd3ff"/>` : ''}
+    ${leg('back a', 30)}${leg('back b', 43)}
+    <path d="M25 74 C25 60 40 55 55 56 C70 57 77 64 77 75 C77 87 65 92 51 92 C36 92 25 87 25 74 Z" fill="${fur}" ${O}/>
+    <path d="M37 84 C45 90 60 90 68 84 C63 80 43 80 37 84 Z" fill="${belly}"/>
+    ${bodyExtra}
+    ${leg('front a', 55)}${leg('front b', 67)}
     <g class="head">
-      ${ears}
-      <circle cx="84" cy="44" r="21" fill="${L.fur}"/>
-      ${L.horn ? `<path d="M86 25 L92 2 L95 25 Z" fill="#f6d36b"/><path d="M88 18 L94 16 M87 12 L93 10" stroke="#e0b647" stroke-width="1.5"/>` : ''}
-      ${L.patches ? `<ellipse cx="78" cy="44" rx="6.5" ry="8.5" fill="${L.dark}" transform="rotate(-18 78 44)"/><ellipse cx="96" cy="44" rx="6.5" ry="8.5" fill="${L.dark}" transform="rotate(18 96 44)"/>` : ''}
-      <ellipse cx="92" cy="52" rx="11" ry="8" fill="${L.belly}"/>
-      <g class="eyes">
-        <g class="eye"><circle cx="79" cy="43" r="4.2" fill="#1d1d1f"/><circle cx="80.4" cy="41.6" r="1.4" fill="#fff"/></g>
-        <g class="eye"><circle cx="96" cy="43" r="4.2" fill="#1d1d1f"/><circle cx="97.4" cy="41.6" r="1.4" fill="#fff"/></g>
+      ${earsBack}
+      <path d="M54 46 C52 26 66 17 82 17 C98 17 112 26 110 46 C110 62 98 72 82 72 C66 72 54 62 54 46 Z" fill="${fur}" ${O}/>
+      ${marks}
+      <ellipse cx="82" cy="58" rx="15" ry="10.5" fill="${muzzle}"/>
+      ${earsFront}
+      <ellipse cx="62" cy="56" rx="5" ry="3" fill="#ff8fa3" opacity=".65"/><ellipse cx="102" cy="56" rx="5" ry="3" fill="#ff8fa3" opacity=".65"/>
+      <g class="eyes">${whites}
+        <g class="eye"><circle cx="72.6" cy="46.4" r="5.7" fill="#1b1410"/><circle cx="70.4" cy="43.6" r="2.2" fill="#fff"/><circle cx="74.8" cy="49" r=".95" fill="#fff"/></g>
+        <g class="eye"><circle cx="91.4" cy="46.4" r="5.7" fill="#1b1410"/><circle cx="89.2" cy="43.6" r="2.2" fill="#fff"/><circle cx="93.6" cy="49" r=".95" fill="#fff"/></g>
       </g>
-      <g class="eyes-closed"><path d="M75 44 q4 3 8 0 M92 44 q4 3 8 0" stroke="#1d1d1f" stroke-width="2.4" fill="none" stroke-linecap="round"/></g>
-      <g class="eyes-sad"><path d="M75 41 l8 3 M100 41 l-8 3" stroke="#1d1d1f" stroke-width="2.2" stroke-linecap="round"/><circle cx="79" cy="46" r="3.2" fill="#1d1d1f"/><circle cx="96" cy="46" r="3.2" fill="#1d1d1f"/></g>
-      <ellipse cx="73" cy="52" rx="4" ry="2.6" fill="#ff8fa3" opacity=".55"/><ellipse cx="101" cy="52" rx="4" ry="2.6" fill="#ff8fa3" opacity=".55"/>
-      <path d="M90 49 h6 l-3 3.5 z" fill="#2b2b2b"/>
-      <path class="mouth" d="M93 53 q-3 4 -6 1 M93 53 q3 4 6 1" stroke="#2b2b2b" stroke-width="1.6" fill="none" stroke-linecap="round"/>
-      <ellipse class="mouth-open" cx="93" cy="56" rx="3.2" ry="3.6" fill="#7a2232"/>
+      <g class="eyes-closed"><path d="M64 47 q7 -8 14 0 M86 47 q7 -8 14 0" stroke="${INK}" stroke-width="3.2" fill="none" stroke-linecap="round"/></g>
+      <g class="eyes-sad">${whites}<path d="M62 35 l11 4 M102 35 l-11 4" stroke="${INK}" stroke-width="2.6" stroke-linecap="round"/><circle cx="71" cy="49" r="4.4" fill="#1b1410"/><circle cx="93" cy="49" r="4.4" fill="#1b1410"/><circle cx="69.6" cy="47.4" r="1.5" fill="#fff"/><circle cx="91.6" cy="47.4" r="1.5" fill="#fff"/></g>
+      ${whiskers}
+      <path d="M77.2 52.6 h9.6 c0 3.2 -2.6 5.2 -4.8 5.2 c-2.2 0 -4.8 -2 -4.8 -5.2 Z" fill="#1b1410"/><ellipse cx="80.2" cy="53.8" rx="1.6" ry=".9" fill="#fff" opacity=".7"/>
+      <path class="mouth" d="M82 57.8 v2.2 c0 3.2 -5 4.2 -7.2 1.2 M82 60 c0 3.2 5 4.2 7.2 1.2" stroke="${INK}" stroke-width="2" fill="none" stroke-linecap="round"/>
+      <g class="mouth-open"><path d="M75 60 C75 71 89 71 89 60 C85 62 79 62 75 60 Z" fill="#9b2335" ${OT}/><path d="M78 65.5 C78.5 70.5 85.5 70.5 86 65.5 C84 64 80 64 78 65.5 Z" fill="#ff7a8a"/></g>
     </g>
   </g>
 </svg>`;
 }
 
 function owl() {
+  const whites = `<circle cx="49" cy="40" r="11" fill="#fff" ${O}/><circle cx="71" cy="40" r="11" fill="#fff" ${O}/>`;
   return `
-<svg class="pet-svg owl" viewBox="-4 -10 128 112" xmlns="${NS}">
-  <ellipse class="pet-shadow" cx="60" cy="96" rx="26" ry="4.5" fill="rgba(0,0,0,.28)"/>
+<svg class="pet-svg toon owl" viewBox="-4 -14 128 116" xmlns="${NS}">
+  <ellipse class="pet-shadow" cx="60" cy="97" rx="26" ry="4.5" fill="rgba(0,0,0,.25)"/>
   <g class="body">
-    <path d="M52 94 l-4 4 M56 94 l0 5 M60 94 l4 4 M66 94 l-4 4 M70 94 l0 5 M74 94 l4 4" stroke="#e8a33d" stroke-width="3" stroke-linecap="round"/>
-    <g class="wing l"><path d="M38 52 C26 62 30 84 42 88 C42 74 44 62 46 54 Z" fill="#7a5a3f"/></g>
-    <g class="wing r"><path d="M82 52 C94 62 90 84 78 88 C78 74 76 62 74 54 Z" fill="#7a5a3f"/></g>
-    <ellipse cx="60" cy="66" rx="24" ry="28" fill="#a07a56"/>
-    <ellipse cx="60" cy="74" rx="15" ry="17" fill="#f1dfc4"/>
-    <path d="M52 66 q3 3 6 0 M62 72 q3 3 6 0 M52 80 q3 3 6 0" stroke="#c9a77f" stroke-width="2" fill="none"/>
+    <path d="M52 92 l-3 5 M56 92 l0 6 M60 92 l3 5 M64 92 l-3 5 M68 92 l0 6 M72 92 l3 5" stroke="#e8a33d" stroke-width="3.4" stroke-linecap="round"/>
+    <g class="wing l"><path d="M37 52 C24 62 28 84 41 88 C41 74 43 62 46 54 Z" fill="#7a5233" ${O}/></g>
+    <g class="wing r"><path d="M83 52 C96 62 92 84 79 88 C79 74 77 62 74 54 Z" fill="#7a5233" ${O}/></g>
+    <path d="M60 38 C80 38 86 58 84 72 C82 86 72 93 60 93 C48 93 38 86 36 72 C34 58 40 38 60 38 Z" fill="#a8774a" ${O}/>
+    <path d="M60 58 C72 58 76 70 74 78 C72 86 66 90 60 90 C54 90 48 86 46 78 C44 70 48 58 60 58 Z" fill="#f4e1c3"/>
+    <path d="M53 68 q3 3 6 0 M61 74 q3 3 6 0 M53 80 q3 3 6 0" stroke="#c9a17a" stroke-width="2" fill="none" stroke-linecap="round"/>
     <g class="head">
-      <path d="M40 28 L44 14 L52 26 Z M80 28 L76 14 L68 26 Z" fill="#7a5a3f"/>
-      <ellipse cx="60" cy="38" rx="23" ry="19" fill="#a07a56"/>
-      <circle cx="50" cy="38" r="10" fill="#f6ead6"/><circle cx="70" cy="38" r="10" fill="#f6ead6"/>
-      <g class="eyes"><g class="eye"><circle cx="50" cy="38" r="5.5" fill="#1d1d1f"/><circle cx="52" cy="36" r="1.8" fill="#fff"/></g><g class="eye"><circle cx="70" cy="38" r="5.5" fill="#1d1d1f"/><circle cx="72" cy="36" r="1.8" fill="#fff"/></g></g>
-      <g class="eyes-closed"><path d="M44 39 q6 4 12 0 M64 39 q6 4 12 0" stroke="#1d1d1f" stroke-width="2.6" fill="none" stroke-linecap="round"/></g>
-      <g class="eyes-sad"><path d="M43 33 l11 3 M77 33 l-11 3" stroke="#1d1d1f" stroke-width="2.4" stroke-linecap="round"/><circle cx="50" cy="41" r="4" fill="#1d1d1f"/><circle cx="70" cy="41" r="4" fill="#1d1d1f"/></g>
-      <path d="M56 46 L64 46 L60 53 Z" fill="#e8a33d"/>
-      <ellipse class="mouth-open" cx="60" cy="52" rx="3" ry="2.5" fill="#7a2232"/>
+      <path d="M36 26 L40 8 L52 22 Z M84 26 L80 8 L68 22 Z" fill="#7a5233" ${O}/>
+      <path d="M34 40 C34 22 46 16 60 16 C74 16 86 22 86 40 C86 56 74 62 60 62 C46 62 34 56 34 40 Z" fill="#a8774a" ${O}/>
+      <ellipse cx="38" cy="52" rx="4.5" ry="2.8" fill="#ff8fa3" opacity=".6"/><ellipse cx="82" cy="52" rx="4.5" ry="2.8" fill="#ff8fa3" opacity=".6"/>
+      <g class="eyes">${whites}<g class="eye"><circle cx="50.5" cy="41" r="6.5" fill="#1b1410"/><circle cx="48" cy="38" r="2.4" fill="#fff"/></g><g class="eye"><circle cx="69.5" cy="41" r="6.5" fill="#1b1410"/><circle cx="67" cy="38" r="2.4" fill="#fff"/></g></g>
+      <g class="eyes-closed"><path d="M41 42 q8 -8 16 0 M63 42 q8 -8 16 0" stroke="${INK}" stroke-width="3.2" fill="none" stroke-linecap="round"/></g>
+      <g class="eyes-sad">${whites}<path d="M38 30 l12 4 M82 30 l-12 4" stroke="${INK}" stroke-width="2.6" stroke-linecap="round"/><circle cx="49" cy="44" r="5" fill="#1b1410"/><circle cx="71" cy="44" r="5" fill="#1b1410"/></g>
+      <path d="M55 49 L65 49 L60 57 Z" fill="#f2a93b" ${OT}/>
+      <g class="mouth-open"><ellipse cx="60" cy="56" rx="3.4" ry="2.6" fill="#9b2335" ${OT}/></g>
     </g>
   </g>
 </svg>`;
@@ -107,13 +138,13 @@ function owl() {
 
 function egg() {
   return `
-<svg class="pet-svg egg" viewBox="-4 -10 128 112" xmlns="${NS}">
-  <ellipse class="pet-shadow" cx="60" cy="96" rx="22" ry="4" fill="rgba(0,0,0,.28)"/>
+<svg class="pet-svg toon egg" viewBox="-4 -14 128 116" xmlns="${NS}">
+  <ellipse class="pet-shadow" cx="60" cy="97" rx="22" ry="4" fill="rgba(0,0,0,.25)"/>
   <g class="body">
-    <path d="M60 22 C80 22 90 56 88 72 C86 88 74 96 60 96 C46 96 34 88 32 72 C30 56 40 22 60 22 Z" fill="#fff7ea"/>
-    <circle cx="50" cy="52" r="5" fill="#f3c98b"/><circle cx="70" cy="66" r="6" fill="#f3c98b"/><circle cx="54" cy="80" r="4" fill="#f3c98b"/><circle cx="72" cy="42" r="3.5" fill="#f3c98b"/>
-    <path class="crack" d="M42 62 l6 -5 l5 6 l6 -6 l5 6 l6 -5" stroke="#c9a77f" stroke-width="2" fill="none"/>
-    <path d="M46 34 C42 42 40 50 40 56" stroke="#fff" stroke-width="3" fill="none" stroke-linecap="round" opacity=".8"/>
+    <path d="M60 22 C80 22 90 56 88 72 C86 88 74 96 60 96 C46 96 34 88 32 72 C30 56 40 22 60 22 Z" fill="#fff6e6" ${O}/>
+    <circle cx="50" cy="52" r="5.5" fill="#f6c27a"/><circle cx="71" cy="66" r="6.5" fill="#f6c27a"/><circle cx="54" cy="81" r="4.2" fill="#f6c27a"/><circle cx="72" cy="42" r="3.8" fill="#f6c27a"/>
+    <path class="crack" d="M42 62 l6 -5 l5 6 l6 -6 l5 6 l6 -5" stroke="${INK}" stroke-width="2" fill="none" stroke-linejoin="round"/>
+    <path d="M46 34 C42 42 40 50 40 56" stroke="#fff" stroke-width="3.4" fill="none" stroke-linecap="round" opacity=".9"/>
   </g>
 </svg>`;
 }
@@ -130,11 +161,11 @@ const CAGE = `
 
 // ───── outfits (unlocked as the pet grows) and trick props, drawn on top of the pet ─────
 // Anchors per body: top of the head, the eye line (centre + spacing) and the neck.
-const ANCHOR = { quad: { top: [84, 24], eyes: [87.5, 43, 17], neck: [80, 63] }, owl: { top: [60, 20], eyes: [60, 38, 20], neck: [60, 56] } };
+const ANCHOR = { quad: { top: [82, 19], eyes: [82, 45.5, 22], neck: [76, 72] }, owl: { top: [60, 18], eyes: [60, 40.5, 22], neck: [60, 62] } };
 const PROPS = {
   crown: (a) => `<g transform="translate(${a.top[0]} ${a.top[1] + 2})"><path d="M-13 0 L-13 -12 L-6.5 -5 L0 -15 L6.5 -5 L13 -12 L13 0 Z" fill="#f6c343" stroke="#d49b1a" stroke-width="1.5" stroke-linejoin="round"/><circle cx="0" cy="-6" r="2.2" fill="#e5484d"/><circle cx="-8" cy="-4" r="1.6" fill="#3e8ef7"/><circle cx="8" cy="-4" r="1.6" fill="#3ecf8e"/></g>`,
   bow: (a) => `<g transform="translate(${a.top[0] + 10} ${a.top[1] + 3}) rotate(15)"><path d="M0 0 L-10 -7 L-10 7 Z M0 0 L10 -7 L10 7 Z" fill="#ff5c8a" stroke="#d63c6b" stroke-width="1.2" stroke-linejoin="round"/><circle r="3" fill="#d63c6b"/></g>`,
-  glasses: (a) => { const [x, y, s] = a.eyes; return `<g><rect x="${x - s / 2 - 7}" y="${y - 5}" width="14" height="10" rx="4" fill="#1d1d1f" opacity=".92"/><rect x="${x + s / 2 - 7}" y="${y - 5}" width="14" height="10" rx="4" fill="#1d1d1f" opacity=".92"/><path d="M${x - s / 2 + 7} ${y - 1} Q${x} ${y - 4} ${x + s / 2 - 7} ${y - 1}" stroke="#1d1d1f" stroke-width="2" fill="none"/><path d="M${x - s / 2 - 4} ${y - 3} l4 -1" stroke="#fff" stroke-width="1.4" opacity=".6"/></g>`; },
+  glasses: (a) => { const [x, y, s] = a.eyes; const w = s * 0.86, hh = w * 0.72; return `<g><rect x="${x - s / 2 - w / 2}" y="${y - hh / 2}" width="${w}" height="${hh}" rx="5" fill="#1d1d1f" stroke="#2b1d16" stroke-width="2"/><rect x="${x + s / 2 - w / 2}" y="${y - hh / 2}" width="${w}" height="${hh}" rx="5" fill="#1d1d1f" stroke="#2b1d16" stroke-width="2"/><path d="M${x - s / 2 + w / 2} ${y - 2} Q${x} ${y - 5} ${x + s / 2 - w / 2} ${y - 2}" stroke="#2b1d16" stroke-width="2.4" fill="none"/><path d="M${x - s / 2 - w / 2 + 3} ${y - hh / 2 + 3} l5 -1" stroke="#fff" stroke-width="1.6" opacity=".7"/></g>`; },
   scarf: (a) => { const [x, y] = a.neck; return `<g><path d="M${x - 16} ${y - 3} Q${x} ${y + 6} ${x + 16} ${y - 3} L${x + 16} ${y + 4} Q${x} ${y + 13} ${x - 16} ${y + 4} Z" fill="#e5484d"/><path d="M${x - 6} ${y + 6} l-3 16 l7 -1 l1 -14 Z" fill="#c93a3f"/><path d="M${x - 12} ${y + 1} l3 4 M${x - 3} ${y + 4} l3 4 M${x + 6} ${y + 3} l3 4" stroke="#fff" stroke-width="1.5" opacity=".5"/></g>`; },
   party: (a) => `<g transform="translate(${a.top[0] - 4} ${a.top[1] + 4}) rotate(-12)"><path d="M-10 0 L0 -26 L10 0 Z" fill="#7c5cff"/><path d="M-6.5 -9 L6.5 -9 M-3.5 -17 L3.5 -17" stroke="#ffd60a" stroke-width="3"/><circle cy="-27" r="3.5" fill="#ff5c8a"/></g>`,
   nightcap: (a) => `<g transform="translate(${a.top[0]} ${a.top[1] + 4})"><path d="M-14 0 C-12 -16 8 -22 18 -8 C20 -2 22 4 24 8 C18 2 12 -2 14 0 Z" fill="#3e63dd"/><path d="M-15 0 L15 0" stroke="#fff" stroke-width="4" stroke-linecap="round"/><circle cx="24" cy="9" r="3.5" fill="#fff"/></g>`,
@@ -420,7 +451,9 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
   function loop(t) {
     if (destroyed) return;
     const dt = Math.min(0.05, (t - (last || t)) / 1000); last = t;
-    if (jump) {
+    if (drag?.on) { /* following the finger */ }
+    else if (fall) fallStep(dt);
+    else if (jump) {
       const k = Math.max(0, Math.min(1, (t - jump.t0) / jump.dur));
       const [tx, ty] = endOf(jump.p, jump.toX); // the target can scroll mid-air
       const e = k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
@@ -445,7 +478,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
         x += vx * dt;
         if (Math.abs(vx) > 4) facing = vx > 0 ? 1 : -1;
         pet.style.setProperty('--gait', Math.max(0.13, Math.min(0.48, 20 / Math.max(8, Math.abs(vx)))).toFixed(2) + 's');
-        if (Math.abs(d) < 2 && Math.abs(vx) < 14) { vx = 0; if (x < 0) facing = 1; else if (x > W() - SIZE()) facing = -1; setMode('idle'); nextThink = Math.min(nextThink, t + 600); }
+        if (Math.abs(d) < 2 && Math.abs(vx) < 14) { vx = 0; if (x < 0) facing = 1; else if (x > W() - SIZE()) facing = -1; setMode('idle'); if (!busyPhys) nextThink = Math.min(nextThink, t + 600); }
       }
       place();
     }
@@ -454,7 +487,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
   }
   // Watchdog: if a new message lands on it, it gets out of the way (see-through until it has moved).
   const guard = setInterval(() => {
-    if (!state || destroyed || jump || state.caged) { pet.classList.remove('ghost'); return; }
+    if (!state || destroyed || jump || fall || drag?.on || busyPhys || state.caged) { pet.classList.remove('ghost'); return; }
     const over = covering();
     pet.classList.toggle('ghost', over);
     if (over && !['walk', 'run', 'hop'].includes(mode) && Date.now() - relocAt > 700) {
@@ -487,7 +520,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
     if (state?.caged) return;
     setMode(m);
     setTimeout(() => { if (mode === m) setMode('idle'); }, ms);
-    nextThink = performance.now() + ms + 400;
+    if (!busyPhys) nextThink = performance.now() + ms + 400; // never interrupts feeding / fetch / being held
   }
 
   function setCage(on, animate = true) {
@@ -506,56 +539,190 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
     place();
   }
 
-  function feed(byMe) {
-    if (state.caged || kind === 'egg') return;
-    const treat = h('i', { class: 'pet-treat' });
-    treat.innerHTML = TREATS[LOOK[kind]?.treat || 'apple'] || TREATS.apple;
-    const tx = Math.max(20, Math.min(W() - 60, x + (Math.random() < 0.5 ? -80 : 120)));
-    treat.style.left = tx + 'px';
-    fx.append(treat);
-    setTimeout(() => { targetX = tx - SIZE() * 0.4; facing = targetX > x ? 1 : -1; setMode('run'); }, 500);
-    const check = setInterval(() => {
-      if (Math.abs(targetX - x) < 4 || destroyed) {
-        clearInterval(check);
-        setMode('eat'); if (byMe) sound('chomp');
-        setTimeout(() => { treat.remove(); setMode('happy'); burst(HEART, 4); setTimeout(() => setMode('idle'), 900); }, 1300);
+  // ───── real physics: feeding, fetch, petting, picking it up ─────
+  const G = 1500; // gravity, px/s²
+  let busyPhys = false;
+  const queue = []; // a feed or a throw that comes in while it's busy waits its turn
+  const hold = () => { busyPhys = true; nextThink = Infinity; };
+  const release = (ms = 1500) => {
+    busyPhys = false; nextThink = performance.now() + ms;
+    const next = queue.shift(); if (next) setTimeout(() => { if (!destroyed && !busyPhys) next(); }, 350);
+  };
+  const mouthX = () => x + SIZE() * (facing > 0 ? 0.82 : 0.18);
+  // A little object that falls, bounces and rolls (used by the bowl, the ball and crumbs).
+  function body(el, { px, py, vx = 0, vy = 0, w, hgt, bounce = 0.55, friction = 260, spin = false, onRest }) {
+    const o = { el, px, py, vx, vy, w, hgt, rest: false, held: false, rot: 0 };
+    let last = performance.now();
+    const step = (t) => {
+      if (destroyed || !el.isConnected) return;
+      const dt = Math.min(0.033, (t - last) / 1000); last = t;
+      if (!o.held && !o.rest) {
+        const floor = H() - o.hgt - 2;
+        o.vy += G * dt; o.px += o.vx * dt; o.py += o.vy * dt;
+        if (o.px < 0) { o.px = 0; o.vx = -o.vx * 0.6; } else if (o.px > W() - o.w) { o.px = W() - o.w; o.vx = -o.vx * 0.6; }
+        if (o.py >= floor) {
+          o.py = floor;
+          if (Math.abs(o.vy) > 90) { o.vy = -o.vy * bounce; o.vx *= 0.85; el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); }
+          else { o.vy = 0; const f = friction * dt; o.vx = Math.abs(o.vx) <= f ? 0 : o.vx - Math.sign(o.vx) * f; if (!o.vx) { o.rest = true; onRest?.(o); } }
+        }
+        if (spin) o.rot += (o.vx * dt) / (o.w / 2) * 57.3;
       }
-    }, 120);
+      el.style.transform = `translate(${o.px}px, ${o.py}px)${spin ? ` rotate(${o.rot}deg)` : ''}`;
+      requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+    return o;
+  }
+  function crumbs(cx, cy, color, n = 5) {
+    for (let i = 0; i < n; i++) {
+      const c = h('i', { class: 'pet-crumb', style: { background: color } });
+      fx.append(c);
+      body(c, { px: cx, py: cy, vx: (Math.random() - 0.5) * 220, vy: -180 - Math.random() * 160, w: 5, hgt: 5, bounce: 0.3, friction: 400, onRest: () => setTimeout(() => c.remove(), 700) });
+    }
   }
 
-  // Fetch: the ball is thrown across the chat, the pet races after it and brings it back.
-  let fetching = false;
+  // Feeding: a bowl drops in and bounces, the pet trots over and eats it bite by bite.
+  function feed(byMe) {
+    if (state.caged || kind === 'egg') return;
+    if (busyPhys) { if (queue.length < 3) queue.push(() => feed(byMe)); return; }
+    hold();
+    const s = SIZE(), bw = 46, bh = 26;
+    const bowl = h('div', { class: 'pet-bowl' }, h('div', { class: 'pb-food' }), h('div', { class: 'pb-dish' }));
+    const food = bowl.firstChild;
+    const treat = TREATS[LOOK[kind]?.treat || 'apple'] || TREATS.apple;
+    for (let i = 0; i < 4; i++) { const t = h('i'); t.innerHTML = treat; food.append(t); }
+    fx.append(bowl);
+    const side = x + s / 2 < W() / 2 ? 1 : -1;
+    const bx = Math.max(6, Math.min(W() - bw - 6, side > 0 ? x + s + 18 : x - bw - 18));
+    if (mode === 'sleep') setMode('idle');
+    perch = null; place(); look(bx, 0, 1500); react('perk', 700);
+    body(bowl, { px: bx, py: -bh - 10, vx: 0, w: bw, hgt: bh, bounce: 0.32, friction: 900, onRest: () => {
+      targetX = side > 0 ? bx - s * 0.74 : bx + bw - s * 0.26;
+      facing = side; setMode('run');
+      const go = setInterval(() => {
+        if (destroyed) return clearInterval(go);
+        if (mode === 'run' && Math.abs(targetX - x) > 3) return;
+        clearInterval(go);
+        facing = side; place(); setMode('eat');
+        let left = 4;
+        const bite = setInterval(() => {
+          if (destroyed) return clearInterval(bite);
+          left--; food.lastChild?.remove(); if (byMe) sound('chomp');
+          crumbs(bx + bw / 2, H() - bh - 6, '#c8873e', 4);
+          if (left > 0) return;
+          clearInterval(bite);
+          setMode('happy'); burst(HEART, 5);
+          bowl.classList.add('gone'); setTimeout(() => bowl.remove(), 600);
+          setTimeout(() => { setMode('idle'); release(); }, 1100);
+        }, 650);
+      }, 60);
+    } });
+  }
+
+  // Fetch: the ball flies with gravity, bounces, rolls to a stop; the pet chases the ball itself,
+  // catches it in its mouth and brings it back.
   function fetchBall(where, byMe) {
-    if (state.caged || kind === 'egg' || fetching) return;
-    fetching = true;
-    const s = SIZE(), home = x;
-    const ball = h('i', { class: 'pet-ball' });
-    ball.innerHTML = BALL;
-    const bx = Math.max(10, Math.min(W() - 34, 10 + where * (W() - 44)));
-    ball.style.setProperty('--from', (x + s / 2) + 'px'); ball.style.setProperty('--to', bx + 'px');
-    ball.style.left = bx + 'px';
-    fx.append(ball);
-    if (byMe) sound('chomp');
+    if (state.caged || kind === 'egg') return;
+    if (busyPhys) { if (queue.length < 3) queue.push(() => fetchBall(where, byMe)); return; }
+    hold();
+    const s = SIZE(), r = 22, home = x;
     if (mode === 'sleep') setMode('idle');
     perch = null; place();
-    setTimeout(() => { targetX = Math.max(4, bx - s * 0.35); facing = targetX > x ? 1 : -1; setMode('run'); }, 450);
-    const t = setInterval(() => {
-      if (destroyed) return clearInterval(t);
-      if (mode !== 'run' || Math.abs(targetX - x) < 4) {
-        clearInterval(t);
-        ball.classList.add('carried');
-        const carry = setInterval(() => { ball.style.left = (x + (facing > 0 ? s * 0.78 : s * 0.02)) + 'px'; }, 30);
-        setTimeout(() => { targetX = home; facing = targetX > x ? 1 : -1; setMode('run'); }, 350);
-        const back = setInterval(() => {
-          if (destroyed || Math.abs(targetX - x) < 4 || mode !== 'run') {
-            clearInterval(back); clearInterval(carry);
-            ball.classList.add('drop'); setTimeout(() => ball.remove(), 700);
-            setMode('happy'); burst(HEART, 5); sound(kind); fetching = false;
-            setTimeout(() => setMode('idle'), 1000);
-          }
-        }, 60);
+    const ball = h('i', { class: 'pet-ball' }); ball.innerHTML = BALL; fx.append(ball);
+    const startX = mouthX() - r / 2, startY = y + pet.offsetHeight * 0.35;
+    const land = Math.max(10, Math.min(W() - r - 10, 10 + where * (W() - r - 20)));
+    const b = body(ball, { px: startX, py: startY, vx: (land - startX) / 1.05, vy: -680, w: r, hgt: r, bounce: 0.62, friction: 230, spin: true });
+    if (byMe) sound('chomp');
+    react('happy', 400);
+    let phase = 'chase';
+    const tick = setInterval(() => {
+      if (destroyed || !ball.isConnected) return clearInterval(tick);
+      if (phase === 'chase') {
+        const bc = b.px + r / 2;
+        const ahead = bc > x + s / 2 ? 1 : -1;
+        targetX = bc - s * (ahead > 0 ? 0.82 : 0.18);
+        if (Math.abs(targetX - x) > 4 && mode !== 'run') setMode('run');
+        look(bc, b.py, 400);
+        const onFloor = b.py >= H() - r - 6;
+        if (Math.abs(mouthX() - bc) < 15 && onFloor && Math.abs(b.vx) < 280) {
+          phase = 'carry'; b.held = true; b.rest = true; sound(kind);
+          targetX = home; facing = home > x ? 1 : -1; setMode('run');
+        }
+      } else if (phase === 'carry') {
+        b.px = mouthX() - r / 2; b.py = y + pet.offsetHeight * 0.42;
+        if (mode !== 'run' || Math.abs(targetX - x) < 4) {
+          phase = 'done'; clearInterval(tick);
+          b.held = false; b.rest = false; b.vx = facing * 70; b.vy = -160;
+          setMode('happy'); burst(HEART, 5);
+          setTimeout(() => { ball.classList.add('gone'); setTimeout(() => ball.remove(), 500); setMode('idle'); release(); }, 1300);
+        }
       }
-    }, 60);
+    }, 30);
+    setTimeout(() => { if (phase !== 'done' && ball.isConnected) { clearInterval(tick); ball.remove(); setMode('idle'); release(); } }, 15000);
+  }
+
+  // Petting: a hand strokes its head; it closes its eyes and leans into it.
+  function stroke() {
+    if (state.caged || kind === 'egg') return;
+    const s = SIZE();
+    const hand = h('div', { class: 'pet-hand' }, '🤚');
+    hand.style.left = (x + s * (facing > 0 ? 0.5 : 0.1)) + 'px';
+    hand.style.top = (y - 6) + 'px';
+    fx.append(hand);
+    react('petted', 2000);
+    [0, 650, 1300].forEach((d) => setTimeout(() => { burst(HEART, 2); }, d + 300));
+    sound(kind);
+    setTimeout(() => hand.remove(), 2000);
+  }
+
+  // Pick it up: drag it anywhere (legs dangle); let go and it falls, bounces and lands on its feet.
+  let fall = null, drag = null, suppressClick = false;
+  pet.addEventListener('pointerdown', (e) => {
+    if (!state || state.caged) return;
+    drag = { sx: e.clientX, sy: e.clientY, on: false, samples: [] };
+    pet.setPointerCapture?.(e.pointerId);
+  });
+  pet.addEventListener('pointermove', (e) => {
+    if (!drag) return;
+    if (!drag.on && Math.hypot(e.clientX - drag.sx, e.clientY - drag.sy) < 8) return;
+    if (!drag.on) { drag.on = true; closeMenu(); jump = null; fall = null; perch = null; vx = 0; hold(); setMode('held'); }
+    const zr = zoneRect();
+    x = e.clientX - zr.left - SIZE() / 2; y = Math.min(floorY(), e.clientY - zr.top - 12);
+    drag.samples.push([performance.now(), x, y]); if (drag.samples.length > 6) drag.samples.shift();
+    pet.style.transform = `translate(${x}px, ${y}px)`;
+  });
+  const endDrag = () => {
+    if (!drag) return;
+    const d = drag; drag = null;
+    if (!d.on) return;
+    suppressClick = true; setTimeout(() => { suppressClick = false; }, 300);
+    // Held still before letting go → it just drops; a flick throws it.
+    const still = !d.samples.length || performance.now() - d.samples[d.samples.length - 1][0] > 120;
+    const a = still ? null : d.samples[0], b = still ? null : d.samples[d.samples.length - 1];
+    const dt = a && b && b[0] > a[0] ? (b[0] - a[0]) / 1000 : 1;
+    fall = { vx: a && b ? Math.max(-900, Math.min(900, (b[1] - a[1]) / dt)) : 0, vy: a && b ? Math.max(-900, Math.min(900, (b[2] - a[2]) / dt)) : 0, from: y };
+    setMode('jump');
+  };
+  pet.addEventListener('pointerup', endDrag);
+  pet.addEventListener('pointercancel', endDrag);
+  function fallStep(dt) {
+    fall.vy += G * dt; x += fall.vx * dt; y += fall.vy * dt;
+    if (x < -SIZE() * 0.3) { x = -SIZE() * 0.3; fall.vx = -fall.vx * 0.5; } else if (x > W() - SIZE() * 0.7) { x = W() - SIZE() * 0.7; fall.vx = -fall.vx * 0.5; }
+    if (Math.abs(fall.vx) > 30) facing = fall.vx > 0 ? 1 : -1;
+    const fy = floorY();
+    if (y >= fy) {
+      y = fy;
+      pet.classList.remove('land'); void pet.offsetWidth; pet.classList.add('land'); setTimeout(() => pet.classList.remove('land'), 220);
+      if (fall.vy > 420) { fall.vy = -fall.vy * 0.3; fall.vx *= 0.6; }
+      else {
+        const high = fy - fall.from > 140;
+        fall = null; setMode(high ? 'shake' : 'sit');
+        if (high) say('whee!', 1300);
+        setTimeout(() => { setMode('idle'); release(800); }, 900);
+      }
+    }
+    pet.style.transform = `translate(${x}px, ${y}px)`;
+    inner.style.transform = `scaleX(${facing})`;
   }
 
   async function act(action, body = {}) {
@@ -575,29 +742,37 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
   }
 
   function closeMenu() { menu?.remove(); menu = null; }
+  // Tap menu: name and mood, three big buttons, a tiny needs line, and ⋯ for everything else.
   function openMenu() {
     closeMenu();
-    const L = state;
-    const bar = (label, v, cls) => h('div', { class: 'pet-need ' + cls }, h('span', null, label), h('div', { class: 'pn-track' }, h('i', { style: { width: v + '%' } })), h('small', null, v));
-    menu = h('div', { class: 'pet-menu' },
-      h('div', { class: 'pet-menu-top' }, h('b', null, L.level === 0 ? 'Mystery egg' : L.name), L.level > 0 ? h('span', { class: 'pet-rar r-' + L.rarity.toLowerCase() }, L.rarity) : null),
-      h('span', null, L.level === 0 ? `Hatches at 20 messages · ${L.xp}/20` : `${L.stage} ${L.moodEmoji} ${L.mood}${L.next ? ` · ${L.xp}/${L.next} to grow` : ''}`),
-      L.level > 0 ? h('div', { class: 'pet-needs' }, bar('Food', L.hunger, 'food'), bar('Joy', L.happiness, 'joy'), bar('Energy', L.energy, 'energy')) : null,
-      L.favorite ? h('span', { class: 'pet-fav' }, `❤ Loves ${L.favorite.userId === me() ? 'you' : L.favorite.name.split(' ')[0]} most`) : null,
-      h('div', { class: 'pet-menu-row' },
-        L.level > 0 && !L.caged ? h('button', { onclick: () => act('feed') }, '🍖 Feed') : null,
-        L.level > 0 && !L.caged ? h('button', { onclick: () => act('play') }, '🎾 Play') : null,
-        L.level > 0 && !L.caged ? h('button', { onclick: () => { closeMenu(); react('happy', 1100); burst(HEART, 6); sound(kind); api('POST', `/api/chats/${chatId}/pet`, { action: 'poke' }).then((r) => { state = r.pet; }).catch(() => {}); } }, '🤚 Pet') : null),
-      h('div', { class: 'pet-menu-row small' },
-        personal ? h('button', { onclick: () => { closeMenu(); onCustomize?.(); } }, 'Style') : null,
-        L.level > 0 ? h('button', { onclick: rename }, 'Rename') : null,
-        L.level > 0 && L.outfits.length ? h('button', { onclick: chooseOutfit }, 'Outfit') : null,
-        L.level > 0 ? h('button', { onclick: () => act(L.caged ? 'release' : 'cage') }, L.caged ? 'Let out' : 'Cage') : null,
-        h('button', { onclick: () => { closeMenu(); hideForMe(); } }, 'Hide')));
+    const L = state, egg = L.level === 0;
+    const big = (ic, label, fn) => h('button', { class: 'pm-big', onclick: () => { closeMenu(); fn(); } }, h('span', { class: 'pm-ic' }, ic), h('small', null, label));
+    const more = async () => {
+      closeMenu();
+      const v = await actionSheet({ title: L.name, actions: [
+        personal ? { label: 'Style', value: 'style' } : null,
+        !egg ? { label: 'Rename', value: 'rename' } : null,
+        !egg && L.outfits?.length ? { label: 'Outfit', value: 'outfit' } : null,
+        !egg ? { label: L.caged ? 'Let out of cage' : 'Put in cage', value: 'cage' } : null,
+        { label: personal ? 'Hide in all chats' : 'Hide for me', value: 'hide', danger: true },
+      ].filter(Boolean) });
+      if (v === 'style') onCustomize?.(); else if (v === 'rename') rename(); else if (v === 'outfit') chooseOutfit();
+      else if (v === 'cage') act(L.caged ? 'release' : 'cage'); else if (v === 'hide') hideForMe();
+    };
+    menu = h('div', { class: 'pet-menu simple' },
+      h('div', { class: 'pm-head' },
+        h('div', { class: 'pm-name' }, h('b', null, egg ? 'Mystery egg' : L.name), h('span', null, egg ? `Hatches at 20 messages · ${L.xp}/20` : `${L.moodEmoji} ${L.mood}${L.favorite ? ` · ❤ ${L.favorite.userId === me() ? 'you' : L.favorite.name.split(' ')[0]}` : ''}`)),
+        h('button', { class: 'pm-more', 'aria-label': 'More', onclick: more }, '⋯')),
+      !egg && !L.caged ? h('div', { class: 'pm-row' },
+        big('🍖', 'Feed', () => act('feed')),
+        big('🎾', 'Play', () => act('play')),
+        big('🤚', 'Pet', () => { stroke(); api('POST', `/api/chats/${chatId}/pet`, { action: 'poke' }).then((r) => { state = r.pet; }).catch(() => {}); })) : null,
+      !egg && L.caged ? h('div', { class: 'pm-row' }, big('🔓', 'Let out', () => act('release'))) : null,
+      !egg ? h('div', { class: 'pm-needs' }, h('span', null, `🍖 ${L.hunger}`), h('span', null, `💗 ${L.happiness}`), h('span', null, `⚡ ${L.energy}`), h('span', { class: 'pm-tip' }, 'drag to pick up')) : null);
     const s = SIZE();
-    menu.style.left = Math.max(8, Math.min(W() - 250, x + s / 2 - 120)) + 'px';
-    menu.style.top = Math.max(4, y - 190) + 'px';
     zone.append(menu);
+    menu.style.left = Math.max(8, Math.min(W() - menu.offsetWidth - 8, x + s / 2 - menu.offsetWidth / 2)) + 'px';
+    menu.style.top = Math.max(4, y - menu.offsetHeight - 8) + 'px';
     setTimeout(() => document.addEventListener('pointerdown', outside, { once: true, capture: true }), 0);
   }
   const outside = (e) => { if (menu && !menu.contains(e.target)) closeMenu(); else if (menu) document.addEventListener('pointerdown', outside, { once: true, capture: true }); };
@@ -614,7 +789,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
   // Tap = poke (sound + jump + hearts, everyone sees it), and the little menu.
   pet.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (!state) return;
+    if (!state || suppressClick) return;
     lastActivity = Date.now();
     if (state.caged) { setMode('shake'); sound(kind === 'egg' ? 'egg' : kind); openMenu(); return; }
     sound(kind === 'egg' ? 'egg' : kind);

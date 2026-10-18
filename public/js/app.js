@@ -35,6 +35,8 @@ const TAPBACKS = ['❤️', '👍', '👎', '😂', '‼️', '❓'];
 if (window.visualViewport) {
   const vv = window.visualViewport;
   const fit = () => {
+    // Held sideways: the whole page is turned back upright (see keepPortrait) and sized by CSS.
+    if (document.documentElement.classList.contains('force-portrait')) { app.style.height = ''; app.style.transform = ''; return; }
     app.style.height = vv.height + 'px';
     app.style.bottom = 'auto';
     app.style.transform = vv.offsetTop ? `translateY(${vv.offsetTop}px)` : '';
@@ -187,6 +189,23 @@ function lockPortrait() {
 lockPortrait();
 document.addEventListener('visibilitychange', () => { if (!document.hidden) lockPortrait(); });
 screen.orientation?.addEventListener?.('change', lockPortrait);
+// Phones that ignore the lock (iPhone, Android browsers): when the phone is turned sideways, turn the
+// page back the other way so Ping Me stays exactly as it was — as if rotation were switched off.
+function keepPortrait() {
+  const root = document.documentElement;
+  const phone = isMobile() && Math.min(screen.width, screen.height) < 600;
+  const landscape = phone && innerWidth > innerHeight;
+  const angle = Number(screen.orientation?.angle ?? window.orientation ?? 90);
+  const ccw = angle === 90; // turned counter-clockwise (top of the phone on the left)
+  root.classList.toggle('force-portrait', landscape);
+  root.classList.toggle('fp-ccw', landscape && ccw);
+  root.classList.toggle('fp-cw', landscape && !ccw);
+  if (landscape !== !!keepPortrait.was) { keepPortrait.was = landscape; dispatchEvent(new Event('resize')); window.visualViewport?.dispatchEvent?.(new Event('resize')); }
+}
+keepPortrait();
+addEventListener('resize', () => requestAnimationFrame(keepPortrait));
+addEventListener('orientationchange', () => setTimeout(keepPortrait, 60));
+screen.orientation?.addEventListener?.('change', () => setTimeout(keepPortrait, 60));
 addEventListener('pm:personal-pet', () => { const chat = S.chats.get(S.current); if (chat && els.msgs) startPersonalPet(chat); });
 
 addEventListener('pm:pet-show', (e) => { const c = S.chats.get(S.current); if (c && c.id === e.detail && els.msgs) startPet(c); });

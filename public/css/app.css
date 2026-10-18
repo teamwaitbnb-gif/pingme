@@ -1878,3 +1878,58 @@ html, body { touch-action: manipulation; overscroll-behavior: none; -webkit-text
   .buzz-pane { left: 0; }
   .main.show-conv .buzz-pane { visibility: hidden; }
 }
+
+/* Rotation off: a phone held sideways shows Ping Me turned back upright (portrait), like a locked screen.
+   The page gets portrait size and is rotated against the phone; notch/home-bar padding follows. */
+html.force-portrait body { inset: auto; top: 0; left: 0; width: 100vh; height: 100vw; transform-origin: 0 0; }
+html.fp-ccw body { transform: translateY(100vh) rotate(-90deg); }
+html.fp-cw body { transform: translateX(100vw) rotate(90deg); }
+html.fp-ccw { --sat: env(safe-area-inset-left); --sab: env(safe-area-inset-right); --sal: env(safe-area-inset-bottom); --sar: env(safe-area-inset-top); }
+html.fp-cw { --sat: env(safe-area-inset-right); --sab: env(safe-area-inset-left); --sal: env(safe-area-inset-top); --sar: env(safe-area-inset-bottom); }
+
+/* Pet 3.0 — cartoon stickers, real physics, simple menu */
+.pet-svg.toon { filter: drop-shadow(1.4px 0 0 #fff) drop-shadow(-1.4px 0 0 #fff) drop-shadow(0 1.4px 0 #fff) drop-shadow(0 -1.4px 0 #fff) drop-shadow(0 3px 4px rgba(0,0,0,.28)); }
+.pet-actor { touch-action: none; }
+.pet-svg .eyes, .pet-svg .eyes-sad { transform-box: fill-box; transform-origin: 50% 50%; }
+.pet-actor.blink .pet-svg.toon .eyes { transform: scaleY(.1); }
+.pet-actor.blink .pet-svg.toon .eye { transform: none; }
+/* happy = closed ^^ eyes and tongue out, like the stickers */
+.pet-actor[data-mode="happy"] .pet-svg.toon .eyes, .pet-actor[data-mode="petted"] .pet-svg.toon .eyes { display: none; }
+.pet-actor[data-mode="happy"] .pet-svg.toon .eyes-closed, .pet-actor[data-mode="petted"] .pet-svg.toon .eyes-closed { display: inline; }
+.pet-actor[data-mode="petted"] .mouth-open { display: inline; }
+.pet-actor[data-mode="petted"] .head { animation: petLean .65s ease-in-out 3 alternate; }
+.pet-actor[data-mode="petted"] .tail { animation-duration: .3s; }
+.pet-actor[data-mode="held"] .pet-svg { animation: petDangle .5s ease-in-out infinite alternate; transform-origin: 60% 10%; }
+.pet-actor[data-mode="held"] .leg { transform: rotate(8deg) translateY(2px); }
+.pet-actor[data-mode="held"] .leg.front { transform: rotate(-10deg) translateY(2px); }
+.pet-actor[data-mode="held"] .mouth-open { display: inline; }
+.pet-actor[data-mode="held"] .pet-shadow { opacity: 0; }
+.pet-actor[data-mode="held"] { cursor: grabbing; z-index: 3; }
+@keyframes petLean { from { transform: rotate(-8deg) translateY(1px); } to { transform: rotate(10deg) translateY(3px); } }
+@keyframes petDangle { from { transform: rotate(-7deg); } to { transform: rotate(7deg); } }
+/* physics props are positioned by JS (transform from the zone's top-left) */
+.pet-ball { left: 0 !important; top: 0; bottom: auto !important; animation: none !important; transition: none !important; will-change: transform; }
+.pet-ball svg { filter: drop-shadow(0 2px 2px rgba(0,0,0,.3)); }
+.pet-ball.bump svg, .pet-bowl.bump .pb-dish { animation: petBump .18s ease-out; }
+.pet-ball.gone, .pet-bowl.gone { opacity: 0; transition: opacity .5s; }
+.pet-bowl { position: absolute; left: 0; top: 0; width: 46px; height: 26px; pointer-events: none; will-change: transform; }
+.pb-dish { position: absolute; left: 0; right: 0; bottom: 0; height: 15px; border-radius: 4px 4px 22px 22px; background: linear-gradient(#ff6b6b, #e5484d); border: 2.4px solid #2b1d16; box-shadow: inset 0 3px 0 rgba(255,255,255,.35); }
+.pb-food { position: absolute; left: 4px; right: 4px; bottom: 9px; height: 16px; display: flex; justify-content: center; align-items: flex-end; }
+.pb-food i { width: 14px; margin: 0 -2px; display: block; } .pb-food i svg { width: 100%; height: auto; display: block; }
+.pet-crumb { position: absolute; left: 0; top: 0; width: 5px; height: 5px; border-radius: 50%; border: 1px solid #2b1d16; pointer-events: none; }
+.pet-hand { position: absolute; font-size: 26px; line-height: 1; pointer-events: none; animation: petStroke .65s ease-in-out 3 alternate; transform-origin: 30% 90%; filter: drop-shadow(0 2px 2px rgba(0,0,0,.3)); }
+@keyframes petStroke { from { transform: translate(-6px, 0) rotate(-12deg); } to { transform: translate(14px, 6px) rotate(10deg); } }
+@keyframes petBump { 0% { transform: scale(1.18, .8); } 100% { transform: scale(1, 1); } }
+.pet-menu.simple { width: auto; min-width: 210px; max-width: 260px; padding: 12px; gap: 10px; border-radius: 22px; }
+.pm-head { display: flex; align-items: flex-start; gap: 8px; }
+.pm-name { flex: 1; min-width: 0; display: grid; }
+.pm-name b { font-size: 17px; letter-spacing: -.2px; }
+.pm-name span { font-size: 12.5px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pm-more { width: 32px; height: 32px; border-radius: 50%; background: var(--fill); color: var(--text); font-size: 18px; font-weight: 800; line-height: 1; flex-shrink: 0; }
+.pm-row { display: flex; gap: 8px; }
+.pm-big { flex: 1; display: grid; justify-items: center; gap: 4px; padding: 10px 4px 8px; border-radius: 16px; background: var(--fill); color: var(--text); }
+.pm-big:active { transform: scale(.94); }
+.pm-ic { font-size: 26px; line-height: 1; }
+.pm-big small { font-size: 12px; font-weight: 700; }
+.pm-needs { display: flex; gap: 10px; font-size: 12px; color: var(--text2); font-weight: 600; flex-wrap: wrap; }
+.pm-tip { margin-left: auto; opacity: .7; font-weight: 500; }
