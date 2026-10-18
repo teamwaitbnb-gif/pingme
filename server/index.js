@@ -289,7 +289,7 @@ async function previewId(raw, chatId, senderId) {
   if (!id) return undefined;
   const a = await db.one('SELECT chat_id, uploader_id, size FROM attachments WHERE id=? AND complete=1', [id]);
   if (!(a && Number(a.chat_id) === chatId && Number(a.uploader_id) === senderId && Number(a.size) <= 2 * 1024 * 1024)) return undefined;
-  await db.q('UPDATE attachments SET used=1 WHERE id=?', [id]);
+  await db.q('INSERT IGNORE INTO attachment_refs (att_id) VALUES (?)', [id]);
   return id;
 }
 
@@ -2437,7 +2437,7 @@ async function runExpiry() {
 async function runCleanup() {
   // Drop uploads that were never attached to a message (e.g. abandoned sends).
   const stale = await db.q(
-    `SELECT a.id FROM attachments a WHERE a.created_at < ? AND a.used=0 AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.attachment_id=a.id)
+    `SELECT a.id FROM attachments a WHERE a.created_at < ? AND NOT EXISTS (SELECT 1 FROM attachment_refs r WHERE r.att_id=a.id) AND NOT EXISTS (SELECT 1 FROM messages m WHERE m.attachment_id=a.id)
        AND NOT EXISTS (SELECT 1 FROM scheduled_messages s WHERE s.chat_id=a.chat_id) LIMIT 200`,
     [new Date(Date.now() - 24 * 3600 * 1000)]
   );

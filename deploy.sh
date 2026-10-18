@@ -31,6 +31,8 @@ while IFS= read -r line || [ -n "$line" ]; do
   [[ -z "$line" || "$line" =~ ^# ]] && continue
   key="${line%%=*}"; val="${line#*=}"
   [[ "$key" == "PORT" ]] && continue
+  # A key listed twice in .env: the last one wins (same as the app's own .env loading).
+  if grep -q "^${key}: " "$ENV_FILE" 2>/dev/null; then sed -i.bak "/^${key}: /d" "$ENV_FILE" && rm -f "$ENV_FILE.bak"; fi
   printf '%s: "%s"\n' "$key" "$(printf '%s' "$val" | sed 's/\\/\\\\/g; s/"/\\"/g')" >> "$ENV_FILE"
 done < .env
 
