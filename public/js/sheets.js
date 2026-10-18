@@ -1,3 +1,4 @@
+import { openPetShop } from './pet-shop.js';
 // Sheets & dialogs: settings, new message, chat info, viewer, forward, polls, scheduling…
 import {
   h, icon, avatar, toast, openSheet, actionSheet, confirmDialog, promptDialog, toggle, cell, closeTop,
@@ -67,6 +68,7 @@ export function openSettings() {
         cell({ icon: 'qr', color: '#5856d6', label: 'My QR code', sub: 'Friends scan it to add you', chevron: true, onClick: () => openMyCode() }),
         cell({ icon: 'link', color: '#34c759', label: 'Share my invite link', sub: inviteUrl.replace(/^https?:\/\//, ''), onClick: () => shareLink(inviteUrl, me) })),
 
+      h('div', { class: 'group' }, cell({ icon: 'paw', label: 'Pet shop', sub: 'Your companion · PingCoins · outfits', chevron: true, onClick: openPetShop })),
       h('div', { class: 'group-label' }, 'Account'),
       h('div', { class: 'group' },
         cell({ icon: 'user', color: '#5856d6', label: 'Username', value: '@' + me.username, chevron: true, onClick: changeUsername }),

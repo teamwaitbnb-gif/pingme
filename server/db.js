@@ -4,6 +4,10 @@ const mysql = require('mysql2/promise');
 let pool;
 
 const SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS pet_wallets (
+    user_id BIGINT UNSIGNED PRIMARY KEY,
+    state_enc MEDIUMTEXT NOT NULL
+  )`,
   `CREATE TABLE IF NOT EXISTS users (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
     uname_hash CHAR(64) NOT NULL UNIQUE,

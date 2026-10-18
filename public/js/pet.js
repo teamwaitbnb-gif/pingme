@@ -17,8 +17,12 @@ const LOOK = {
   unicorn: { fur: '#fbf7ff', dark: '#d9cdea', belly: '#ffffff', ear: 'point', tail: 'mane', horn: true, mane: true, treat: 'apple' },
 };
 
-function quadruped(kind) {
-  const L = LOOK[kind];
+let artId = 0;
+function quadruped(kind, color = 'natural') {
+  const coats = { caramel: '#c58b51', snow: '#eee9e0', midnight: '#555c71', rose: '#d995a1', lavender: '#a599c9', mint: '#8bbba5' };
+  const L = { ...LOOK[kind], ...(coats[color] ? { fur: coats[color] } : {}) };
+  const coatId = 'coat-' + (++artId);
+  const fur = L.fur; L.fur = `url(#${coatId})`;
   const legFill = L.darkLegs ? L.dark : L.fur;
   const ears = {
     point: `<path d="M70 30 L74 12 L84 26 Z" fill="${L.fur}"/><path d="M73 27 L75 17 L80 25 Z" fill="${L.tips ? '#2b2b2b' : '#f4b6c2'}"/>
@@ -39,6 +43,7 @@ function quadruped(kind) {
   }[L.tail];
   return `
 <svg class="pet-svg" viewBox="-4 -10 128 112" xmlns="${NS}">
+  <defs><radialGradient id="${coatId}" cx="35%" cy="20%" r="85%"><stop offset="0" stop-color="${fur}"/><stop offset=".55" stop-color="${fur}"/><stop offset="1" stop-color="${L.dark}"/></radialGradient></defs>
   <ellipse class="pet-shadow" cx="58" cy="96" rx="34" ry="4.5" fill="rgba(0,0,0,.28)"/>
   <g class="tail">${tails}</g>
   <g class="body">
@@ -197,10 +202,11 @@ const VOICE = {
 };
 
 // ───── the pet ─────
-export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
-  const zone = h('div', { class: 'pet-zone', 'aria-hidden': 'true' });
+export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, personal = false, onCustomize }) {
+  const zone = h('div', { class: 'pet-zone' + (personal ? ' personal-pet-zone' : '') });
   const inner = h('div', { class: 'pet-inner' });
-  const pet = h('div', { class: 'pet-actor' }, inner);
+  const pet = h('div', { class: 'pet-actor', role: 'button', tabindex: '0', 'aria-label': personal ? 'Your personal pet' : 'Group pet' }, inner);
+  pet.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); pet.click(); } });
   const fx = h('div', { class: 'pet-fx' });
   zone.append(pet, fx);
   conv.append(zone);
@@ -227,13 +233,14 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
     const wear = (id) => { const g = document.createElementNS(NS, 'g'); g.setAttribute('class', 'outfit o-' + id); g.innerHTML = PROPS[id](a); return g; };
     if (state.outfit === 'scarf' && head) head.parentNode.insertBefore(wear('scarf'), head);
     if (state.outfit && state.outfit !== 'scarf' && !(hat && ['crown', 'bow'].includes(state.outfit))) (head || el).append(wear(state.outfit));
+    if (state.glasses && state.outfit !== 'glasses') (head || el).append(wear('glasses'));
     if (hat) (head || el).append(wear(hat));
   }
   function draw() {
     if (!state) return;
     kind = state.level === 0 ? 'egg' : state.kind;
     inner.innerHTML = '';
-    const art = svg(kind === 'egg' ? egg() : kind === 'owl' ? owl() : quadruped(kind));
+    const art = svg(kind === 'egg' ? egg() : kind === 'owl' ? owl() : quadruped(kind, state.color));
     dress(art);
     inner.append(art);
     eyes = [];
@@ -243,10 +250,11 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
   }
 
   async function load() {
-    try { ({ pet: state } = await api('GET', `/api/chats/${chatId}/pet`)); } catch { zone.remove(); return; }
+    try { ({ pet: state } = await api('GET', `/api/chats/${chatId}/pet`)); } catch { destroy(); return; }
     if (destroyed) return;
+    if (!state) { destroy(); return; }
     draw(); fit();
-    x = Math.max(10, W() * 0.15); targetX = x; place();
+    x = Math.max(10, W() * (personal ? 0.72 : 0.15)); targetX = x; place();
     if ((state.mood === 'Sleeping' || (state.night && state.energy < 35)) && !state.caged) setMode('sleep');
     raf = requestAnimationFrame(loop);
     // Its favourite person gets a hello.
@@ -552,11 +560,11 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
 
   async function act(action, body = {}) {
     closeMenu();
-    try { const r = await api('POST', `/api/chats/${chatId}/pet`, { action, ...body }); state = r.pet; draw(); place(); } catch (e) { toast(e.message, { error: true }); }
+    try { const r = await api('POST', `/api/chats/${chatId}/pet`, { action, ...body }); state = r.pet; draw(); place(); if (personal && action === 'feed') feed(true); if (personal && action === 'play') fetchBall(Math.random(), true); } catch (e) { toast(e.message, { error: true }); }
   }
   async function rename() {
     closeMenu();
-    const name = await promptDialog({ title: 'Name your pet', value: state.name, placeholder: state.defaultName, maxlength: 20, ok: 'Save', note: 'Everyone in this chat sees the new name. Say it in a message and it comes running.' });
+    const name = await promptDialog({ title: 'Name your pet', value: state.name, placeholder: state.defaultName, maxlength: 20, ok: 'Save', note: personal ? 'Only you see your companion and its name.' : 'Everyone in this chat sees the new name. Say it in a message and it comes running.' });
     if (name && name.trim() && name.trim() !== state.name) act('rename', { name: name.trim() });
   }
   async function chooseOutfit() {
@@ -581,6 +589,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
         L.level > 0 && !L.caged ? h('button', { onclick: () => act('play') }, '🎾 Play') : null,
         L.level > 0 && !L.caged ? h('button', { onclick: () => { closeMenu(); react('happy', 1100); burst(HEART, 6); sound(kind); api('POST', `/api/chats/${chatId}/pet`, { action: 'poke' }).then((r) => { state = r.pet; }).catch(() => {}); } }, '🤚 Pet') : null),
       h('div', { class: 'pet-menu-row small' },
+        personal ? h('button', { onclick: () => { closeMenu(); onCustomize?.(); } }, 'Style') : null,
         L.level > 0 ? h('button', { onclick: rename }, 'Rename') : null,
         L.level > 0 && L.outfits.length ? h('button', { onclick: chooseOutfit }, 'Outfit') : null,
         L.level > 0 ? h('button', { onclick: () => act(L.caged ? 'release' : 'cage') }, L.caged ? 'Let out' : 'Cage') : null,
@@ -594,16 +603,18 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
   const outside = (e) => { if (menu && !menu.contains(e.target)) closeMenu(); else if (menu) document.addEventListener('pointerdown', outside, { once: true, capture: true }); };
 
   async function hideForMe() {
-    const ok = await actionSheet({ title: 'Hide the pet in this group?', actions: [{ label: 'Hide for me', value: 'hide' }] });
+    const ok = await actionSheet({ title: personal ? 'Hide your companion in all chats?' : 'Hide the pet in this group?', actions: [{ label: 'Hide for me', value: 'hide' }] });
     if (ok !== 'hide') return;
-    try { localStorage.setItem('mm:petHidden:' + chatId, '1'); } catch {}
+    if (personal) { try { await api('POST', '', { action: 'visibility', hidden: true }); } catch (e) { toast(e.message); return; } }
+    else try { localStorage.setItem('mm:petHidden:' + chatId, '1'); } catch {}
     destroy();
-    toast('Pet hidden — turn it back on from the group info', { timeout: 3500 });
+    toast(personal ? 'Companion hidden — show it again in Pet shop' : 'Pet hidden — turn it back on from the group info', { timeout: 3500 });
   }
 
   // Tap = poke (sound + jump + hearts, everyone sees it), and the little menu.
   pet.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (!state) return;
     lastActivity = Date.now();
     if (state.caged) { setMode('shake'); sound(kind === 'egg' ? 'egg' : kind); openMenu(); return; }
     sound(kind === 'egg' ? 'egg' : kind);
@@ -683,6 +694,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
     destroyed = true;
     cancelAnimationFrame(raf); clearInterval(blink); clearInterval(hintTimer); clearInterval(guard); ro.disconnect();
     conv.removeEventListener('pointermove', onPointer); conv.removeEventListener('pointerdown', onPointer);
+    document.removeEventListener('pointerdown', outside, true);
     zone.remove();
   }
 
@@ -692,3 +704,14 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds }) {
 
 export const petHidden = (chatId) => { try { return localStorage.getItem('mm:petHidden:' + chatId) === '1'; } catch { return false; } };
 export const showPetAgain = (chatId) => { try { localStorage.removeItem('mm:petHidden:' + chatId); } catch {} };
+
+// Shared art keeps previews and companions identical, including layered accessories.
+export function petPreview(p) {
+  const el = svg(quadruped(p.kind, p.color));
+  const head = el.querySelector('.head');
+  for (const id of [p.outfit, p.glasses && p.outfit !== 'glasses' ? 'glasses' : null].filter(Boolean)) {
+    if (!PROPS[id]) continue;
+    const g = document.createElementNS(NS, 'g'); g.innerHTML = PROPS[id](ANCHOR.quad); head.append(g);
+  }
+  return el;
+}

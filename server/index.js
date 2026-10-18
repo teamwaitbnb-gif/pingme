@@ -545,6 +545,9 @@ async function insertMessage({ chatId, senderId, kind, body, replyTo = null, att
 
   const members = await activeMemberIds(chatId);
   // Everyone currently online has it delivered right now.
+  if (!['system', 'call'].includes(kind) && members.some(u => u !== senderId)) {
+    petShop.reward(senderId, 'chat').catch(e => console.error('PingCoins reward failed', e.message));
+  }
   const onlineOthers = members.filter((u) => u !== senderId && online.has(u));
   if (onlineOthers.length) {
     await db.q('UPDATE chat_members SET last_delivered_id=GREATEST(last_delivered_id,?) WHERE chat_id=? AND user_id IN (?)', [id, chatId, onlineOthers]);
@@ -1807,6 +1810,8 @@ app.post('/api/push/unsubscribe', auth, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
+const petShop = require('./pet-shop')({ app, db, C, auth, wrap, bad, rateLimit, emitToUser });
+
 const advanced = require('./features')({
   app, io, db, C, push, auth, wrap, bad, forbidden, notFound, HttpError, toInt, clampStr, now, ms,
   requireMember, getUser, publicUser, insertMessage, loadMessage, emitToUser, joinUserToChat, rateLimit,
@@ -2325,6 +2330,9 @@ async function endCall(call, reason) {
     push.send(u, { type: 'call-ended', tag: 'call-' + call.id, callId: call.id, chatId: call.chatId, video: call.video, title: (await publicUser(call.startedBy)).name, body: call.answeredAt ? 'Call ended' : `Missed ${call.video ? 'video' : 'audio'} call`, url: '/?chat=' + call.chatId }, { ttl: 3600 }).catch(() => {});
   }
   const dur = call.answeredAt ? Math.round((Date.now() - call.answeredAt) / 1000) : 0;
+  if (dur >= 60 && call.everJoined.size >= 2) {
+    for (const uid of call.everJoined) await petShop.reward(uid, 'call').catch(e => console.error('PingCoins reward failed', e.message));
+  }
   for (const u of new Set([...call.everJoined, ...call.ringing])) {
     monitor.log(u, 'call', { chatId: call.chatId, callId: call.id, video: call.video, group: call.group, dur, missed: !call.answeredAt, reason, caller: call.startedBy === u, joined: call.everJoined.has(u) });
   }

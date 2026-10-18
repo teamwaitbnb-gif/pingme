@@ -1272,19 +1272,6 @@ html, body { touch-action: manipulation; overscroll-behavior: none; -webkit-text
 .nbanner.msg .nb-reply { padding: 12px 0 0; }
 .nbanner.msg.urgent { box-shadow: 0 0 0 2px #ff453a, 0 12px 40px rgba(0,0,0,.45); }
 
-/* Portrait only on phones (iPhone can't lock by code): cover the app when held sideways,
-   except during calls and in the photo/video viewer. */
-.rotate-back { display: none; }
-@media (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
-  body:not(:has(.call, .viewer, .photo-view, .qr-scan)) .rotate-back {
-    display: flex; position: fixed; inset: 0; z-index: 300; flex-direction: column; align-items: center; justify-content: center; gap: 10px;
-    background: var(--bg); color: var(--text); text-align: center; }
-  .rotate-back b { font-size: 20px; }
-  .rotate-back span { color: var(--text2); font-size: 15px; }
-  .rb-phone { width: 34px; height: 58px; border: 3px solid currentColor; border-radius: 9px; margin-bottom: 10px; animation: rbTurn 1.6s ease-in-out infinite; }
-}
-@keyframes rbTurn { 0%, 30% { transform: rotate(-90deg); } 60%, 100% { transform: rotate(0deg); } }
-
 /* Chat rows line up with the logo + search bar (16px edge); the unread dot sits in the margin
    instead of pushing every row right. Header avatar lines up with the search bar's right edge. */
 .chat-item { padding-left: 8px; }
@@ -1842,3 +1829,52 @@ html, body { touch-action: manipulation; overscroll-behavior: none; -webkit-text
 @keyframes petYawn { 0%, 100% { transform: scaleY(.4); } 50% { transform: scaleY(1.5); } }
 @keyframes petSpin { to { transform: rotate(-360deg); } }
 @media (prefers-reduced-motion: reduce) { .pet-actor[data-mode="spin"] .pet-svg, .pet-actor.land .pet-svg { animation: none; } }
+
+/* Personal companions and a quiet, compact pet boutique. */
+.ps-wrap { max-width: 680px; margin: auto; padding: 8px 16px 32px; }
+.ps-hero { padding: 24px 0; }
+.ps-eyebrow { font-size: 10px; letter-spacing: 2px; font-weight: 700; color: var(--text2); }
+.ps-hero h2 { font-size: clamp(24px, 5vw, 32px); letter-spacing: -1px; margin: 10px 0; }
+.ps-hero p, .ps-studio p, .ps-earn p { color: var(--text2); font-size: 14px; line-height: 1.6; margin: 6px 0 16px; }
+.pc-balance { display: inline-block; border-radius: 24px; padding: 10px 16px; background: #f9e7b5; color: #644716; font-size: 14px; }
+.ps-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.ps-card { border: 1px solid var(--fill2); border-radius: 22px; padding: 14px; background: var(--bg2); display: flex; flex-direction: column; align-items: flex-start; }
+.ps-card.selected { border-color: var(--accent); }
+.ps-art { align-self: stretch; height: 130px; border-radius: 16px; background: radial-gradient(ellipse at center, #e5c9a92b, transparent 70%); }
+.ps-art .pet-svg { width: 100%; height: 100%; filter: drop-shadow(0 5px 5px #00000015); }
+.ps-card h3 { font-size: 17px; margin: 8px 0 2px; }
+.ps-species { text-transform: capitalize; font-size: 11px; color: var(--text2); }
+.ps-card p { font-size: 12px; line-height: 1.5; color: var(--text2); flex: 1; }
+.ps-button { border-radius: 12px; background: var(--accent); color: var(--on-accent); font-size: 12px; font-weight: 650; padding: 11px 13px; min-height: 44px; }
+.ps-button:disabled { opacity: .45; cursor: default; }
+.ps-studio { border: 1px solid var(--fill2); border-radius: 22px; padding: 16px; }
+.ps-studio-head { display: flex; justify-content: space-between; align-items: center; }
+.ps-studio h3, .ps-earn h3 { margin: 0; font-size: 17px; }
+.ps-mini { width: 110px; height: 95px; }
+.ps-mini svg { width: 100%; height: 100%; }
+.ps-name { display: flex; gap: 8px; margin-bottom: 16px; }
+.ps-name input { min-width: 0; flex: 1; }
+.ps-options { margin-bottom: 15px; }
+.ps-options b { display: block; font-size: 12px; margin-bottom: 8px; }
+.ps-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.ps-chip { border: 1px solid var(--fill2); border-radius: 20px; padding: 10px 13px; min-height: 40px; font-size: 12px; text-transform: capitalize; background: var(--bg2); color: var(--text); }
+.ps-chip[aria-pressed="true"] { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+.ps-section-title { margin: 25px 0 14px; font-size: 17px; }
+.ps-earn { padding: 24px 0 0; }
+.ps-earn small { color: var(--text2); font-size: 11px; line-height: 1.6; }
+.personal-pet-zone .pet-actor::after { content: 'yours'; position: absolute; bottom: -9px; left: 25%; font-size: 9px; color: var(--text2); }
+.pet-actor:focus-visible { outline: 2px solid var(--accent); border-radius: 12px; }
+.ps-art .head { animation: companionBreathe 3s ease-in-out infinite; transform-origin: 70px 64px; }
+@keyframes companionBreathe { 50% { transform: translateY(-1.5px) rotate(-2deg); } }
+@media (prefers-reduced-motion: reduce) { .ps-art *, .pet-zone * { animation: none !important; transition: none !important; } }
+/* Keep the phone's single-conversation layout when a browser cannot lock orientation. */
+@media (orientation: landscape) and (max-height: 500px) and (pointer: coarse) {
+  .sidebar { width: 100%; border-right: 0; }
+  .conv { position: absolute; inset: 0; transform: translateX(100%); z-index: 5; }
+  .main.show-conv .conv { transform: none; }
+  .main.show-conv .sidebar { transform: translateX(-25%); }
+  .empty-conv { display: none; }
+  .cv-head .back { display: inline-flex; }
+  .buzz-pane { left: 0; }
+  .main.show-conv .buzz-pane { visibility: hidden; }
+}

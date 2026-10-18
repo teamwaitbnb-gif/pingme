@@ -142,3 +142,26 @@ Pages (tabs at the top, or link straight to them):
 | Buzz algorithm | `/admin#algorithm` | How well For You works |
 
 Never shown, even to the admin: message text, photos/videos people send, call audio/video, passwords.
+
+### Personal pets and PingCoins
+
+Settings → **Pet shop** lets each account adopt a dog, cat, bunny, fox, panda,
+dragon or unicorn. One selected companion follows its owner through direct and
+group chats; the existing shared group pet remains separate. Personal pet state
+is available only through authenticated `/api/pets/me` routes and owner-only
+socket events. Names, coat colors, outfits and layered sunglasses are saved per pet.
+All styles are included in the adoption price (40–180 PingCoins).
+
+Server-observed messages to other chat members earn 2 coins, at most once per
+minute. Participating in a call that lasts at least 60 seconds earns 10 coins,
+at most once per ten minutes. Both share a 100-coin daily cap, resetting at
+midnight UTC. System messages and call-log messages do not earn message rewards.
+Coins are non-monetary. Wallet changes and purchases lock the encrypted account
+row inside a database transaction; adopting an already owned pet never charges again.
+The `pet_wallets` table is created by the normal database initialization on restart.
+
+The rotate-phone cover has been removed. The manifest and supported orientation
+API request portrait. Browsers that do not implement portrait locking retain a
+usable single-conversation phone layout in landscape; web code cannot force an
+OS orientation lock on every device. Verify both installed Android and iPhone
+Safari/Home Screen modes on physical devices before releasing.

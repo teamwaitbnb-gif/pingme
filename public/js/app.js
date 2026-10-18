@@ -1,3 +1,4 @@
+import { openPetShop } from './pet-shop.js';
 import { openCamera } from './camera.js';
 import { mountPet, petHidden } from './pet.js';
 import { initBuzz } from './buzz.js';
@@ -126,6 +127,8 @@ async function boot() {
 }
 
 function showAuth(mode) {
+  S.pet?.destroy(); S.pet = null;
+  S.personalPet?.destroy(); S.personalPet = null;
   S.socket?.disconnect();
   S.socket = null;
   S.current = null;
@@ -176,18 +179,15 @@ function warmNotificationFaces() {
 }
 
 // ─────── portrait only (like WhatsApp) ───────
-// Android installed app: lock the screen to portrait. iPhone has no lock API, so a sideways phone gets
-// a "turn upright" cover instead (calls and the photo/video viewer may still go sideways).
+// Installed browsers that support orientation locking stay portrait. Other browsers stay usable.
 function lockPortrait() {
   if (!isMobile()) return;
   try { screen.orientation?.lock?.('portrait')?.catch(() => {}); } catch {}
 }
 lockPortrait();
 document.addEventListener('visibilitychange', () => { if (!document.hidden) lockPortrait(); });
-if (isMobile()) {
-  document.body.append(h('div', { class: 'rotate-back', 'aria-hidden': 'true' },
-    h('div', { class: 'rb-phone' }), h('b', null, 'Turn your phone upright'), h('span', null, 'Ping Me works in portrait')));
-}
+screen.orientation?.addEventListener?.('change', lockPortrait);
+addEventListener('pm:personal-pet', () => { const chat = S.chats.get(S.current); if (chat && els.msgs) startPersonalPet(chat); });
 
 addEventListener('pm:pet-show', (e) => { const c = S.chats.get(S.current); if (c && c.id === e.detail && els.msgs) startPet(c); });
 
@@ -385,6 +385,8 @@ function connectSocket() {
   document.addEventListener('visibilitychange', checkInstance);
   socket.on('msg:new', onNewMessage);
   socket.on('pet:event', (ev) => S.pet?.onEvent(ev));
+  socket.on('personal-pet:changed', ev => { if (['buy', 'equip', 'customize', 'visibility'].includes(ev.action)) dispatchEvent(new Event('pm:personal-pet')); });
+  socket.on('pingcoins', ev => dispatchEvent(new CustomEvent('pm:pingcoins', { detail: ev })));
   // Group calls going on right now (for the "Join" pill in the group header).
   socket.on('call:active', (ev) => {
     if (ev.callId) S.groupCalls.set(ev.chatId, ev); else S.groupCalls.delete(ev.chatId);
@@ -825,6 +827,7 @@ export function closeChat() {
   saveDraft();
   setScreen(S.tab === 'buzz' ? 'buzz' : 'chats');
   S.pet?.destroy(); S.pet = null;
+  S.personalPet?.destroy(); S.personalPet = null;
   S.current = null;
   stopIncognitoBeat();
   els.main?.classList.remove('show-conv');
@@ -920,8 +923,18 @@ addEventListener('online', () => {
 });
 addEventListener('offline', updateSmsBar);
 
+function startPersonalPet(chat) {
+  S.personalPet?.destroy(); S.personalPet = null;
+  S.personalPet = mountPet({ conv: els.conv, msgs: els.msgs, chatId: chat.id, personal: true,
+    api: (method, _url, body) => api(method, '/api/pets/me', body),
+    me: () => S.me?.id, userName: id => user(id).name.split(' ')[0], sounds: () => prefs().sounds,
+    onCustomize: openPetShop });
+}
+
 function startPet(chat) {
   S.pet?.destroy(); S.pet = null;
+  S.personalPet?.destroy(); S.personalPet = null;
+  startPersonalPet(chat);
   if (chat.type !== 'group' || !feature('groupPets') || petHidden(chat.id)) return; // pets live in group chats only
   S.pet = mountPet({
     conv: els.conv, msgs: els.msgs, chatId: chat.id, api,
@@ -1125,8 +1138,9 @@ function setTyping(chatId, userId, on) {
   const m = S.typing.get(chatId);
   clearTimeout(m.get(userId));
   if (on) m.set(userId, setTimeout(() => setTyping(chatId, userId, false), 6000));
-  if (on && S.pet && S.current === chatId) S.pet.onTyping();
   else m.delete(userId);
+  if (on && S.pet && S.current === chatId) S.pet.onTyping();
+  if (on && S.personalPet && S.current === chatId) S.personalPet.onTyping();
   renderList();
   if (S.current === chatId) { renderHeader(); renderTyping(); }
 }
@@ -1154,6 +1168,7 @@ async function onNewMessage(m) {
   }
   const mine = m.senderId === S.me.id;
   if (S.pet && S.current === m.chatId && m.kind !== 'system') S.pet.onMessage(m);
+  if (S.personalPet && S.current === m.chatId && m.kind !== 'system') S.personalPet.onMessage(m);
   const st = S.msgs.get(m.chatId);
   if (st && st.loaded && !st.gapAfter) upsertMessage(m, false);
   else if (st && st.loading) (st.early ||= []).push(m); // added once the load finishes
