@@ -2,12 +2,22 @@ import { h, openSheet, toast, confirmDialog } from './ui.js';
 import { api } from './core.js';
 import { petPreview } from './pet.js';
 
-export async function openPetShop() {
+// intro: opened from the 🪙 chip on the main page — explains PingCoins first, with the shop below.
+// Our own gold PingCoin (the 🪙 emoji is a silver eagle on iPhone).
+export function coinIcon(size = 20) {
+  const d = document.createElement('span');
+  d.className = 'pcoin';
+  d.style.width = d.style.height = size + 'px';
+  d.innerHTML = '<svg viewBox="0 0 40 40" aria-hidden="true"><circle cx="20" cy="20" r="18" fill="#f5b400" stroke="#8a5a00" stroke-width="2.4"/><circle cx="20" cy="20" r="13.5" fill="#ffd34d" stroke="#d99100" stroke-width="1.6"/><path d="M15.5 28 V12.5 h6.2 c3.4 0 5.6 2 5.6 5 s-2.2 5 -5.6 5 h-3" fill="none" stroke="#8a5a00" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/><path d="M9 15 a12 12 0 0 1 8 -7" stroke="#fff" stroke-width="2" fill="none" stroke-linecap="round" opacity=".8"/></svg>';
+  return d;
+}
+
+export async function openPetShop({ intro = false } = {}) {
   let data, busy = false, closed = false;
   const balance = h('strong', { class: 'pc-balance' }, '…');
   const live = e => { if (data) { data.balance = e.detail.balance; balance.textContent = `${data.balance} PingCoins`; } };
   addEventListener('pm:pingcoins', live);
-  const sheet = openSheet({ title: 'Pet shop', full: true, left: { label: 'Done' }, onClose: () => { closed = true; removeEventListener('pm:pingcoins', live); } });
+  const sheet = openSheet({ title: intro ? 'PingCoins' : 'Pet shop', full: true, left: { label: 'Done' }, onClose: () => { closed = true; removeEventListener('pm:pingcoins', live); } });
   sheet.body.append(h('p', { role: 'status' }, 'Opening the pet shop…'));
   async function update(body) {
     if (busy) return;
@@ -44,7 +54,16 @@ export async function openPetShop() {
         h('div', { class: 'ps-chips' }, h('button', { class: 'ps-chip', 'aria-pressed': String(active.glasses), onclick: () => update({ action: 'customize', glasses: !active.glasses }) }, 'Sunglasses'),
           h('button', { class: 'ps-chip', onclick: () => update({ action: 'visibility', hidden: !data.hidden }) }, data.hidden ? 'Show in chats' : 'Hide in chats')));
     }
-    sheet.body.replaceChildren(h('div', { class: 'ps-wrap' },
+    sheet.body.replaceChildren(h('div', { class: 'ps-wrap' + (intro ? ' intro' : '') },
+      h('section', { class: 'pc-explain' + (intro ? '' : ' compact') },
+        h('div', { class: 'pc-coin', 'aria-hidden': 'true' }, coinIcon(64)),
+        h('h2', null, 'What are PingCoins?'),
+        h('p', null, 'Little rewards for chatting with the people you care about. You earn them just by using Ping Me.'),
+        h('div', { class: 'pc-cards' },
+          h('div', { class: 'pc-card' }, h('b', null, '💬 +2'), h('span', null, 'for a message to someone (once a minute)')),
+          h('div', { class: 'pc-card' }, h('b', null, '📞 +10'), h('span', null, 'for a call of a minute or more (every 10 min)')),
+          h('div', { class: 'pc-card' }, h('b', null, '🐾 Adopt'), h('span', null, 'a companion pet that follows you in every chat'))),
+        h('small', null, 'Up to 100 coins a day · coins have no cash value and can’t be bought')),
       h('header', { class: 'ps-hero' }, h('span', { class: 'ps-eyebrow' }, 'A LITTLE COMPANY'), h('h2', null, 'Your chats. Your companion.'), h('p', null, 'A little friend for every conversation. Just for you, even in groups.'), balance),
       data.backfill?.coins ? h('div', { class: 'ps-backpay' }, '🎉 ', h('b', null, `${data.backfill.coins} PingCoins`), ` added for your chats before the shop opened — ${data.backfill.days} day${data.backfill.days === 1 ? '' : 's'} of messages${data.backfill.callCoins ? ' and calls' : ''}.`) : null,
       studio, h('h3', { class: 'ps-section-title' }, 'Find your companion'), grid,

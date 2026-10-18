@@ -1,4 +1,4 @@
-import { openPetShop } from './pet-shop.js';
+import { openPetShop, coinIcon } from './pet-shop.js';
 import { openCamera } from './camera.js';
 import { mountPet, petHidden } from './pet.js';
 import { initBuzz } from './buzz.js';
@@ -249,7 +249,8 @@ function startApp() {
     h('div', { class: 'sb-head' },
       h('img', { class: 'sb-logo', src: '/icons/logo-h.svg', alt: 'pingme' }),
       h('div', { class: 'spacer' }),
-      installed() ? null : h('button', { class: 'get-app', onclick: () => installApp().then((r) => { if (r === 'installed') renderMeBtn(); }) }, icon('download'), 'Get app'),
+      installed() ? null : h('button', { class: 'get-app', onclick: () => installApp().then((r) => { if (r === 'installed') renderMeBtn(); }), 'aria-label': 'Get app' }, icon('download'), h('span', { class: 'ga-t' }, 'Get app')),
+      els.coinChip = h('button', { class: 'coin-chip', hidden: true, title: 'PingCoins', 'aria-label': 'PingCoins', onclick: () => openPetShop({ intro: true }) }, h('span', { class: 'cc-coin' }, coinIcon(20)), h('b', null, '0')),
       h('button', { class: 'icon-btn', title: 'Scan QR code', 'aria-label': 'Scan QR code', onclick: () => openScanner() }, icon('scan')),
       h('button', { class: 'icon-btn', title: 'New message', 'aria-label': 'New message', onclick: () => openNewMessage() }, icon('compose')),
       els.meBtn),
@@ -942,13 +943,28 @@ addEventListener('online', () => {
 });
 addEventListener('offline', updateSmsBar);
 
+// 🪙 balance on the main page: live as coins are earned, refreshed after shop changes.
+function setCoins(balance, earned = 0) {
+  if (!els.coinChip) return;
+  els.coinChip.hidden = false;
+  els.coinChip.querySelector('b').textContent = Number(balance || 0).toLocaleString();
+  if (earned > 0) {
+    els.coinChip.classList.remove('earned'); void els.coinChip.offsetWidth; els.coinChip.classList.add('earned');
+    els.coinChip.append(h('i', { class: 'cc-plus' }, '+' + earned));
+    setTimeout(() => els.coinChip?.querySelector('.cc-plus')?.remove(), 1200);
+  }
+}
+addEventListener('pm:pingcoins', (e) => setCoins(e.detail.balance, e.detail.coins));
+addEventListener('pm:personal-pet', () => api('GET', '/api/pets/me').then((w) => setCoins(w.balance)).catch(() => {}));
+
 // One-time hello for people who were chatting before PingCoins existed: coins for their past chats.
 async function showBackPay() {
   try {
     const w = await api('GET', '/api/pets/me');
+    setCoins(w.balance);
     const b = w.backfill;
     if (!b || b.seen || !b.coins) return;
-    toast(null, { timeout: 9000, onClick: openPetShop, node: h('div', { class: 'row coin-toast' }, h('span', { class: 'ct-coin' }, '🪙'),
+    toast(null, { timeout: 9000, onClick: () => openPetShop({ intro: true }), node: h('div', { class: 'row coin-toast' }, h('span', { class: 'ct-coin' }, coinIcon(30)),
       h('div', null, h('b', null, `${b.coins} PingCoins for your chats so far 🎉`), h('span', null, 'Tap to adopt a pet in the Pet shop'))) });
     api('POST', '/api/pets/me', { action: 'seen-backfill' }).catch(() => {});
   } catch {}
