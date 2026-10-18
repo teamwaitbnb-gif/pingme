@@ -294,7 +294,7 @@ function startApp() {
     chat: (id) => S.chats.get(id),
     chatTitle, chatAvatar, userAvatar,
   });
-  loadChats().then(() => { track({ t: 'perf_boot', v: Math.round(performance.now()) }); handleUrl(); loadSafety(); checkRecovery(); if (S.me.settings?.onboarded) askNotificationsOnce(); setTimeout(warmNotificationFaces, 4000); S.calls?.checkRinging(); });
+  loadChats().then(() => { track({ t: 'perf_boot', v: Math.round(performance.now()) }); showBackPay(); handleUrl(); loadSafety(); checkRecovery(); if (S.me.settings?.onboarded) askNotificationsOnce(); setTimeout(warmNotificationFaces, 4000); S.calls?.checkRinging(); });
   setupPush(false);
   history.replaceState({ root: true }, '');
   if (globalsBound) return;
@@ -941,6 +941,18 @@ addEventListener('online', () => {
   const t = setInterval(() => { if (S.socket?.connected || ++tries > 20) { clearInterval(t); flushSmsOutbox(); updateSmsBar(); } }, 1000);
 });
 addEventListener('offline', updateSmsBar);
+
+// One-time hello for people who were chatting before PingCoins existed: coins for their past chats.
+async function showBackPay() {
+  try {
+    const w = await api('GET', '/api/pets/me');
+    const b = w.backfill;
+    if (!b || b.seen || !b.coins) return;
+    toast(null, { timeout: 9000, onClick: openPetShop, node: h('div', { class: 'row coin-toast' }, h('span', { class: 'ct-coin' }, '🪙'),
+      h('div', null, h('b', null, `${b.coins} PingCoins for your chats so far 🎉`), h('span', null, 'Tap to adopt a pet in the Pet shop'))) });
+    api('POST', '/api/pets/me', { action: 'seen-backfill' }).catch(() => {});
+  } catch {}
+}
 
 function startPersonalPet(chat) {
   S.personalPet?.destroy(); S.personalPet = null;

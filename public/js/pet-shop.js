@@ -46,6 +46,7 @@ export async function openPetShop() {
     }
     sheet.body.replaceChildren(h('div', { class: 'ps-wrap' },
       h('header', { class: 'ps-hero' }, h('span', { class: 'ps-eyebrow' }, 'A LITTLE COMPANY'), h('h2', null, 'Your chats. Your companion.'), h('p', null, 'A little friend for every conversation. Just for you, even in groups.'), balance),
+      data.backfill?.coins ? h('div', { class: 'ps-backpay' }, '🎉 ', h('b', null, `${data.backfill.coins} PingCoins`), ` added for your chats before the shop opened — ${data.backfill.days} day${data.backfill.days === 1 ? '' : 's'} of messages${data.backfill.callCoins ? ' and calls' : ''}.`) : null,
       studio, h('h3', { class: 'ps-section-title' }, 'Find your companion'), grid,
       h('section', { class: 'ps-earn' }, h('h3', null, 'Good conversations give back.'),
         h('p', null, 'Earn 2 PingCoins for a message to other people (once per minute), and 10 for participating in a call lasting at least a minute (once per 10 minutes).'),

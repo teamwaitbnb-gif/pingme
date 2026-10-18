@@ -1,6 +1,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { award, mutate, fresh } = require('../server/pet-shop');
+const { award, mutate, fresh, pastCoins } = require('../server/pet-shop');
 const bad = message => new Error(message);
 const now = Date.UTC(2026, 9, 18, 10);
 test('PingCoins cooldowns, shared daily cap and reset', () => {
@@ -45,4 +45,16 @@ test('new wallets and their collections are independent', () => {
   mutate(a, { action: 'buy', kind: 'cat' }, bad);
   assert.deepEqual(b.owned, {});
   assert.equal(b.active, null);
+});
+
+test('back-pay for past chats follows the live rules: per-minute and per-10-minute limits, 100/day cap', () => {
+  const t0 = Date.UTC(2026, 8, 1, 9);
+  assert.equal(pastCoins([t0, t0 + 1000, t0 + 2000, t0 + 61000], []).coins, 4);
+  assert.equal(pastCoins([], [t0, t0 + 300000]).coins, 10);
+  assert.equal(pastCoins([], [t0, t0 + 660000]).coins, 20);
+  const many = Array.from({ length: 200 }, (_, i) => t0 + i * 61000);
+  const r = pastCoins([...many, t0 + 86400000], []);
+  assert.equal(r.coins, 102);
+  assert.equal(r.days, 2);
+  assert.equal(pastCoins([], []).coins, 0);
 });

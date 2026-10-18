@@ -10,7 +10,31 @@ const CATALOG = [
 ];
 const OUTFITS = ['bow', 'scarf', 'crown', 'party', 'nightcap'];
 const COLORS = ['natural', 'caramel', 'snow', 'midnight', 'rose', 'lavender', 'mint'];
-function fresh() { return { balance: 0, owned: {}, active: null, hidden: false, day: '', earned: 0, last: {} }; }
+function fresh() { return { balance: 0, owned: {}, active: null, hidden: false, day: '', earned: 0, last: {}, since: Date.now() }; }
+// Coins for chatting done before PingCoins existed, with the same rules as live earning:
+// 2 per message to others (at most one per minute), 10 per call of 60 s+ (at most one per 10 min),
+// at most 100 per UTC day. Inputs are millisecond timestamps.
+function pastCoins(msgTimes, callTimes) {
+  const days = new Map();
+  const add = (times, gap, each, key) => {
+    let last = -Infinity;
+    for (const t of [...times].sort((a, b) => a - b)) {
+      if (t - last < gap) continue;
+      last = t;
+      const d = new Date(t).toISOString().slice(0, 10);
+      if (!days.has(d)) days.set(d, { m: 0, c: 0 });
+      days.get(d)[key] += each;
+    }
+  };
+  add(msgTimes, 60000, 2, 'm'); add(callTimes, 600000, 10, 'c');
+  let coins = 0, messages = 0, calls = 0;
+  for (const v of days.values()) {
+    const day = Math.min(100, v.m + v.c);
+    coins += day;
+    const mm = Math.min(v.m, day); messages += mm; calls += day - mm;
+  }
+  return { coins, messageCoins: messages, callCoins: calls, days: days.size };
+}
 function award(s, type, now = Date.now()) {
   const day = new Date(now).toISOString().slice(0, 10);
   if (s.day !== day) { s.day = day; s.earned = 0; }
@@ -36,6 +60,7 @@ function mutate(s, body, bad) {
     if (!CATALOG.some(p => p.kind === kind) || !Object.hasOwn(s.owned, kind)) throw bad('Adopt this pet first');
     s.active = kind; s.hidden = false;
   } else if (action === 'visibility') s.hidden = !!body.hidden;
+  else if (action === 'seen-backfill') { if (s.backfill) s.backfill.seen = true; }
   else {
     const p = s.owned[s.active];
     if (!p) throw bad('Adopt a pet first');
@@ -61,6 +86,22 @@ function view(s) {
       outfits: [...OUTFITS, 'glasses'].map(id => ({ id, label: id })), night: false, favorite: null } };
 }
 module.exports = function ({ app, db, C, auth, wrap, bad, rateLimit, emitToUser }) {
+  // One-time back-pay for chats and calls before the wallet existed (or before today, for wallets
+  // that already started earning live — so nothing is ever counted twice).
+  async function backfill(conn, uid, s) {
+    const cutoff = new Date(s.since || (s.day ? Date.parse(s.day + 'T00:00:00Z') : Date.now()));
+    const [msgs] = await conn.query(`SELECT m.created_at FROM messages m
+      WHERE m.sender_id=? AND m.kind NOT IN ('system','call') AND m.created_at < ?
+        AND EXISTS (SELECT 1 FROM chat_members o WHERE o.chat_id=m.chat_id AND o.user_id<>m.sender_id)`, [uid, cutoff]);
+    const [calls] = await conn.query(`SELECT m.body_enc, m.sender_id, m.created_at FROM messages m
+      WHERE m.kind='call' AND m.created_at < ? AND m.chat_id IN (SELECT chat_id FROM chat_members WHERE user_id=?)`, [cutoff, uid]);
+    const callTimes = [];
+    for (const r of calls) {
+      const c = C.decJson(r.body_enc, {})?.call;
+      if (c && !c.missed && (c.dur || 0) >= 60 && ((c.joined || []).includes(uid) || Number(r.sender_id) === uid)) callTimes.push(new Date(r.created_at).getTime());
+    }
+    return pastCoins(msgs.map((r) => new Date(r.created_at).getTime()), callTimes);
+  }
   async function transaction(uid, fn) {
     const conn = await db.pool.getConnection();
     try {
@@ -69,6 +110,11 @@ module.exports = function ({ app, db, C, auth, wrap, bad, rateLimit, emitToUser 
       const [[row]] = await conn.query('SELECT state_enc FROM pet_wallets WHERE user_id=? FOR UPDATE', [uid]);
       const s = C.decJson(row.state_enc);
       if (!s) throw new Error('Pet wallet could not be read');
+      if (!s.backfill) {
+        const r = await backfill(conn, uid, s);
+        s.balance += r.coins;
+        s.backfill = { ...r, at: Date.now(), seen: r.coins === 0 };
+      }
       await fn(s);
       await conn.query('UPDATE pet_wallets SET state_enc=? WHERE user_id=?', [C.enc(s), uid]);
       await conn.commit(); return view(s);
@@ -90,3 +136,4 @@ module.exports = function ({ app, db, C, auth, wrap, bad, rateLimit, emitToUser 
 module.exports.award = award;
 module.exports.mutate = mutate;
 module.exports.fresh = fresh;
+module.exports.pastCoins = pastCoins;
