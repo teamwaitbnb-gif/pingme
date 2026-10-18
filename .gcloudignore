@@ -1,0 +1,12 @@
+# Files not uploaded by `gcloud run deploy --source`. Without this file gcloud would use
+# .gitignore, which leaves out server/version.json (the release stamp written by deploy.sh).
+.gcloudignore
+.git
+.gitignore
+node_modules
+.env
+.env.*
+*.log
+.DS_Store
+.vscode
+tests
