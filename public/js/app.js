@@ -1364,6 +1364,19 @@ function drawMessages(chat, st) {
     if (m.kind === 'ping') { nodes.push(getNode('m' + (m.clientId || m.id), 'p' + m.id + (m.pending ? 'x' : ''), () => pingRow(m, chat))); continue; }
     const first = !sameGroup(prev, m) || (prev && m.createdAt - prev.createdAt > 3600000);
     const last = !sameGroup(m, next) || (next && next.createdAt - m.createdAt > 3600000);
+    // Photos/videos sent together → one album bubble (grid), like WhatsApp.
+    const end = albumEnd(list, i);
+    if (end > i + 1) {
+      const items = list.slice(i, end), lastItem = items[items.length - 1], after = list[end];
+      const lastA = !sameGroup(lastItem, after) || (after && after.createdAt - lastItem.createdAt > 3600000);
+      const statusA = lastMineIdx >= i && lastMineIdx < end ? receiptStatus(lastItem, chat) : '';
+      const keyA = items.map((x) => [x.id, x.progress, x.failed, x.thumbUrl, x.att?.id, x.att?.thumbId, JSON.stringify(x.reactions || []), x.deleted, x.pinned].join(',')).join(';') + `|${first}|${lastA}|${statusA}|${JSON.stringify(m.text)}|${user(m.senderId).avatarV}`;
+      nodes.push(getNode('a' + (m.album || m.clientId || m.id), keyA, () => {
+        try { return buildAlbum(items, { first, last: lastA, status: statusA, chat }); } catch (e) { reportError(e, 'album'); return h('div', { class: 'sys' }, 'These photos can’t be shown'); }
+      }));
+      i = end - 1;
+      continue;
+    }
     const status = i === lastMineIdx ? receiptStatus(m, chat) : '';
     const key = [m.id, JSON.stringify(m.text), m.editedAt, m.deleted, m.pinned, first, last, status, m.progress, m.failed, JSON.stringify(m.reactions || []), JSON.stringify(m.poll?.votes || {}), user(m.senderId).avatarV, user(m.senderId).name, m.replyTo?.preview, m.att?.id, m.thumbUrl, m.att?.thumbId, m.expiresAt, m.readTtl, m.vr?.sig, scamV, m.intent].join('|');
     nodes.push(getNode('m' + (m.clientId || m.id), key, () => {
@@ -1380,6 +1393,45 @@ function drawMessages(chat, st) {
   const live = new Set(nodes);
   for (const [k, v] of conv.nodes) if (!live.has(v.el)) conv.nodes.delete(k);
   renderPinnedBar();
+}
+
+// ─────── albums ───────
+const albumable = (x) => x && (x.kind === 'image' || x.kind === 'video') && !x.deleted && !x.secure && !x.eyes && !x.readTtl && x.effect !== 'ink' && !x.failed;
+// End (exclusive) of the album starting at i: same album id, or — for older messages without one —
+// photos/videos from the same person sent within a minute of each other with no caption after the first.
+function albumEnd(list, i) {
+  const a = list[i];
+  if (!albumable(a)) return i + 1;
+  let j = i + 1;
+  while (j < list.length) {
+    const b = list[j], p = list[j - 1];
+    if (!albumable(b) || b.senderId !== a.senderId) break;
+    if (a.album ? b.album !== a.album : (b.album || b.text || Math.abs(b.createdAt - p.createdAt) > 60000)) break;
+    j++;
+  }
+  return j - i >= 2 ? j : i + 1;
+}
+function buildAlbum(items, opts) {
+  items = [...items].sort((a, b) => (a.albumIndex ?? 0) - (b.albumIndex ?? 0) || 0);
+  const row = buildMessage(items[0], opts); // same row as a photo (avatar, time, ticks, reactions)
+  const bubble = row.querySelector('.bubble');
+  const n = items.length, show = items.slice(0, Math.min(n, 4));
+  const grid = h('div', { class: `album-grid n${show.length}` });
+  const viewable = () => items.filter((x) => !x.pending);
+  show.forEach((it, k) => {
+    const tile = h('div', { class: 'album-tile' }, mediaBox(it));
+    if (k === 3 && n > 4) tile.append(h('div', { class: 'album-more' }, '+' + (n - 4)));
+    // Capture phase: open this album (not the whole chat) in the viewer.
+    tile.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault(); if (!it.pending) openViewer(k === 3 && n > 4 ? items[3] : it, viewable()); }, true);
+    longPress(tile, () => openMessageMenu(it, row));
+    grid.append(tile);
+  });
+  const sending = items.filter((x) => x.pending).length;
+  bubble.className = 'bubble media album';
+  bubble.replaceChildren(grid,
+    sending ? h('div', { class: 'album-up' }, h('div', { class: 'spinner small' }), `Sending ${n - sending} of ${n}`) : null,
+    items[0].text ? h('div', { class: 'cap', html: richText(items[0].text) }) : null);
+  return row;
 }
 
 function getNode(id, key, build) {
@@ -2135,11 +2187,15 @@ function setupDrop() {
   els.conv.addEventListener('drop', (e) => { e.preventDefault(); hint?.remove(); hint = null; depth = 0; addFiles([...(e.dataTransfer?.files || [])]); });
 }
 
+const TRAY_MAX = 150; // photos/videos/files in one go
 function addFiles(files) {
+  let skipped = 0;
   for (const f of files) {
     if (f.size > S.config.maxUpload) { toast(`${f.name} is larger than ${fmtSize(S.config.maxUpload)}`, { error: true }); continue; }
+    if (conv.tray.length >= TRAY_MAX) { skipped++; continue; }
     conv.tray.push({ file: f, url: URL.createObjectURL(f), id: Math.random().toString(36).slice(2) });
   }
+  if (skipped) toast(`Up to ${TRAY_MAX} at once — ${skipped} not added`, { error: true });
   renderTray();
   updateSendBtn();
   els.ta.focus();
@@ -2147,10 +2203,13 @@ function addFiles(files) {
 
 function renderTray() {
   els.tray.hidden = !conv.tray.length;
-  const hasImage = conv.tray.some((t) => t.file.type.startsWith('image/'));
+  const n = conv.tray.length, media = conv.tray.filter((t) => /^(image|video)\//.test(t.file.type)).length;
   els.tray.replaceChildren(
+    n > 1 ? h('div', { class: 'tray-head' }, h('b', null, `${n} ${media === n ? (n === 1 ? 'item' : 'items') : 'files'}`), h('span', null, media > 1 ? 'sent as one album · original quality' : 'original quality'),
+      h('button', { onclick: () => { conv.tray.forEach((t) => URL.revokeObjectURL(t.url)); conv.tray = []; renderTray(); updateSendBtn(); } }, 'Clear')) : null,
     ...conv.tray.map((t) => h('div', { class: 'ti' },
-      t.file.type.startsWith('image/') ? h('img', { src: t.url, alt: '' }) : t.file.type.startsWith('video/') ? h('video', { src: t.url, muted: true, playsinline: true }) : h('span', null, t.file.name),
+      t.file.type.startsWith('image/') ? h('img', { src: t.url, alt: '', loading: 'lazy', decoding: 'async' }) : t.file.type.startsWith('video/') ? h('video', { src: t.url + '#t=0.1', muted: true, playsinline: true, preload: 'metadata' }) : h('span', null, t.file.name),
+      t.file.type.startsWith('video/') ? h('span', { class: 'ti-vid' }, icon('play', 'fill')) : null,
       h('button', { class: 'rm', 'aria-label': 'Remove', onclick: () => { URL.revokeObjectURL(t.url); conv.tray = conv.tray.filter((x) => x !== t); renderTray(); updateSendBtn(); } }, icon('x')))),
 ''); // photos always go in original quality
 }
@@ -2201,12 +2260,17 @@ export async function send(opts = {}) {
     if (!sendAt && !base.secure && !base.eyes) trackPromise(chatId, text);
     return;
   }
+  // Several photos/videos at once = one album (one grid bubble, one notification). Uploads run four at
+  // a time; each item carries its position, so the album shows in your order however they finish.
+  const mediaCount = tray.filter((t) => /^(image|video)\//.test(t.file.type)).length;
+  const album = mediaCount > 1 ? Date.now().toString(36) + Math.random().toString(36).slice(2, 8) : null;
   for (let i = 0; i < tray.length; i++) {
     const caption = i === 0 ? text : '';
     const f = tray[i].file;
     // Camera "View once" switch sends this photo/video as a vanish-after-viewing message.
     const vanish = base.vanish || (f.pmViewOnce && feature('vanishAfterRead'));
-    sendFile(chatId, f, { ...base, vanish, secure: false, text: caption, replyTo: i === 0 ? replyTo : null }, tray[i].url);
+    const inAlbum = album && /^(image|video)\//.test(f.type) && !vanish;
+    sendFile(chatId, f, { ...base, vanish, secure: false, text: caption, replyTo: i === 0 ? replyTo : null, album: inAlbum ? album : undefined, albumIndex: inAlbum ? i : undefined }, tray[i].url);
   }
 }
 
@@ -2229,15 +2293,21 @@ async function dispatch(chatId, payload, pending) {
   }
 }
 
+// At most three files upload at the same time (150 at once would choke the phone and the network).
+let upActive = 0; const upWaiting = [];
+const upSlot = () => (upActive < 4 ? (upActive++, Promise.resolve()) : new Promise((r) => upWaiting.push(r)));
+const upFree = () => { const next = upWaiting.shift(); if (next) next(); else upActive--; };
+
 async function sendFile(chatId, file, base, localUrl) {
   const type = file.type || '';
   let kind = type.startsWith('image/') ? 'image' : type.startsWith('video/') ? 'video' : type.startsWith('audio/') ? 'audio' : 'file';
   if (kind === 'audio') kind = 'file';
-  const pending = pendingMessage(chatId, { kind, text: base.text, att: { name: file.name, size: file.size, mime: type }, localUrl, progress: 0, effect: base.effect, intent: base.intent, eyes: !!base.eyes, readTtl: base.vanish ? 1 : null });
+  const pending = pendingMessage(chatId, { kind, text: base.text, att: { name: file.name, size: file.size, mime: type }, localUrl, progress: 0, effect: base.effect, intent: base.intent, eyes: !!base.eyes, readTtl: base.vanish ? 1 : null, album: base.album || null, albumIndex: base.albumIndex ?? null });
   const st = S.msgs.get(chatId);
   if (!base.sendAt && st) { st.list.push(pending); if (S.current === chatId) { renderMessages(); scrollToBottom(true); } }
-  let blob = file, media = {};
+  let blob = file, media = {}, slot = false;
   try {
+    await upSlot(); slot = true;
     if (kind === 'image') {
       // Always the original file, byte for byte — never re-compressed (only its size is read for the layout).
       const bmp = await createImageBitmap(file).catch(() => null);
@@ -2266,7 +2336,9 @@ async function sendFile(chatId, file, base, localUrl) {
     S.localMedia.set(up.id, localUrl);
     pending.progress = 1;
     await dispatch(chatId, { kind, attachmentId: up.id, media, ...base }, base.sendAt ? null : pending);
+    upFree(); slot = false;
   } catch (e) {
+    if (slot) upFree();
     pending.failed = true;
     pending._file = { file, base, localUrl };
     if (S.current === chatId) renderMessages();

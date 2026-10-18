@@ -405,6 +405,8 @@ async function serializeMessages(rows, viewerId, { light = false } = {}) {
       ping: b.ping || null,
       letter: b.letter ? letterView(b.letter, Number(r.sender_id) === viewerId) : null,
       intent: b.intent || null,
+      album: b.album || null,
+      albumIndex: Number.isInteger(b.albumIndex) ? b.albumIndex : null,
       viaSms: b.viaSms ? true : undefined,
       secure: !!b.secure,
       eyes: !!b.eyes,
@@ -494,6 +496,11 @@ async function buildBody(chatId, senderId, input) {
     throw bad('Message is empty');
   }
   if (INTENTS.has(input.intent)) body.intent = input.intent;
+  // Photos/videos sent together carry the same album id, so they show as one grid (like WhatsApp).
+  if ((kind === 'image' || kind === 'video') && typeof input.album === 'string' && /^[a-z0-9]{6,24}$/i.test(input.album)) {
+    body.album = input.album;
+    if (Number.isInteger(input.albumIndex) && input.albumIndex >= 0 && input.albumIndex < 1000) body.albumIndex = input.albumIndex; // your order in the album
+  }
   if (input.viaSms === true && kind === 'text') body.viaSms = true; // already delivered by SMS while offline
   if (kind === 'ping' || kind === 'letter') return { kind, body, attachmentId: null, vanish: false };
   if (input.secure && (kind === 'text' || kind === 'image')) body.secure = true;
@@ -590,8 +597,15 @@ async function mentionedIds(msg, members, senderId) {
   return out;
 }
 
+const albumNotified = new Map(); // chat:album → time — an album of 50 photos rings once, not 50 times
+setInterval(() => { const t = Date.now(); for (const [k, v] of albumNotified) if (t - v > 600000) albumNotified.delete(k); }, 600000).unref();
 async function notifyMembers(chatId, senderId, msg, members) {
   if (!push.enabled || msg.viaSms) return; // SMS copies were already received as texts
+  if (msg.album) {
+    const k = chatId + ':' + msg.album;
+    if (albumNotified.has(k)) return;
+    albumNotified.set(k, Date.now());
+  }
   const sender = await publicUser(senderId);
   const mentioned = await mentionedIds(msg, members, senderId);
   const chat = await db.one('SELECT type, title_enc FROM chats WHERE id=?', [chatId]);
@@ -612,7 +626,7 @@ async function notifyMembers(chatId, senderId, msg, members) {
     const previews = u.settings.previews;
     const urgent = msg.intent === 'urgent' || msg.sos;
     const hidden = msg.secure || msg.eyes || msg.effect === 'ink' || msg.readTtl;
-    let body = msg.incognito ? 'Incognito message' : previews ? (msg.effect === 'ink' ? 'Sent with Invisible Ink' : notifyText(msg)) : 'New message';
+    let body = msg.incognito ? 'Incognito message' : previews ? (msg.effect === 'ink' ? 'Sent with Invisible Ink' : msg.album ? `Sent an album${msg.text ? ' · ' + msg.text : ''}` : notifyText(msg)) : 'New message';
     if (msg.sos) body = 'SOS — needs help now. Tap to see their live location.';
     else if (msg.kind === 'ping') body = msg.ping?.long ? 'Pinged you — really missing you' : 'Pinged you — thinking of you';
     else if (msg.kind === 'letter') body = 'Sent you a letter: ' + (msg.letter?.title || '');
@@ -1675,7 +1689,7 @@ app.get('/api/search', auth, wrap(async (req, res) => {
 // ─────────────────────────── HTTP: files ───────────────────────────
 
 app.post('/api/upload', auth, express.raw({ type: () => true, limit: MAX_UPLOAD }), wrap(async (req, res) => {
-  rateLimit('upload:' + req.uid, 60, 60000);
+  rateLimit('upload:' + req.uid, 900, 60000); // up to 150 photos/videos at once, each with a preview
   const chatId = toInt(req.get('x-chat-id'));
   await requireMember(chatId, req.uid);
   if (!Buffer.isBuffer(req.body) || !req.body.length) throw bad('Empty file');
@@ -1689,7 +1703,7 @@ app.post('/api/upload', auth, express.raw({ type: () => true, limit: MAX_UPLOAD 
 // Original-quality uploads of any size (up to 2 GiB): start → pieces (8 MiB each) → finish.
 // The bytes are stored exactly as the phone recorded them — nothing is re-encoded.
 app.post('/api/upload/start', auth, wrap(async (req, res) => {
-  rateLimit('upstart:' + req.uid, 60, 60000);
+  rateLimit('upstart:' + req.uid, 400, 60000);
   const chatId = toInt(req.body.chatId);
   await requireMember(chatId, req.uid);
   const size = toInt(req.body.size);
