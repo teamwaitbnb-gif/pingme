@@ -13,7 +13,7 @@ const IST = 5.5 * 3600e3;
 const istDay = (t = Date.now()) => new Date(t + IST).toISOString().slice(0, 10);
 const DAYSQL = (col) => `DATE(CONVERT_TZ(${col}, '+00:00', '+05:30'))`;
 
-module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online, buzz, monitor, activeCalls }) {
+module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online, buzz, monitor, activeCalls, petState }) {
   const buzzMod = buzz;
   // ───── collection ─────
   app.post('/api/t', auth, wrap(async (req, res) => {
@@ -541,7 +541,7 @@ module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, pu
 
   // Activity: what accounts did, newest first (sign-ups, sign-ins, photo/name changes, calls, groups…).
   app.get('/api/admin/activity', adminOnly, wrap(async (req, res) => {
-    const kind = String(req.query.kind || '').replace(/[^a-z]/g, '').slice(0, 24);
+    const kind = String(req.query.kind || '').replace(/[^a-z-]/g, '').slice(0, 24);
     const rows = await db.q(`SELECT user_id, kind, meta_enc, created_at FROM activity_log ${kind ? 'WHERE kind=?' : ''} ORDER BY id DESC LIMIT 400`, kind ? [kind] : []);
     const counts = await db.q('SELECT kind, COUNT(*) c FROM activity_log WHERE created_at >= ? GROUP BY kind', [new Date(Date.now() - 7 * 86400e3)]);
     const out = [];
@@ -552,6 +552,82 @@ module.exports = function admin({ app, io, db, C, auth, wrap, bad, rateLimit, pu
       out.push({ at: ms0(r.created_at), kind: r.kind, userId: r.user_id ? Number(r.user_id) : null, name: u?.name || '—', username: u?.username || null, meta });
     }
     res.json({ events: out, counts: Object.fromEntries(counts.map((c) => [c.kind, n(c.c)])) });
+  }));
+
+  // Pets: how groups use their pet (who feeds/plays/pets it, who talks to it by name) and the
+  // personal pets + PingCoins economy. Counts only — message text is only scanned for the pet's name.
+  app.get('/api/admin/pets', adminOnly, wrap(async (req, res) => {
+    const days = Math.min(90, Math.max(1, Number(req.query.days) || 30));
+    const since = new Date(Date.now() - days * 86400e3), since7 = new Date(Date.now() - 7 * 86400e3);
+    const acts = (await db.q("SELECT user_id, kind, meta_enc, created_at FROM activity_log WHERE kind IN ('pet','pet-own') AND created_at >= ? ORDER BY id", [since]))
+      .map((a) => ({ uid: Number(a.user_id), kind: a.kind, at: ms0(a.created_at), meta: a.meta_enc ? C.decJson(a.meta_enc, {}) : {} }));
+    const group = acts.filter((a) => a.kind === 'pet');
+    const byAction = {}, perDay = {}, perChat = new Map(), perUser = new Map();
+    for (const a of group) {
+      const act = a.meta.action || 'other';
+      byAction[act] = (byAction[act] || 0) + 1;
+      const d = istDay(a.at);
+      perDay[d] ||= { day: d, feed: 0, play: 0, poke: 0, other: 0 };
+      perDay[d][['feed', 'play', 'poke'].includes(act) ? act : 'other']++;
+      const cid = Number(a.meta.chatId);
+      if (!perChat.has(cid)) perChat.set(cid, { n: 0, people: new Set(), last: 0, recent: 0 });
+      const pc = perChat.get(cid); pc.n++; pc.people.add(a.uid); pc.last = Math.max(pc.last, a.at); if (a.at >= since7.getTime()) pc.recent++;
+      if (!perUser.has(a.uid)) perUser.set(a.uid, { n: 0, actions: {}, chats: new Set(), last: 0 });
+      const pu = perUser.get(a.uid); pu.n++; pu.actions[act] = (pu.actions[act] || 0) + 1; pu.chats.add(cid); pu.last = Math.max(pu.last, a.at);
+    }
+    const series = []; for (let i = days - 1; i >= 0; i--) { const d = daysAgo(i); series.push(perDay[d] || { day: d, feed: 0, play: 0, poke: 0, other: 0 }); }
+    // Every group and its pet.
+    const groups = await db.q("SELECT c.id, c.title_enc, (SELECT COUNT(*) FROM chat_members m WHERE m.chat_id=c.id AND m.active=1) members FROM chats c WHERE c.type='group'");
+    const msgs = new Map((await db.q("SELECT chat_id, COUNT(*) n FROM messages WHERE created_at >= ? AND kind NOT IN ('system','call') AND chat_id IN (SELECT id FROM chats WHERE type='group') GROUP BY chat_id", [since])).map((r) => [Number(r.chat_id), n(r.n)]));
+    const out = [];
+    let mentionsTotal = 0;
+    const talkers = new Set();
+    for (const g of groups) {
+      const cid = Number(g.id);
+      let p = null; try { p = petState ? await petState(cid) : null; } catch {}
+      let mentions = 0;
+      if (p?.name && p.level > 0) {
+        const name = p.name.toLowerCase();
+        for (const m of await db.q("SELECT sender_id, body_enc FROM messages WHERE chat_id=? AND kind='text' AND deleted=0 AND created_at >= ? ORDER BY id DESC LIMIT 3000", [cid, since])) {
+          const b = C.decJson(m.body_enc, {}) || {};
+          if (!b.secure && !b.eyes && typeof b.text === 'string' && b.text.toLowerCase().includes(name)) { mentions++; talkers.add(Number(m.sender_id)); }
+        }
+      }
+      mentionsTotal += mentions;
+      const pc = perChat.get(cid);
+      out.push({ chatId: cid, title: C.dec(g.title_enc) || 'Group', members: n(g.members), messages: msgs.get(cid) || 0,
+        pet: p ? { name: p.name, kind: p.kind, emoji: p.display, stage: p.stage, level: p.level, rarity: p.rarity, mood: p.mood, moodEmoji: p.moodEmoji, hunger: p.hunger, happiness: p.happiness, outfit: p.outfit, caged: p.caged, favorite: p.favorite?.name || null } : null,
+        interactions: pc?.n || 0, interactions7d: pc?.recent || 0, people: pc ? pc.people.size : 0, mentions, lastInteraction: pc?.last || null });
+    }
+    out.sort((a, b) => (b.interactions + b.mentions) - (a.interactions + a.mentions) || b.messages - a.messages);
+    // Personal pets and coins.
+    const wallets = (await db.q('SELECT user_id, state_enc FROM pet_wallets').catch(() => [])).map((w) => ({ uid: Number(w.user_id), s: C.decJson(w.state_enc, null) })).filter((w) => w.s);
+    const today = new Date().toISOString().slice(0, 10);
+    const byKind = {};
+    let coins = 0, earnedToday = 0, withPet = 0, adoptions = 0, backpay = 0, spent = 0;
+    const PRICE = { dog: 40, cat: 40, bunny: 60, fox: 90, panda: 120, dragon: 180, unicorn: 180 };
+    for (const { s } of wallets) {
+      coins += s.balance || 0;
+      if (s.day === today) earnedToday += s.earned || 0;
+      backpay += s.backfill?.coins || 0;
+      const owned = Object.keys(s.owned || {});
+      adoptions += owned.length; if (s.active && !s.hidden) withPet++;
+      for (const k of owned) { byKind[k] = (byKind[k] || 0) + 1; spent += PRICE[k] || 0; }
+    }
+    const own = acts.filter((a) => a.kind === 'pet-own');
+    const people = [];
+    for (const [uid, v] of [...perUser].sort((a, b) => b[1].n - a[1].n).slice(0, 25)) {
+      const u = await publicUser(uid);
+      people.push({ userId: uid, name: u.name, username: u.username, interactions: v.n, actions: v.actions, groups: v.chats.size, last: v.last });
+    }
+    const activeGroups = out.filter((g) => g.interactions > 0 || g.mentions > 0).length;
+    res.json({
+      days,
+      summary: { groups: groups.length, groupsUsingPet: activeGroups, hatched: out.filter((g) => g.pet?.level > 0).length, people: perUser.size, interactions: group.length, byAction,
+        mentions: mentionsTotal, talkers: talkers.size, peopleLast7: new Set(group.filter((a) => a.at >= since7.getTime()).map((a) => a.uid)).size },
+      personal: { wallets: wallets.length, withPet, adoptions, byKind, coins, earnedToday, backpay, spent, actions: own.length },
+      series, groups: out, people,
+    });
   }));
 
   // Keep raw events for 120 days (the daily summaries stay).

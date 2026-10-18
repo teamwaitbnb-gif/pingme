@@ -515,6 +515,7 @@ module.exports = function features(x) {
       await addLove(chatId, req.uid, 3);
     }
     const pet = await petState(chatId);
+    x.monitor?.log(req.uid, 'pet', { chatId, action }); // admin Pets page: who uses the group pet, and how
     io.to('c:' + chatId).emit('pet:event', { chatId, action, by: req.uid, pet, at: Date.now(), ...extra });
     res.json({ pet });
   }));
@@ -658,6 +659,7 @@ module.exports = function features(x) {
   }));
 
   return {
+    petState,
     start(loop) {
       loop(runReminders, 15000);
       loop(runCheckins, 15000);

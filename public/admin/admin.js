@@ -18,7 +18,7 @@ const el = (tag, attrs = {}, ...kids) => {
 };
 const fmt = (x) => (x == null ? '—' : Number(x).toLocaleString('en-IN'));
 const SCREEN_NAMES = { chats: 'Chats list', chat: 'One-to-one chat', group: 'Group chat', buzz: 'Buzz', call: 'Call', camera: 'Camera', settings: 'Settings', auth: 'Sign in', install: 'Install screen', other: 'Other' };
-const ago = (t) => { if (!t) return '—'; const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'just now' : m < 60 ? `${m} min` : `${Math.round(m / 60)} h`; };
+const ago = (t) => { if (!t) return '—'; const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'moments' : m < 60 ? `${m} min` : `${Math.round(m / 60)} h`; };
 let range = Number(localStorage.getItem('pmAdminRange') || 30), liveTimer = null;
 
 // ───── login ─────
@@ -69,11 +69,11 @@ const heat = (v) => {
 // ───── dashboard ─────
 // /admin → full dashboard · /admin#algorithm → the Buzz suggestion algorithm on its own page.
 // Pages: #overview (default) · #speed · #errors · #users · #user/<id> · #calls · #activity · #algorithm
-const PAGES = [['overview', 'Overview'], ['speed', 'Speed'], ['errors', 'Errors'], ['users', 'Users'], ['calls', 'Calls'], ['activity', 'Activity'], ['algorithm', 'Buzz algorithm']];
+const PAGES = [['overview', 'Overview'], ['speed', 'Speed'], ['errors', 'Errors'], ['users', 'Users'], ['calls', 'Calls'], ['pets', 'Pets'], ['activity', 'Activity'], ['algorithm', 'Buzz algorithm']];
 const route = () => {
   clearInterval(liveTimer);
   const [page, arg] = location.hash.replace(/^#/, '').split('/');
-  const fn = { speed: speedPage, errors: errorsPage, users: usersPage, user: () => userPage(arg), calls: callsPage, activity: activityPage, algorithm: algorithmPage }[page] || dashboard;
+  const fn = { speed: speedPage, errors: errorsPage, users: usersPage, user: () => userPage(arg), calls: callsPage, pets: petsPage, activity: activityPage, algorithm: algorithmPage }[page] || dashboard;
   window.scrollTo(0, 0);
   return fn();
 };
@@ -183,7 +183,7 @@ async function usersPage() {
 }
 
 // ───── One person ─────
-const ACT = { signup: '🎉 Signed up', signin: '🔑 Signed in', open: '📱 Opened the app', photo: '🖼️ Profile photo', name: '✏️ Changed name', bio: '✏️ Changed bio', username: '@ Changed username', privacy: '🔒 Privacy setting', block: '⛔ Blocked someone', group: '👥 Created a group', call: '📞 Call', incognito: '🕶️ Incognito chat', deleted: '🗑️ Deleted account' };
+const ACT = { pet: '🐾 Group pet', 'pet-own': '🐶 Own pet', signup: '🎉 Signed up', signin: '🔑 Signed in', open: '📱 Opened the app', photo: '🖼️ Profile photo', name: '✏️ Changed name', bio: '✏️ Changed bio', username: '@ Changed username', privacy: '🔒 Privacy setting', block: '⛔ Blocked someone', group: '👥 Created a group', call: '📞 Call', incognito: '🕶️ Incognito chat', deleted: '🗑️ Deleted account' };
 function actText(a) {
   const m = a.meta || {};
   switch (a.kind) {
@@ -195,6 +195,8 @@ function actText(a) {
     case 'privacy': return `${ACT.privacy}: ${Object.entries(m).map(([k, v]) => `${k} ${v ? 'on' : 'off'}`).join(', ')}`;
     case 'block': return `${ACT.block}${m.userName ? ': ' + m.userName : ''}`;
     case 'group': return `${ACT.group} (${m.members} people)`;
+    case 'pet': return `${ACT.pet}: ${PET_ACTIONS[m.action] || m.action}`;
+    case 'pet-own': return `${ACT['pet-own']}: ${m.action}${m.kind ? ' · ' + m.kind : ''}`;
     case 'call': return `${ACT.call} · ${m.video ? 'video' : 'audio'}${m.group ? ' · group' : ''} · ${m.caller ? 'made' : 'received'} · ${m.missed ? 'missed' : durFmt(m.dur || 0)}`;
     default: return ACT[a.kind] || a.kind;
   }
@@ -247,6 +249,53 @@ async function callsPage() {
       barsCard('How calls ended', Object.entries(d.reasons).sort((a, b) => b[1] - a[1]), 'calls')),
     el('h2', null, 'Recent calls'),
     el('div', { class: 'card' }, table(['When', 'Caller', 'With', 'Type', 'Result'], d.recent.map((c) => el('tr', { class: 'clickable', onclick: () => { location.hash = 'user/' + c.callerId; } }, el('td', null, when(c.at)), el('td', null, c.caller), el('td', null, c.with.join(', ') || '—'), el('td', null, `${c.video ? 'video' : 'audio'}${c.group ? ' · group' : ''}`), el('td', { class: c.missed ? 'bad' : '' }, c.missed ? `missed${c.reason ? ' · ' + c.reason : ''}` : durFmt(c.dur)))), 'No calls yet'))));
+}
+
+// ───── Pets ─────
+const PET_ACTIONS = { feed: '🍖 Feed', play: '🎾 Play', poke: '🤚 Pet', rename: '✏️ Rename', outfit: '🎀 Outfit', cage: '🔒 Cage', release: '🔓 Let out' };
+async function petsPage() {
+  loading('Loading pets…');
+  let d; try { d = await api(`/api/admin/pets?days=${range}`); } catch (e) { return fail(e); }
+  const seg = el('div', { class: 'seg' }, [7, 30, 90].map((x) => el('button', { class: x === range ? 'on' : '', onclick: () => { range = x; localStorage.setItem('pmAdminRange', x); petsPage(); } }, `${x} days`)));
+  const s = d.summary, p = d.personal;
+  const pct = (a, b) => (b ? Math.round((a / b) * 100) + '%' : '—');
+  root.replaceChildren(el('div', { class: 'wrap' }, nav('pets', `Group pets and personal companions · last ${d.days} days`, [seg]),
+    el('h2', null, 'Group pets'),
+    el('div', { class: 'kpis' },
+      kpiBox('Groups using their pet', fmt(s.groupsUsingPet), `${pct(s.groupsUsingPet, s.groups)} of ${fmt(s.groups)} groups · ${fmt(s.hatched)} hatched`, s.groupsUsingPet ? 'good' : ''),
+      kpiBox('People playing with pets', fmt(s.people), `${fmt(s.peopleLast7)} in the last 7 days`),
+      kpiBox('Pet interactions', fmt(s.interactions), Object.entries(s.byAction).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${v} ${k}`).join(' · ') || 'none yet'),
+      kpiBox('Messages to the pet', fmt(s.mentions), `${fmt(s.talkers)} people said its name in chat`)),
+    el('div', { class: 'grid2', style: 'margin-top:14px' },
+      el('div', { class: 'card' }, el('h3', null, 'Pet interactions per day'), el('div', { class: 'hint' }, 'Feeding, playing fetch, petting and the rest'),
+        chart(d.series, [{ key: 'feed', label: 'feed', color: 'var(--orange)' }, { key: 'play', label: 'play', color: 'var(--accent)' }, { key: 'poke', label: 'pet', color: 'var(--pink)' }, { key: 'other', label: 'rename/outfit/cage', color: 'var(--purple)' }], { type: 'bar' })),
+      barsCard('What people do with pets', Object.entries(s.byAction).sort((a, b) => b[1] - a[1]).map(([k, v]) => [PET_ACTIONS[k] || k, v]), 'times')),
+    el('h2', null, 'Every group and its pet', el('small', null, 'most used first')),
+    el('div', { class: 'card' }, table(['Group', 'Pet', 'Stage', 'Mood', ['Members', 'num'], ['Messages', 'num'], ['Interactions', 'num'], ['People', 'num'], ['Said its name', 'num'], 'Loves most', 'Last played'],
+      d.groups.map((g) => el('tr', null,
+        el('td', null, g.title),
+        el('td', null, g.pet ? `${g.pet.emoji} ${g.pet.level ? g.pet.name : 'Egg'}${g.pet.outfit ? ' · ' + g.pet.outfit : ''}${g.pet.caged ? ' · caged' : ''}` : '—'),
+        el('td', null, g.pet ? `${g.pet.stage} · ${g.pet.rarity}` : '—'),
+        el('td', null, g.pet ? `${g.pet.moodEmoji} ${g.pet.mood}` : '—'),
+        el('td', { class: 'num' }, fmt(g.members)), el('td', { class: 'num' }, fmt(g.messages)),
+        el('td', { class: 'num' + (g.interactions ? ' good' : '') }, fmt(g.interactions)), el('td', { class: 'num' }, fmt(g.people)), el('td', { class: 'num' }, fmt(g.mentions)),
+        el('td', null, g.pet?.favorite || '—'), el('td', null, g.lastInteraction ? ago(g.lastInteraction) + ' ago' : '—'))), 'No groups yet')),
+    el('h2', null, 'Who plays with pets the most'),
+    el('div', { class: 'card' }, table(['Person', ['Interactions', 'num'], 'What they do', ['Groups', 'num'], 'Last'],
+      d.people.map((u) => el('tr', { class: 'clickable', onclick: () => { location.hash = 'user/' + u.userId; } },
+        el('td', null, el('b', null, u.name), u.username ? el('small', { style: 'color:var(--text2);margin-left:6px' }, '@' + u.username) : null),
+        el('td', { class: 'num' }, fmt(u.interactions)),
+        el('td', null, Object.entries(u.actions).sort((a, b) => b[1] - a[1]).map(([k, v]) => `${(PET_ACTIONS[k] || k).split(' ')[0]} ${v}`).join('  ')),
+        el('td', { class: 'num' }, fmt(u.groups)), el('td', null, ago(u.last) + ' ago'))), 'Nobody has played with a pet yet in this period')),
+    el('h2', null, 'Personal pets & PingCoins'),
+    el('div', { class: 'kpis' },
+      kpiBox('People with a companion', fmt(p.withPet), `${fmt(p.adoptions)} adoptions · ${fmt(p.wallets)} wallets`),
+      kpiBox('PingCoins held', fmt(p.coins), `${fmt(p.earnedToday)} earned today`),
+      kpiBox('Spent on pets', fmt(p.spent), 'coins'),
+      kpiBox('Back-pay given', fmt(p.backpay), 'for chats before the shop'),
+      kpiBox('Companion actions', fmt(p.actions), `in the last ${d.days} days`)),
+    el('div', { class: 'grid2', style: 'margin-top:14px' }, barsCard('Companions adopted', Object.entries(p.byKind).sort((a, b) => b[1] - a[1]), 'adopted')),
+    el('p', { class: 'foot' }, '“Messages to the pet” counts group messages that mention the pet’s name (the text itself is never shown or stored here). Interactions come from the pet menu: feed, play fetch, pet, rename, outfit and cage. Recording of interactions starts with this release.')));
 }
 
 // ───── Activity ─────

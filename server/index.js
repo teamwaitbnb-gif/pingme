@@ -1810,14 +1810,14 @@ app.post('/api/push/unsubscribe', auth, wrap(async (req, res) => {
   res.json({ ok: true });
 }));
 
-const petShop = require('./pet-shop')({ app, db, C, auth, wrap, bad, rateLimit, emitToUser });
+const petShop = require('./pet-shop')({ app, db, C, auth, wrap, bad, rateLimit, emitToUser, monitor });
 
 const advanced = require('./features')({
   app, io, db, C, push, auth, wrap, bad, forbidden, notFound, HttpError, toInt, clampStr, now, ms,
   requireMember, getUser, publicUser, insertMessage, loadMessage, emitToUser, joinUserToChat, rateLimit,
   createSession, findUserIdByUsername, meView, inviteHash, INVITES_PER_USER, userCache,
   createUser, usernameProblem, unameHash, unameCanon, U, sessionUser, parseCookies, COOKIE, parseBirth, emitUpdate, streaksFor,
-  serializeMessagesFor: serializeMessages,
+  serializeMessagesFor: serializeMessages, monitor,
 });
 
 // Buzz: the live news feed tab.
@@ -1825,7 +1825,7 @@ const buzz = require('./buzz')({ app, db, C, auth, wrap, bad, notFound, toInt, c
 // Link previews for links shared in chats (+ Buzz share links).
 require('./unfurl')({ app, db, C, auth, wrap, bad, rateLimit, publicOrigin });
 // Usage analytics + the owner's admin portal (/admin, unlocked with ADMIN_KEY).
-require('./admin')({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online, buzz, monitor, activeCalls: () => calls.size });
+require('./admin')({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online, buzz, monitor, activeCalls: () => calls.size, petState: advanced.petState });
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 

@@ -85,7 +85,7 @@ function view(s) {
       xp: 0, next: null, mood: 'Happy', moodEmoji: '♡', hunger: need(p.feed), happiness: need(p.play), energy: 90,
       outfits: [...OUTFITS, 'glasses'].map(id => ({ id, label: id })), night: false, favorite: null } };
 }
-module.exports = function ({ app, db, C, auth, wrap, bad, rateLimit, emitToUser }) {
+module.exports = function ({ app, db, C, auth, wrap, bad, rateLimit, emitToUser, monitor }) {
   // One-time back-pay for chats and calls before the wallet existed (or before today, for wallets
   // that already started earning live — so nothing is ever counted twice).
   async function backfill(conn, uid, s) {
@@ -124,6 +124,7 @@ module.exports = function ({ app, db, C, auth, wrap, bad, rateLimit, emitToUser 
   app.post('/api/pets/me', auth, wrap(async (req, res) => {
     rateLimit('personal-pet:' + req.uid, 60, 60000);
     const result = await transaction(req.uid, s => mutate(s, req.body, bad));
+    if (req.body.action !== 'seen-backfill') monitor?.log(req.uid, 'pet-own', { action: String(req.body.action || '').slice(0, 16), kind: result.active || null });
     emitToUser(req.uid, 'personal-pet:changed', { action: req.body.action });
     res.json(result);
   }));
