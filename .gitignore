@@ -6,6 +6,3 @@ node_modules
 .vscode
 
 server/version.json
-mobile/node_modules
-mobile/ios/App/Pods
-mobile/ios/DerivedData
