@@ -1,0 +1,14 @@
+{
+  "appId": "app.pingme.chat",
+  "appName": "Ping Me",
+  "webDir": "www",
+  "server": {
+    "url": "https://pingme-370971404885.asia-south1.run.app",
+    "cleartext": false
+  },
+  "ios": {
+    "contentInset": "never",
+    "backgroundColor": "#000000",
+    "limitsNavigationsToAppBoundDomains": false
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "ping-me-mobile",
+  "private": true,
+  "description": "Ping Me iOS/Android apps (Capacitor). The app loads the live Ping Me site, so web releases reach phones without a store update.",
+  "scripts": {
+    "sync": "cap sync",
+    "ios": "cap open ios"
+  },
+  "dependencies": {
+    "@capacitor/core": "8.5.2",
+    "@capacitor/ios": "8.5.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.5.2"
+  }
+}
