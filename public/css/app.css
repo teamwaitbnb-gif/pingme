@@ -2138,3 +2138,41 @@ html.fp-cw { --sat: env(safe-area-inset-right); --sab: env(safe-area-inset-left)
 .ad-banner .ad-sub { font-size: 12px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .ad-banner .ad-x { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; color: var(--text2); }
 .ad-banner .ad-x svg { width: 14px; height: 14px; }
+/* Friends map */
+.map-pane { overflow: hidden; background: var(--bg); color: var(--text); }
+.map-pane .fm-map { position: absolute; inset: 0; }
+.map-pane .maplibregl-ctrl-attrib { font-size: 10px; }
+.fm-top { position: absolute; top: 0; left: 0; right: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; padding: calc(var(--sat) + 10px) 14px 10px; background: linear-gradient(color-mix(in srgb, var(--bg) 92%, transparent), transparent); pointer-events: none; }
+.fm-top > * { pointer-events: auto; }
+.fm-title { display: flex; flex-direction: column; }
+.fm-title b { font-size: 28px; font-weight: 800; letter-spacing: -.02em; }
+.fm-title span { font-size: 12px; color: var(--text2); }
+.fm-btn { width: 42px; height: 42px; border-radius: 50%; display: grid; place-items: center; background: var(--elev, #1c1c1e); color: var(--text); box-shadow: 0 4px 14px rgba(0,0,0,.25); }
+.fm-btn svg { width: 20px; height: 20px; }
+.fm-side { position: absolute; right: 14px; bottom: 210px; z-index: 2; display: flex; flex-direction: column; gap: 10px; }
+.fm-status { position: absolute; left: 14px; right: 14px; top: calc(var(--sat) + 74px); z-index: 2; padding: 10px 14px; border-radius: 12px; background: var(--elev, #1c1c1e); font-size: 13px; }
+.fm-intro { position: absolute; left: 14px; right: 14px; top: calc(var(--sat) + 74px); z-index: 2; display: flex; flex-direction: column; gap: 6px; padding: 16px; border-radius: 18px; background: var(--elev, #1c1c1e); box-shadow: 0 10px 30px rgba(0,0,0,.3); }
+.fm-intro span { color: var(--text2); font-size: 14px; }
+.fm-intro-btns { margin-top: 6px; }
+.fm-list { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; max-height: 190px; overflow-y: auto; padding: 10px 12px 12px; border-radius: 20px 20px 0 0; background: color-mix(in srgb, var(--bg) 94%, transparent); backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); box-shadow: 0 -6px 24px rgba(0,0,0,.2); }
+.fm-row-wrap { display: flex; flex-direction: column; gap: 2px; }
+.fm-row { display: flex; align-items: center; gap: 12px; padding: 8px 6px; border-radius: 12px; text-align: left; width: 100%; color: var(--text); }
+.fm-row:active { background: var(--fill); }
+.fm-row-t { display: flex; flex-direction: column; min-width: 0; }
+.fm-row-t small { color: var(--text2); }
+.fm-empty { color: var(--text2); font-size: 14px; padding: 10px 6px; text-align: center; }
+.fm-pin { display: flex; flex-direction: column; align-items: center; gap: 2px; background: none; padding: 0; cursor: pointer; filter: drop-shadow(0 4px 8px rgba(0,0,0,.35)); }
+.fm-av { display: block; padding: 3px; border-radius: 50%; background: linear-gradient(135deg, #34c759, #30b0c7); }
+.fm-av > * { display: block; border: 2px solid var(--bg); border-radius: 50%; }
+.fm-pin.approx .fm-av { background: linear-gradient(135deg, #8e8e93, #636366); }
+.fm-name { font-size: 12px; font-weight: 700; color: #fff; background: rgba(0,0,0,.65); padding: 1px 7px; border-radius: 8px; }
+.fm-ago { font-size: 10px; font-weight: 600; color: #fff; background: #34c759; padding: 0 6px; border-radius: 6px; margin-top: -2px; }
+.fm-me { width: 18px; height: 18px; border-radius: 50%; background: #0a84ff; border: 3px solid #fff; box-shadow: 0 0 0 6px rgba(10,132,255,.25); position: relative; }
+.fm-me i { position: absolute; inset: -9px; border-radius: 50%; border: 2px solid rgba(10,132,255,.5); animation: fmPulse 2s ease-out infinite; }
+@keyframes fmPulse { from { transform: scale(.6); opacity: 1; } to { transform: scale(1.8); opacity: 0; } }
+.fm-card { display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 8px 4px 16px; text-align: center; }
+.fm-card b { font-size: 20px; }
+.fm-card > span { color: var(--text2); }
+.fm-card-btns { display: flex; gap: 10px; margin-top: 10px; }
+.fm-card-btns .btn { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
+.fm-card-btns svg { width: 18px; height: 18px; }

@@ -1,4 +1,5 @@
 import { loadAds, adBanner, bannerHidden, rotation } from './ads.js';
+import { initMap } from './map.js';
 import { openPetShop, coinIcon } from './pet-shop.js';
 import { openCamera } from './camera.js';
 import { mountPet, petHidden } from './pet.js';
@@ -341,11 +342,13 @@ function startApp() {
     // Bottom tabs: Chats | Buzz
     els.tabs = h('nav', { class: 'sb-tabs', 'aria-label': 'Sections' },
       h('button', { class: 'on', 'data-tab': 'chats', onclick: () => setTab('chats') }, icon('msg'), h('span', null, 'Chats')),
+      h('button', { 'data-tab': 'map', onclick: () => setTab('map') }, icon('map'), h('span', null, 'Map')),
       h('button', { 'data-tab': 'buzz', onclick: () => setTab('buzz') }, icon('fire'), h('span', null, 'Buzz'))));
   showChatAd();
   els.conv = h('section', { class: 'conv' });
   els.buzz = h('div', { class: 'buzz-pane', hidden: true });
-  els.main = h('div', { class: 'main' }, els.sidebar, els.conv, els.buzz);
+  els.mapPane = h('div', { class: 'buzz-pane map-pane', hidden: true });
+  els.main = h('div', { class: 'main' }, els.sidebar, els.conv, els.buzz, els.mapPane);
   app.append(els.main);
   S.buzz = initBuzz({
     api, me: () => S.me, userAvatar, chats: () => sortedChats(), chatTitle, chatAvatar,
@@ -353,7 +356,10 @@ function startApp() {
     saveRegion: (r) => api('PATCH', '/api/me', { settings: { buzzRegion: r } }).then(({ user: u }) => { S.me = u; }).catch(() => {}),
     saveSettings: (settings) => api('PATCH', '/api/me', { settings }).then(({ user: u }) => { S.me = u; }).catch((e) => toast(e.message, { error: true })),
   });
-  if (sessionStorage.getItem('pm:tab') === 'buzz') setTimeout(() => setTab('buzz'), 0);
+  S.map = initMap({ api, socket: () => S.socket, me: () => S.me, userAvatar, mergeUsers, message: (u) => { setTab('chats'); startDirect(u).catch((e) => toast(e.message, { error: true })); } });
+  S.map.resume(); // keep sharing your location with friends while the app is open (if you turned it on)
+  const savedTab = sessionStorage.getItem('pm:tab');
+  if (savedTab === 'buzz' || savedTab === 'map') setTimeout(() => setTab(savedTab), 0);
   let st;
   search.addEventListener('input', () => { clearBtn.hidden = !search.value; clearTimeout(st); st = setTimeout(() => onSearch(search.value), 150); });
   search.addEventListener('focus', () => { S.searchFocus = true; renderList(); });
@@ -956,10 +962,12 @@ function setTab(t) {
   S.tab = t;
   try { sessionStorage.setItem('pm:tab', t); } catch {}
   els.tabs?.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
-  els.main?.classList.toggle('buzz-mode', t === 'buzz');
+  els.main?.classList.toggle('buzz-mode', t === 'buzz' || t === 'map');
   if (els.buzz) els.buzz.hidden = t !== 'buzz';
+  if (els.mapPane) els.mapPane.hidden = t !== 'map';
   if (t === 'buzz') S.buzz?.show(els.buzz); else S.buzz?.hide();
-  if (!S.current || innerWidth > 760) setScreen(t === 'buzz' ? 'buzz' : S.current ? (S.chats.get(S.current)?.type === 'group' ? 'group' : 'chat') : 'chats');
+  if (t === 'map') S.map?.show(els.mapPane); else S.map?.hide();
+  if (!S.current || innerWidth > 760) setScreen(t === 'buzz' || t === 'map' ? t : S.current ? (S.chats.get(S.current)?.type === 'group' ? 'group' : 'chat') : 'chats');
 }
 
 // The group pet lives in the open group chat.

@@ -269,6 +269,13 @@ const SCHEMA = [
     fed_at DATETIME(3) NULL,
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
   )`,
+  // Friends map: who each person shares their location with, and their latest location (both encrypted).
+  `CREATE TABLE IF NOT EXISTS user_locations (
+    user_id BIGINT UNSIGNED PRIMARY KEY,
+    share_enc TEXT NOT NULL,
+    loc_enc TEXT NULL,
+    updated_at DATETIME(3) NULL
+  )`,
   // In-app ads run from the admin page (details encrypted like everything else) and their daily numbers.
   `CREATE TABLE IF NOT EXISTS ads (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,

@@ -1180,7 +1180,7 @@ app.delete('/api/me', auth, wrap(async (req, res) => {
   }
   const chats = await db.q('SELECT chat_id FROM chat_members WHERE user_id=? AND active=1', [req.uid]);
   await db.q('UPDATE chat_members SET active=0 WHERE user_id=?', [req.uid]);
-  for (const t of ['sessions', 'push_subs', 'oauth_accounts']) await db.q(`DELETE FROM ${t} WHERE user_id=?`, [req.uid]);
+  for (const t of ['sessions', 'push_subs', 'oauth_accounts', 'user_locations']) await db.q(`DELETE FROM ${t} WHERE user_id=?`, [req.uid]);
   await db.q('DELETE FROM blocks WHERE user_id=? OR blocked_id=?', [req.uid, req.uid]);
   await db.q('DELETE FROM scheduled_messages WHERE sender_id=?', [req.uid]);
   await db.q('DELETE FROM users WHERE id=?', [req.uid]);
@@ -1851,6 +1851,8 @@ require('./unfurl')({ app, db, C, auth, wrap, bad, rateLimit, publicOrigin });
 // Usage analytics + the owner's admin portal (/admin, unlocked with ADMIN_KEY).
 const adminPortal = require('./admin')({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online, buzz, monitor, activeCalls: () => calls.size, petState: advanced.petState });
 // Owner notifications: one-off messages from the admin page + automatic Buzz / hungry-pet alerts.
+// Friends map: opt-in location sharing with friends.
+require('./location')({ app, db, C, auth, wrap, bad, toInt, rateLimit, emitToUser, getUser, userPublic: publicUser, monitor });
 // In-app ads (photo/video, in Buzz and above the chat list), managed from the admin page.
 require('./ads')({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, isAdmin: adminPortal.isAdmin, media, express, buzz });
 const notifier = require('./notify')({ app, db, C, push, emitToUser, getUser, isAdmin: adminPortal.isAdmin, wrap, bad, toInt, clampStr, buzz, petState: advanced.petState, monitor });
