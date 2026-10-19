@@ -2115,3 +2115,4 @@ html.fp-cw { --sat: env(safe-area-inset-right); --sab: env(safe-area-inset-left)
 .connecting img { border-radius: 16px; }
 .connecting span { color: var(--text2); max-width: 300px; }
 .connecting .btn { margin-top: 6px; }
+.bz-results.bz-busy > * { opacity: .45; transition: opacity .15s; }

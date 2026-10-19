@@ -137,3 +137,4 @@ select.search { -webkit-appearance: none; appearance: none; }
 .nf-switch i { position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.3); transition: transform .2s; }
 .nf-switch.on { background: #34c759; }
 .nf-switch.on i { transform: translateX(18px); }
+.nf-result { margin-top: 8px; line-height: 1.4; }

@@ -93,7 +93,7 @@ module.exports = function notify({ app, db, C, push, emitToUser, getUser, isAdmi
     const optedOut = { buzz: audience.filter((u) => u.settings.buzzAlerts === false).length, pets: audience.filter((u) => u.settings.petAlerts === false).length };
     res.json({ config: c, history: hist.map((h) => ({ ...h, createdAt: new Date(h.created_at).getTime() })), last24h: today, reachable: audience.length, optedOut,
       cities: [...Object.entries(buzz.CITIES).map(([id, x]) => ({ id, name: x.name })).sort((a, b) => a.name.localeCompare(b.name)), { id: 'india', name: 'All of India' }],
-      nextBuzz: await topStory('india').then((x) => x && { id: x.row.id, title: x.row.title, outlets: x.coverage || 1 }).catch(() => null) });
+      nextBuzz: await bestStory('india', c.buzz).then((x) => x && { id: x.row.id, title: x.row.title, outlets: x.coverage || 1 }).catch(() => null) });
   }));
   app.post('/api/admin/notify/config', adminOnly, wrap(async (req, res) => {
     const c = await getConfig();
@@ -108,53 +108,60 @@ module.exports = function notify({ app, db, C, push, emitToUser, getUser, isAdmi
     res.json({ config: next });
   }));
   app.post('/api/admin/notify/buzz-now', adminOnly, wrap(async (req, res) => {
-    const n = await runBuzz({ force: true, itemId: req.body?.itemId ? String(req.body.itemId) : null });
-    res.json({ ok: true, recipients: n });
+    const r = await runBuzz({ force: true, itemId: req.body?.itemId ? String(req.body.itemId) : null });
+    res.json({ ok: true, recipients: r.sent, story: r.story, skipped: r.skipped, busy: !!r.busy });
   }));
   app.post('/api/admin/notify/pets-now', adminOnly, wrap(async (req, res) => {
-    const n = await runPets({ force: true });
-    res.json({ ok: true, recipients: n });
+    const r = await runPets({ force: true });
+    res.json({ ok: true, recipients: r.sent, groups: r.groups, checked: r.checked, skipped: r.skipped, busy: !!r.busy });
   }));
 
   // ───── automatic: trending Buzz stories ─────
   // The biggest fresh story for a region: covered by several outlets or trending, published recently.
+  // Sending by hand (admin button) relaxes the rules: the best Indian/local story of the last
+  // 12 hours (24 if the news is quiet), however many outlets covered it.
+  async function bestStory(region, cfg) {
+    return (await topStory(region, cfg)) || (await topStory(region, { ...cfg, minOutlets: 1, maxAgeHours: 12, any: true })) || (await topStory(region, { ...cfg, minOutlets: 1, maxAgeHours: 24, any: true }));
+  }
   async function topStory(region, cfg = DEFAULTS.buzz) {
     const { list } = await buzz.ranked(region);
     const fresh = (x) => Date.now() - x.ts < cfg.maxAgeHours * 3600e3;
-    const big = (x) => (x.coverage || 1) >= cfg.minOutlets || x.label?.kind === 'trending' || x.label?.kind === 'top';
+    const big = (x) => cfg.any || (x.coverage || 1) >= cfg.minOutlets || x.label?.kind === 'trending' || x.label?.kind === 'top';
     // Alerts are for news people here care about: Indian and local stories, not foreign news.
     return list.filter((x) => fresh(x) && big(x) && !x.row.video_url && x.row.region !== 'world').sort((a, b) => ((b.coverage || 1) + b.score * 4) - ((a.coverage || 1) + a.score * 4))[0] || null;
   }
   let buzzBusy = false;
   async function runBuzz({ force = false, itemId = null } = {}) {
     const cfg = (await getConfig()).buzz;
-    if (buzzBusy || (!force && (!cfg.on || cfg.perDay < 1))) return 0;
+    const out = { sent: 0, story: null, skipped: { optedOut: 0, noStory: 0, alreadyGot: 0, dailyLimit: 0 } };
+    if (buzzBusy) return { ...out, busy: true };
+    if (!force && (!cfg.on || cfg.perDay < 1)) return out;
     const h = istHour();
-    if (!force && (h < cfg.from || h >= cfg.to)) return 0;
+    if (!force && (h < cfg.from || h >= cfg.to)) return out;
     buzzBusy = true;
     let sent = 0, sample = null;
     try {
       const byRegion = new Map();
       for (const u of await people(30)) {
-        if (u.settings.buzzAlerts === false) continue;
+        if (u.settings.buzzAlerts === false) { out.skipped.optedOut++; continue; }
         const region = buzz.REGIONS.has(u.settings.buzzRegion) ? u.settings.buzzRegion : 'india';
         if (!byRegion.has(region)) {
           let story = null;
           if (itemId) story = (await buzz.ranked(region)).list.find((x) => x.row.id === itemId || x.members?.includes(itemId)) || (await buzz.ranked('india')).list.find((x) => x.row.id === itemId) || null;
-          else story = await topStory(region, cfg).catch(() => null);
+          else story = await (force ? bestStory(region, cfg) : topStory(region, cfg)).catch(() => null);
           byRegion.set(region, story);
         }
         const story = byRegion.get(region);
-        if (!story) continue;
+        if (!story) { out.skipped.noStory++; continue; }
         const dayKey = `bd:${u.id}:${istDay()}`;
         if (!force) {
           const d = await lastSent(dayKey);
-          if (d && d.n >= cfg.perDay) continue;
+          if (d && d.n >= cfg.perDay) { out.skipped.dailyLimit++; continue; }
           const last = await lastSent(`bl:${u.id}`);
-          if (last && Date.now() - last.at < cfg.gapHours * 3600e3) continue;
+          if (last && Date.now() - last.at < cfg.gapHours * 3600e3) { out.skipped.dailyLimit++; continue; }
         }
         const storyKey = `bs:${u.id}:${story.row.id}`;
-        if (await lastSent(storyKey)) continue; // never the same story twice
+        if (await lastSent(storyKey)) { out.skipped.alreadyGot++; continue; } // never the same story twice
         const outlets = story.coverage || 1;
         const title = outlets >= 3 ? `Big story · ${outlets} outlets` : story.label?.kind === 'trending' ? 'Trending now' : 'Top story';
         await deliver(u.id, { title, body: story.row.title, url: `/b/${story.row.id}`, tag: 'pm-buzz' });
@@ -162,18 +169,21 @@ module.exports = function notify({ app, db, C, push, emitToUser, getUser, isAdmi
         await mark(dayKey, (d?.n || 0) + 1); await mark(`bl:${u.id}`); await mark(storyKey);
         sent++; sample = sample || story.row.title;
       }
+      out.sent = sent; out.story = sample || [...byRegion.values()].find(Boolean)?.row.title || null;
       if (sent) { await history('buzz', 'Trending on Buzz', sample, null, force ? 'Sent from admin' : 'Automatic', sent); monitor?.log?.(null, 'notify', { kind: 'buzz', n: sent }); }
     } finally { buzzBusy = false; }
-    return sent;
+    return out;
   }
 
   // ───── automatic: hungry group pets ─────
   let petsBusy = false;
   async function runPets({ force = false } = {}) {
     const cfg = (await getConfig()).pets;
-    if (petsBusy || (!force && !cfg.on)) return 0;
+    const out = { sent: 0, groups: 0, checked: 0, skipped: { notHungry: 0, recentlyReminded: 0, noPet: 0 } };
+    if (petsBusy) return { ...out, busy: true };
+    if (!force && !cfg.on) return out;
     const h = istHour();
-    if (!force && (h < cfg.from || h >= cfg.to)) return 0;
+    if (!force && (h < cfg.from || h >= cfg.to)) return out;
     petsBusy = true;
     let sent = 0, groups = 0;
     try {
@@ -182,9 +192,11 @@ module.exports = function notify({ app, db, C, push, emitToUser, getUser, isAdmi
       for (const c of chats) {
         const chatId = Number(c.id);
         const st = await petState(chatId).catch(() => null);
-        if (!st || !st.level || st.caged || st.hunger >= cfg.below) continue;
+        out.checked++;
+        if (!st || !st.level || st.caged) { out.skipped.noPet++; continue; }
+        if (st.hunger >= cfg.below) { out.skipped.notHungry++; continue; }
         const last = await lastSent(`pet:${chatId}`);
-        if (last && Date.now() - last.at < cfg.gapHours * 3600e3) continue;
+        if (last && Date.now() - last.at < cfg.gapHours * 3600e3) { out.skipped.recentlyReminded++; continue; }
         const members = await db.q('SELECT user_id, muted_until FROM chat_members WHERE chat_id=? AND active=1 AND removed=0', [chatId]);
         const group = C.dec(c.title_enc) || 'your group';
         const hours = st.fedAt ? Math.round((Date.now() - st.fedAt) / 3600e3) : null;
@@ -200,8 +212,9 @@ module.exports = function notify({ app, db, C, push, emitToUser, getUser, isAdmi
         if (n) { sent += n; groups++; }
       }
       if (sent) { await history('pet', 'Hungry pets', `${groups} group${groups === 1 ? '' : 's'} reminded to feed their pet`, null, force ? 'Sent from admin' : 'Automatic', sent); monitor?.log?.(null, 'notify', { kind: 'pet', n: sent }); }
+      out.sent = sent; out.groups = groups;
     } finally { petsBusy = false; }
-    return sent;
+    return out;
   }
 
   return {

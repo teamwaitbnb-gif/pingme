@@ -1,7 +1,7 @@
 const fs = require('fs');
 const mysql = require('mysql2/promise');
 
-let pool;
+let pool, bgPool;
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS pet_wallets (
@@ -426,6 +426,9 @@ async function init() {
   await boot.end();
 
   pool = mysql.createPool({ ...base, database: dbName, connectionLimit: 10, waitForConnections: true, enableKeepAlive: true });
+  // Background work (collecting Buzz news, enriching stories) gets its own 3 connections, so it can
+  // never make people wait for the database.
+  bgPool = mysql.createPool({ ...base, database: dbName, connectionLimit: 3, waitForConnections: true, enableKeepAlive: true });
   for (const sql of SCHEMA) await pool.query(sql);
   await migrate(dbName);
   return pool;
@@ -488,5 +491,9 @@ const q = (sql, params) => {
   return pool.query(sql, params).then(([rows]) => rows).finally(() => { if (hooks.onQuery) { try { hooks.onQuery(sql, Number(process.hrtime.bigint() - t) / 1e6); } catch {} } });
 };
 const one = async (sql, params) => (await q(sql, params))[0] || null;
+const bg = {
+  q: (sql, params) => (bgPool || pool).query(sql, params).then(([rows]) => rows),
+  one: async (sql, params) => (await bg.q(sql, params))[0] || null,
+};
 
-module.exports = { init, q, one, hooks, get pool() { return pool; } };
+module.exports = { init, q, one, bg, hooks, get pool() { return pool; } };

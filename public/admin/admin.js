@@ -286,11 +286,30 @@ async function notifyPage() {
   const num = (v, min, max, fn) => { const i = el('input', { type: 'number', class: 'search nf-num', value: v, min, max }); i.onchange = () => fn(Number(i.value)); return i; };
   const save = async (patch) => { try { const r = await post('/api/admin/notify/config', patch); Object.assign(c, r.config); savedNote.textContent = 'Saved'; setTimeout(() => (savedNote.textContent = ''), 1500); } catch (e) { savedNote.textContent = e.message; } };
   const savedNote = el('span', { class: 'hint' });
-  const runNow = (path, label) => el('button', { class: 'nf-btn ghost', onclick: async (e) => {
-    const b = e.currentTarget; b.disabled = true;
-    try { const r = await post(path, {}); b.textContent = r.recipients ? `Sent to ${r.recipients}` : 'Nobody to send to right now'; } catch (er) { b.textContent = er.message; }
-    setTimeout(() => { b.textContent = label; b.disabled = false; }, 3000);
-  } }, label);
+  // Run an automatic notification by hand, and say plainly what happened (and why anyone was skipped).
+  const explain = (r) => {
+    if (r.busy) return 'Already running — try again in a minute.';
+    const s = r.skipped || {}, parts = [];
+    if (s.optedOut) parts.push(`${s.optedOut} turned these alerts off`);
+    if (s.alreadyGot) parts.push(`${s.alreadyGot} already got this story`);
+    if (s.dailyLimit) parts.push(`${s.dailyLimit} reached today’s limit`);
+    if (s.noStory) parts.push(`${s.noStory} have no Indian/local story in the last 24 hours`);
+    if (s.notHungry) parts.push(`${s.notHungry} groups’ pets aren’t hungry (below ${c.pets.below} needed)`);
+    if (s.recentlyReminded) parts.push(`${s.recentlyReminded} groups were reminded in the last ${c.pets.gapHours} h`);
+    if (s.noPet) parts.push(`${s.noPet} groups have no hatched pet yet (or it’s caged)`);
+    const head = r.recipients ? `Sent to ${r.recipients} ${r.recipients === 1 ? 'person' : 'people'}${r.groups ? ` in ${r.groups} group${r.groups === 1 ? '' : 's'}` : ''}${r.story ? ` — “${r.story}”` : ''}.`
+      : r.checked === 0 ? 'No groups chatted recently, so there were no pets to check.' : 'Nobody was sent anything.';
+    return head + (parts.length ? ' ' + parts.join(' · ') + '.' : '');
+  };
+  const runNow = (path, label) => {
+    const out = el('div', { class: 'hint nf-result' });
+    const b = el('button', { class: 'nf-btn ghost', onclick: async () => {
+      b.disabled = true; b.textContent = 'Working…'; out.textContent = '';
+      try { out.textContent = explain(await post(path, {})); } catch (er) { out.textContent = er.message; }
+      b.textContent = label; b.disabled = false;
+    } }, label);
+    return el('div', null, b, out);
+  };
   const today = d.last24h || {};
   root.replaceChildren(el('div', { class: 'wrap' }, nav('notify', `${fmt(d.reachable)} people can get notifications · last 24 h: ${fmt(today.people || 0)} sent`),
     el('div', { class: 'kpis' },

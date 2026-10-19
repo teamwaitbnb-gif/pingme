@@ -8,6 +8,7 @@ const N = require('./normalize');
 const AI = require('./ai');
 
 module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, rateLimit, publicUser, ms }) {
+  const bg = db.bg || db; // collecting runs on its own connections (never slows readers down)
   const REGIONS = new Set([...Object.keys(CITIES), 'india']);
   const regionName = (r) => CITIES[r]?.name || 'India';
 
@@ -20,18 +21,18 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     'hindu-mum': 'hindu-mumbai', 'toi-mum': 'toi-mumbai', 'hindu-del': 'hindu-delhi', 'toi-del': 'toi-delhi', 'hindu-che': 'hindu-chennai', 'toi-che': 'toi-chennai',
     'hindu-kol': 'hindu-kolkata', 'toi-kol': 'toi-kolkata', 'ht-entertainment': 'ht-entertainment' };
   async function migrateIds() {
-    for (const [a, b] of Object.entries(RENAMED)) if (a !== b) { await db.q('UPDATE feed_items SET source_id=? WHERE source_id=?', [b, a]); await db.q('DELETE FROM feed_sources WHERE id=?', [a]); }
+    for (const [a, b] of Object.entries(RENAMED)) if (a !== b) { await bg.q('UPDATE feed_items SET source_id=? WHERE source_id=?', [b, a]); await bg.q('DELETE FROM feed_sources WHERE id=?', [a]); }
   }
 
   async function loadState() {
     await migrateIds().catch(() => {});
-    for (const r of await db.q('SELECT * FROM feed_sources')) state.set(r.id, r);
+    for (const r of await bg.q('SELECT * FROM feed_sources')) state.set(r.id, r);
   }
 
   async function saveState(id, patch) {
     const row = { ...(state.get(id) || { id, fails: 0, items: 0, status: 'pending' }), ...patch };
     state.set(id, row);
-    await db.q(`INSERT INTO feed_sources (id, etag, last_modified, last_ok, last_attempt, next_try, fails, status, error, items)
+    await bg.q(`INSERT INTO feed_sources (id, etag, last_modified, last_ok, last_attempt, next_try, fails, status, error, items)
       VALUES (?,?,?,?,?,?,?,?,?,?) ON DUPLICATE KEY UPDATE etag=VALUES(etag), last_modified=VALUES(last_modified), last_ok=VALUES(last_ok),
       last_attempt=VALUES(last_attempt), next_try=VALUES(next_try), fails=VALUES(fails), status=VALUES(status), error=VALUES(error), items=VALUES(items)`,
     [id, row.etag || null, row.last_modified || null, row.last_ok || null, row.last_attempt || null, row.next_try || null, row.fails || 0, row.status, row.error || null, row.items || 0]);
@@ -46,23 +47,31 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       if (it.image && seen.get(it.image) >= 3) it.image = null;
       if (it.image) it.image = N.upgradeImage(it.image);
     }
+    // One write for the whole batch (not one per story): far less work for the database.
+    const rows = [];
+    const ids = new Set();
     for (const it of items) {
       const url = N.canonical(it.url);
       if (!url) continue;
       // Aggregators mix languages; keep the feed readable (English headlines from them).
       if (src.aggregator && !mostlyLatin(it.title)) continue;
       const id = N.idFor(url);
-      await db.q(`INSERT INTO feed_items (id, source_id, region, topic, url, title, summary, image_url, video_url, via, discuss_url, engagement, src_rank, published_at)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+      if (ids.has(id)) continue;
+      ids.add(id);
+      rows.push([id, src.id, src.region, src.topic, url, clampStr(it.title, 590), it.description || null, it.image || null, it.video || null,
+        it.via ? clampStr(it.via, 150) : null, it.discussUrl || null, it.engagement ? JSON.stringify(it.engagement) : null,
+        Number.isFinite(it.rank) ? it.rank : null, it.publishedAt ? new Date(it.publishedAt) : null]);
+    }
+    for (let k = 0; k < rows.length; k += 100) {
+      const part = rows.slice(k, k + 100);
+      await bg.q(`INSERT INTO feed_items (id, source_id, region, topic, url, title, summary, image_url, video_url, via, discuss_url, engagement, src_rank, published_at)
+        VALUES ${part.map(() => '(?,?,?,?,?,?,?,?,?,?,?,?,?,?)').join(',')}
         ON DUPLICATE KEY UPDATE title=VALUES(title), summary=COALESCE(VALUES(summary), summary), image_url=COALESCE(VALUES(image_url), image_url),
           video_url=COALESCE(VALUES(video_url), video_url),
           engagement=IF(source_id = VALUES(source_id), VALUES(engagement), COALESCE(engagement, VALUES(engagement))),
           src_rank=IF(source_id = VALUES(source_id), VALUES(src_rank), src_rank),
-          published_at=COALESCE(published_at, VALUES(published_at))`,
-      [id, src.id, src.region, src.topic, url, clampStr(it.title, 590), it.description || null, it.image || null, it.video || null,
-        it.via ? clampStr(it.via, 150) : null, it.discussUrl || null, it.engagement ? JSON.stringify(it.engagement) : null,
-        Number.isFinite(it.rank) ? it.rank : null, it.publishedAt ? new Date(it.publishedAt) : null]);
-      n++;
+          published_at=COALESCE(published_at, VALUES(published_at))`, part.flat());
+      n += part.length;
     }
     return n;
   }
@@ -96,8 +105,8 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     try {
       const now = Date.now();
       const due = SOURCES.filter((s) => s.enabled && (!state.get(s.id)?.next_try || ms(state.get(s.id).next_try) <= now));
-      let i = 0; // bounded concurrency: 4 sources at a time
-      await Promise.all(Array.from({ length: 4 }, async () => { while (i < due.length) await runSource(due[i++]); }));
+      let i = 0; // bounded concurrency: 3 sources at a time
+      await Promise.all(Array.from({ length: 3 }, async () => { while (i < due.length) await runSource(due[i++]); }));
       await enrichSome();
       await logosSome();
       await aiSome();
@@ -111,11 +120,11 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     // replaced with the article's own share image (usually 1200px) — so every photo is HD.
     // Stories people are about to see (the top of each city's feed) come first.
     const top = [...new Set([...cache.values()].flatMap((c) => c.list.slice(0, 72).map((x) => x.row.id)))];
-    const pri = top.length ? await db.q('SELECT id, source_id, url, image_url, summary FROM feed_items WHERE enriched=0 AND id IN (?)', [top]) : [];
-    const rest = await db.q(`SELECT id, source_id, url, image_url, summary FROM feed_items WHERE enriched=0 AND fetched_at > ?
+    const pri = top.length ? await bg.q('SELECT id, source_id, url, image_url, summary FROM feed_items WHERE enriched=0 AND id IN (?)', [top]) : [];
+    const rest = await bg.q(`SELECT id, source_id, url, image_url, summary FROM feed_items WHERE enriched=0 AND fetched_at > ?
       ORDER BY COALESCE(published_at, fetched_at) DESC LIMIT 40`, [new Date(Date.now() - 36 * 3600e3)]);
     const rows = [...pri, ...rest.filter((r) => !pri.some((p) => p.id === r.id))].filter((r) => !r.summary || r.summary.length < 220 || N.lowRes(r.image_url));
-    const skip = await db.q(`SELECT id FROM feed_items WHERE enriched=0 AND fetched_at > ? AND summary IS NOT NULL AND CHAR_LENGTH(summary) >= 220 AND image_url IS NOT NULL LIMIT 200`, [new Date(Date.now() - 36 * 3600e3)]);
+    const skip = await bg.q(`SELECT id FROM feed_items WHERE enriched=0 AND fetched_at > ? AND summary IS NOT NULL AND CHAR_LENGTH(summary) >= 220 AND image_url IS NOT NULL LIMIT 200`, [new Date(Date.now() - 36 * 3600e3)]);
     const fine = skip.filter((r) => !rows.some((x) => x.id === r.id)).map((r) => r.id);
     let i = 0;
     await Promise.all(Array.from({ length: 8 }, async () => {
@@ -131,14 +140,14 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
         // Fuller summary: the article's opening paragraphs when they say more than the feed did.
         const cur = r.summary || '';
         const better = [got?.lead, got?.description].filter((x) => x && x.length > cur.length + 40).sort((a, b) => b.length - a.length)[0];
-        await db.q('UPDATE feed_items SET enriched=1, image_url=?, summary=? WHERE id=?', [img || null, better || r.summary || null, r.id]);
+        await bg.q('UPDATE feed_items SET enriched=1, image_url=?, summary=? WHERE id=?', [img || null, better || r.summary || null, r.id]);
         if (got?.image || better) dirty = true;
       }
     }));
     // Stories that already had a large image and a summary need no visit.
     for (let k = 0; k < fine.length; k += 100) {
-      const chunk = (await db.q('SELECT id, image_url FROM feed_items WHERE id IN (?)', [fine.slice(k, k + 100)])).filter((r) => !N.lowRes(r.image_url)).map((r) => r.id);
-      if (chunk.length) await db.q('UPDATE feed_items SET enriched=1 WHERE id IN (?)', [chunk]);
+      const chunk = (await bg.q('SELECT id, image_url FROM feed_items WHERE id IN (?)', [fine.slice(k, k + 100)])).filter((r) => !N.lowRes(r.image_url)).map((r) => r.id);
+      if (chunk.length) await bg.q('UPDATE feed_items SET enriched=1 WHERE id IN (?)', [chunk]);
     }
   }
 
@@ -150,25 +159,25 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     const top = [];
     for (const c of cache.values()) for (const x of c.list.slice(0, 80)) if (!top.includes(x.row.id)) top.push(x.row.id);
     if (!top.length) return;
-    const rows = await db.q('SELECT id, source_id, url, title, via FROM feed_items WHERE ai_summary IS NULL AND ai_tries < 2 AND id IN (?)', [top]);
+    const rows = await bg.q('SELECT id, source_id, url, title, via FROM feed_items WHERE ai_summary IS NULL AND ai_tries < 2 AND id IN (?)', [top]);
     rows.sort((a, b) => top.indexOf(a.id) - top.indexOf(b.id));
     for (const r of rows.slice(0, 2)) {
       const src = byId(r.source_id);
-      if (!src || src.social || (src.aggregator && !src.trends)) { await db.q('UPDATE feed_items SET ai_tries=9 WHERE id=?', [r.id]); continue; }
+      if (!src || src.social || (src.aggregator && !src.trends)) { await bg.q('UPDATE feed_items SET ai_tries=9 WHERE id=?', [r.id]); continue; }
       let page = null;
       try { page = await enrich(r.url, src.site, { anySite: !!src.trends }); } catch {}
-      if (!page?.fullText || page.fullText.length < 300) { await db.q('UPDATE feed_items SET ai_tries=ai_tries+1 WHERE id=?', [r.id]); continue; }
+      if (!page?.fullText || page.fullText.length < 300) { await bg.q('UPDATE feed_items SET ai_tries=ai_tries+1 WHERE id=?', [r.id]); continue; }
       const out = await AI.summarize({ title: r.title, source: r.via || src.name, text: page.fullText });
       if (out?.throttled) break;
-      if (out?.text) { await db.q('UPDATE feed_items SET ai_summary=?, ai_model=? WHERE id=?', [out.text, out.model, r.id]); dirty = true; }
-      else await db.q('UPDATE feed_items SET ai_tries=ai_tries+1 WHERE id=?', [r.id]);
+      if (out?.text) { await bg.q('UPDATE feed_items SET ai_summary=?, ai_model=? WHERE id=?', [out.text, out.model, r.id]); dirty = true; }
+      else await bg.q('UPDATE feed_items SET ai_tries=ai_tries+1 WHERE id=?', [r.id]);
     }
   }
 
   // Publisher logos (one per website), refreshed weekly, stored in the database.
   const logoReady = new Set();
   async function logosSome() {
-    const rows = await db.q('SELECT id, logo_at, logo IS NOT NULL has FROM feed_sources');
+    const rows = await bg.q('SELECT id, logo_at, logo IS NOT NULL has FROM feed_sources');
     const seen = new Map(rows.map((r) => [r.id, r]));
     const bySite = new Map();
     for (const s of SOURCES) if (s.enabled && !s.aggregator) bySite.set(s.site, [...(bySite.get(s.site) || []), s.id]);
@@ -180,7 +189,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       if (!r || done >= 6) continue; // a few per tick; the source row must exist first
       done++;
       const logo = await fetchLogo(site).catch(() => null);
-      await db.q('UPDATE feed_sources SET logo=COALESCE(?, logo), logo_type=COALESCE(?, logo_type), logo_at=? WHERE id IN (?)', [logo?.data || null, logo?.type || null, new Date(), ids]);
+      await bg.q('UPDATE feed_sources SET logo=COALESCE(?, logo), logo_type=COALESCE(?, logo_type), logo_at=? WHERE id IN (?)', [logo?.data || null, logo?.type || null, new Date(), ids]);
       if (logo) { ids.forEach((id) => logoReady.add(id)); dirty = true; }
     }
   }
@@ -190,7 +199,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     if (!src) return res.status(404).end();
     // Every source on the same website shares one logo.
     const ids = SOURCES.filter((s) => s.site === src.site).map((s) => s.id);
-    const r = await db.one('SELECT logo, logo_type FROM feed_sources WHERE id IN (?) AND logo IS NOT NULL LIMIT 1', [ids]);
+    const r = await bg.one('SELECT logo, logo_type FROM feed_sources WHERE id IN (?) AND logo IS NOT NULL LIMIT 1', [ids]);
     if (!r) return res.status(404).end();
     res.setHeader('Content-Type', /^image\//.test(r.logo_type) ? r.logo_type : 'image/png');
     res.setHeader('Cache-Control', 'public, max-age=86400');
@@ -199,7 +208,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
   }));
 
   async function cleanup() {
-    await db.q(`DELETE FROM feed_items WHERE fetched_at < ? AND NOT EXISTS (SELECT 1 FROM feed_likes l WHERE l.item_id=feed_items.id)
+    await bg.q(`DELETE FROM feed_items WHERE fetched_at < ? AND NOT EXISTS (SELECT 1 FROM feed_likes l WHERE l.item_id=feed_items.id)
       AND NOT EXISTS (SELECT 1 FROM feed_comments c WHERE c.item_id=feed_items.id) AND NOT EXISTS (SELECT 1 FROM feed_reposts p WHERE p.item_id=feed_items.id)`,
     [new Date(Date.now() - 4 * 86400e3)]).catch(() => {});
   }
@@ -310,13 +319,17 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
   async function engagementFor(ids, uid) {
     const out = new Map(ids.map((id) => [id, { likes: 0, comments: 0, reposts: 0, liked: false, reposted: false }]));
     if (!ids.length) return out;
-    for (const [table, key] of [['feed_likes', 'likes'], ['feed_reposts', 'reposts'], ['feed_comments', 'comments']]) {
-      for (const r of await db.q(`SELECT item_id, COUNT(*) n FROM ${table} WHERE item_id IN (?) GROUP BY item_id`, [ids])) out.get(r.item_id)[key] = Number(r.n);
-    }
-    if (uid) {
-      for (const r of await db.q('SELECT item_id FROM feed_likes WHERE user_id=? AND item_id IN (?)', [uid, ids])) out.get(r.item_id).liked = true;
-      for (const r of await db.q('SELECT item_id FROM feed_reposts WHERE user_id=? AND item_id IN (?)', [uid, ids])) out.get(r.item_id).reposted = true;
-    }
+    // All five counts at once (in parallel), not one after another.
+    const [likes, reposts, comments, myLikes, myReposts] = await Promise.all([
+      ...[['feed_likes'], ['feed_reposts'], ['feed_comments']].map(([table]) => db.q(`SELECT item_id, COUNT(*) n FROM ${table} WHERE item_id IN (?) GROUP BY item_id`, [ids])),
+      uid ? db.q('SELECT item_id FROM feed_likes WHERE user_id=? AND item_id IN (?)', [uid, ids]) : [],
+      uid ? db.q('SELECT item_id FROM feed_reposts WHERE user_id=? AND item_id IN (?)', [uid, ids]) : [],
+    ]);
+    for (const r of likes) out.get(r.item_id).likes = Number(r.n);
+    for (const r of reposts) out.get(r.item_id).reposts = Number(r.n);
+    for (const r of comments) out.get(r.item_id).comments = Number(r.n);
+    for (const r of myLikes) out.get(r.item_id).liked = true;
+    for (const r of myReposts) out.get(r.item_id).reposted = true;
     return out;
   }
 
@@ -685,6 +698,31 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     res.json({ region, items: page.map((x) => present(x, eng.get(x.row.id))), hasMore: rest.length > limit });
   }));
 
+  // Search index: every story we keep (last 4 days) as lower-case text + its filters, in memory.
+  // Loaded once, then topped up with new stories every minute (on the background connections).
+  const index = { rows: new Map(), last: 0, at: 0, loading: null };
+  const searchCache = new Map();
+  async function searchIndex() {
+    if (Date.now() - index.at < 60000) return;
+    if (index.loading) return index.loading;
+    index.loading = (async () => {
+      const from = index.last ? new Date(index.last - 120000) : new Date(Date.now() - 5 * 86400e3);
+      const rows = await bg.q(`SELECT id, source_id, region, topic, title, LEFT(COALESCE(ai_summary, summary), 400) summary, video_url IS NOT NULL video, engagement IS NOT NULL eng,
+        published_at, fetched_at FROM feed_items WHERE fetched_at > ?`, [from]);
+      for (const r of rows) {
+        const f = ms(r.fetched_at);
+        if (f > index.last) index.last = f;
+        index.rows.set(r.id, { id: r.id, source: r.source_id, region: r.region, topic: r.topic, video: !!Number(r.video), eng: !!Number(r.eng),
+          ts: r.published_at ? ms(r.published_at) : f, text: `${r.title} ${r.summary || ''}`.toLowerCase() });
+      }
+      const old = Date.now() - 5 * 86400e3;
+      for (const [id, e] of index.rows) if (e.ts < old) index.rows.delete(id);
+      index.at = Date.now();
+    })().finally(() => { index.loading = null; });
+    return index.loading;
+  }
+  setTimeout(() => searchIndex().catch(() => {}), 20000).unref();
+
   // Search and filters. Words are matched in titles and summaries (all words must appear), within
   // a time window; results are ranked by relevance + how big the story is, or newest first.
   // Without a query, a section/type filter lists that slice of the feed, and the trending searches
@@ -700,25 +738,41 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     const win = WINDOWS[String(req.query.time)] || WINDOWS.week;
     const sort = req.query.sort === 'latest' ? 'latest' : 'top';
     const words = [...new Set(q.toLowerCase().split(/\s+/).map((w) => w.replace(/[%_\\]/g, '')).filter((w) => w.length >= 2))].slice(0, 6);
-    const where = ['COALESCE(published_at, fetched_at) > ?'], args = [new Date(Date.now() - win)];
-    if (section === 'local') { where.push("topic='local' AND region=?"); args.push(region); }
-    else if (section) { where.push('topic=?'); args.push(section); where.push("(region IN (?, 'india', 'world'))"); args.push(region); }
-    else { where.push("(region IN (?, 'india', 'world') OR topic NOT IN ('local','politics'))"); args.push(region); }
-    if (type === 'video') where.push('video_url IS NOT NULL');
-    if (type === 'news') where.push('video_url IS NULL');
-    if (type === 'social') { const ids = SOURCES.filter((x) => x.social).map((x) => x.id); where.push('source_id IN (?)'); args.push(ids.length ? ids : ['-']); }
-    if (type === 'viral') where.push('engagement IS NOT NULL');
-    for (const w of words) { where.push('(title LIKE ? OR summary LIKE ? OR ai_summary LIKE ?)'); const l = `%${w}%`; args.push(l, l, l); }
-    const rows = await db.q(`SELECT id, source_id, region, topic, url, title, COALESCE(ai_summary, summary) summary, image_url, video_url, via, discuss_url, engagement, src_rank, published_at, fetched_at
-      FROM feed_items WHERE ${where.join(' AND ')} ORDER BY COALESCE(published_at, fetched_at) DESC LIMIT 400`, args);
-    const eng = await engagementFor(rows.map((r) => r.id), null);
+    // Section/type chips without a query are the same for everyone in a city: cached for 30 s.
+    const ckey = [region, words.join(' '), section, type, req.query.time, sort].join('|');
+    const hit = searchCache.get(ckey);
+    let list, trending;
+    if (hit && Date.now() - hit.at < 30000) ({ list, trending } = hit);
+    else {
+    // Match in memory (instant), then read just the matching stories by id.
+    await searchIndex();
+    const since = Date.now() - win;
+    const social = type === 'social' ? new Set(SOURCES.filter((x) => x.social).map((x) => x.id)) : null;
+    const hits = [];
+    for (const e of index.rows.values()) {
+      if (e.ts < since) continue;
+      if (section === 'local') { if (e.topic !== 'local' || e.region !== region) continue; }
+      else if (section) { if (e.topic !== section || !(e.region === region || e.region === 'india' || e.region === 'world')) continue; }
+      else if (!(e.region === region || e.region === 'india' || e.region === 'world' || (e.topic !== 'local' && e.topic !== 'politics'))) continue;
+      if (type === 'video' && !e.video) continue;
+      if (type === 'news' && e.video) continue;
+      if (type === 'viral' && !e.eng) continue;
+      if (social && !social.has(e.source)) continue;
+      if (words.length && !words.every((w) => e.text.includes(w))) continue;
+      hits.push(e);
+    }
+    hits.sort((a, b) => b.ts - a.ts);
+    const pick = hits.slice(0, 160).map((e) => e.id);
+    const rows = pick.length ? await db.q(`SELECT id, source_id, region, topic, url, title, COALESCE(ai_summary, summary) summary, image_url, video_url, via, discuss_url, engagement, src_rank, published_at, fetched_at
+      FROM feed_items WHERE id IN (?)`, [pick]) : [];
+    rows.sort((a, b) => pick.indexOf(a.id) - pick.indexOf(b.id));
     const seenTitle = new Set();
-    let list = [];
+    list = [];
     for (const r of rows) {
       const key = r.title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim().slice(0, 80);
       if (seenTitle.has(key)) continue; // the same headline from several feeds
       seenTitle.add(key);
-      const x = { row: r, ...score(r, eng.get(r.id), region) };
+      const x = { row: r, ...score(r, null, region) };
       const title = r.title.toLowerCase();
       x.rel = words.reduce((n, w) => n + (title.includes(w) ? 2 : 0.5), 0) + (words.length && title.includes(words.join(' ')) ? 2 : 0);
       list.push(x);
@@ -726,8 +780,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     if (sort === 'latest') list.sort((a, b) => b.ts - a.ts);
     else list.sort((a, b) => (b.rel + b.score * 3) - (a.rel + a.score * 3));
     list = list.slice(0, 40);
-    const e2 = await engagementFor(list.map((x) => x.row.id), req.uid);
-    let trending = [];
+    trending = [];
     if (!words.length) {
       const tr = await db.q(`SELECT title, engagement FROM feed_items WHERE source_id IN (?) AND fetched_at > ? ORDER BY fetched_at DESC LIMIT 60`,
         [['trends-in', ...SOURCES.filter((x) => x.trends && x.region === region).map((x) => x.id)], new Date(Date.now() - 24 * 3600e3)]);
@@ -736,6 +789,10 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
         .filter((t) => t.t.length >= 3 && t.t.length <= 40 && !seen.has(t.t.toLowerCase()) && seen.add(t.t.toLowerCase()))
         .sort((a, b) => b.n - a.n).slice(0, 10).map((t) => t.t);
     }
+    searchCache.set(ckey, { at: Date.now(), list, trending });
+    if (searchCache.size > 300) searchCache.delete(searchCache.keys().next().value);
+    }
+    const e2 = await engagementFor(list.map((x) => x.row.id), req.uid);
     res.json({ q, items: list.map((x) => present({ ...x, slot: 's' }, e2.get(x.row.id))), trending });
   }));
 

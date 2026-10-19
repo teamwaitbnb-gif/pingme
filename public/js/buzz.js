@@ -450,6 +450,7 @@ export function initBuzz(ctx) {
     if (!searching() && !focused) { resultsEl.hidden = true; feedEl.hidden = false; found = new Map(); return; }
     resultsEl.hidden = false; feedEl.hidden = true; moreBtn.hidden = true;
     if (!resultsEl.firstChild) resultsEl.replaceChildren(h('div', { class: 'bz-loading' }, h('span', { class: 'spinner' })));
+    resultsEl.classList.add('bz-busy'); // old results fade while the new ones load
     const qs = new URLSearchParams({ region, time: filters.time, sort: filters.sort });
     if (filters.q) qs.set('q', filters.q);
     if (filters.section) qs.set('section', filters.section);
@@ -466,6 +467,7 @@ export function initBuzz(ctx) {
         h('span', { class: 'bz-rmeta' }, `${{ hour: 'Last hour', today: 'Today', week: 'This week' }[filters.time]} · ${filters.sort === 'latest' ? 'Newest' : 'Top'}`)) : null;
       const empty = searching() && !r.items.length ? h('div', { class: 'bz-empty' }, filters.q ? `Nothing found for “${filters.q}”. Try fewer words, or a longer time in Filters.` : 'Nothing here right now. Try a longer time in Filters.') : null;
       resultsEl.replaceChildren(...[sug, head, empty, ...nodes].filter(Boolean));
+      resultsEl.classList.remove('bz-busy');
       if (searching()) root.scrollTop = 0;
     } catch (e) {
       if (seq === searchSeq) resultsEl.replaceChildren(h('div', { class: 'bz-empty' }, 'Search isn’t available right now. Check your connection.'));
