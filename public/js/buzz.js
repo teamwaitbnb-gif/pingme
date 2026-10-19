@@ -3,6 +3,7 @@
 // checks /api/feed every 5 seconds while Buzz is on screen and merges new stories in place.
 import { h, icon, toast, avatar, openSheet, store, fmtListTime, reconcileChildren } from './ui.js';
 import { track } from './analytics.js';
+import { loadAds, adCard, rotation } from './ads.js';
 
 // Analytics: a story counts as "seen" after being at least half on screen for a second; opens are
 // taps on its photo, headline or Read link.
@@ -164,6 +165,17 @@ export function initBuzz(ctx) {
   let resultsEl = null, chipsEl = null, searchInput = null, found = new Map(), searchSeq = 0, searchTimer = 0;
   const filters = { q: '', section: null, type: null, time: 'week', sort: 'top' };
   const getCard = (id) => cards.get(id) || found.get(id);
+  // Sponsored cards: one after every few stories (the owner sets how many). Each slot keeps its card,
+  // so a playing ad video isn't restarted when the feed refreshes.
+  let adList = [], nextAd = null, adEls = new Map();
+  const adEvery = () => adList[0]?.every || 8;
+  const adAt = (slot) => { if (!adEls.has(slot)) adEls.set(slot, adCard(nextAd())); return adEls.get(slot); };
+  const withAds = (nodes) => {
+    if (!adList.length) return nodes;
+    const out = [], every = adEvery();
+    nodes.forEach((n, i) => { out.push(n); if ((i + 1) % every === 0) out.push(adAt((i + 1) / every)); });
+    return out;
+  };
   const searching = () => !!(filters.q || filters.section || filters.type);
 
   function mount(container) {
@@ -205,6 +217,11 @@ export function initBuzz(ctx) {
       COORDS = Object.fromEntries(regions.filter((r) => r.lat).map((r) => [r.id, [r.lat, r.lon]]));
       const span = root.querySelector('.bz-loc span'); if (span) span.textContent = nameOf(region);
     }).catch(() => {});
+    adEls = new Map();
+    loadAds('buzz', region).then((list) => {
+      adList = list; nextAd = rotation(list);
+      if (list.length && order.length) reconcileChildren(feedEl, withAds(order.map((id) => cards.get(id).el)));
+    });
     // Saved stories first (instant, and they survive a lost connection).
     const saved = store.get('buzzCache:' + region, null);
     const unseen = (saved?.items || []).filter((it) => !seenLocal.has(it.id));
@@ -364,7 +381,7 @@ export function initBuzz(ctx) {
       else { el = card(it); cards.set(it.id, { el, data: it }); }
       order.push(it.id); nodes.push(el);
     }
-    reconcileChildren(feedEl, nodes);
+    reconcileChildren(feedEl, withAds(nodes));
   }
 
   // Fresh stories slip in just below where you're reading — no banner, no jump. At the very top they
@@ -378,7 +395,7 @@ export function initBuzz(ctx) {
       if (root.scrollTop < 60 && !after) { feedEl.prepend(...els); order = [...fresh.map((x) => x.id), ...order]; return fresh.length; }
       // The first card that starts below the bottom of the screen: new stories go right before it.
       const bottom = root.getBoundingClientRect().bottom;
-      anchor = [...feedEl.children].find((c) => c.getBoundingClientRect().top > bottom + 40) || null;
+      anchor = [...feedEl.children].find((c) => !c.classList.contains('ad-card') && c.getBoundingClientRect().top > bottom + 40) || null;
       if (!anchor) { feedEl.append(...els); order.push(...fresh.map((x) => x.id)); return fresh.length; }
       anchor.before(...els);
     } else anchor.after(...els);
@@ -419,7 +436,11 @@ export function initBuzz(ctx) {
     loadingMore = true; moreBtn.hidden = false;
     try {
       const r = await ctx.api('POST', '/api/feed/more', { region, limit: 24, have: order.slice(-1500) });
-      for (const it of r.items) { if (cards.has(it.id)) continue; const el = card(it); cards.set(it.id, { el, data: it }); order.push(it.id); feedEl.append(el); }
+      for (const it of r.items) {
+        if (cards.has(it.id)) continue;
+        const el = card(it); cards.set(it.id, { el, data: it }); order.push(it.id); feedEl.append(el);
+        if (adList.length && order.length % adEvery() === 0) feedEl.append(adAt(order.length / adEvery()));
+      }
       hasMore = r.hasMore && r.items.length > 0;
     } catch {}
     loadingMore = false; moreBtn.hidden = true;

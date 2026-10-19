@@ -69,11 +69,11 @@ const heat = (v) => {
 // ───── dashboard ─────
 // /admin → full dashboard · /admin#algorithm → the Buzz suggestion algorithm on its own page.
 // Pages: #overview (default) · #speed · #errors · #users · #user/<id> · #calls · #activity · #algorithm
-const PAGES = [['overview', 'Overview'], ['speed', 'Speed'], ['errors', 'Errors'], ['users', 'Users'], ['calls', 'Calls'], ['pets', 'Pets'], ['activity', 'Activity'], ['algorithm', 'Buzz algorithm'], ['notify', 'Notifications']];
+const PAGES = [['overview', 'Overview'], ['speed', 'Speed'], ['errors', 'Errors'], ['users', 'Users'], ['calls', 'Calls'], ['pets', 'Pets'], ['activity', 'Activity'], ['algorithm', 'Buzz algorithm'], ['notify', 'Notifications'], ['ads', 'Ads']];
 const route = () => {
   clearInterval(liveTimer);
   const [page, arg] = location.hash.replace(/^#/, '').split('/');
-  const fn = { speed: speedPage, errors: errorsPage, users: usersPage, user: () => userPage(arg), calls: callsPage, pets: petsPage, activity: activityPage, algorithm: algorithmPage, notify: notifyPage }[page] || dashboard;
+  const fn = { speed: speedPage, errors: errorsPage, users: usersPage, user: () => userPage(arg), calls: callsPage, pets: petsPage, activity: activityPage, algorithm: algorithmPage, notify: notifyPage, ads: adsPage }[page] || dashboard;
   window.scrollTo(0, 0);
   return fn();
 };
@@ -253,6 +253,75 @@ async function callsPage() {
 
 // ───── Pets ─────
 const PET_ACTIONS = { feed: '🍖 Feed', play: '🎾 Play', poke: '🤚 Pet', rename: '✏️ Rename', outfit: '🎀 Outfit', cage: '🔒 Cage', release: '🔓 Let out' };
+// ───── Ads: photo/video ads in Buzz and above the chat list ─────
+async function adsPage(editing = null) {
+  loading('Loading ads…');
+  let d; try { d = await api('/api/admin/ads'); } catch (e) { return fail(e); }
+  const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
+  const f = editing || { placement: 'buzz', region: 'all', cta: 'Learn more', every: 8, weight: 1, active: true };
+  const inp = (key, attrs = {}) => { const i = el('input', { class: 'search', value: f[key] ?? '', ...attrs }); i.oninput = () => { f[key] = i.value; draw(); }; return i; };
+  const sel = (key, opts) => { const s = el('select', { class: 'search' }, opts.map(([v, l]) => el('option', { value: v, selected: String(f[key]) === String(v) }, l))); s.onchange = () => { f[key] = s.value; draw(); }; return s; };
+  const local = (t) => (t ? new Date(t - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '');
+  const dateInp = (key) => { const i = el('input', { class: 'search', type: 'datetime-local', value: local(f[key]) }); i.onchange = () => { f[key] = i.value ? new Date(i.value).getTime() : null; }; return i; };
+  const status = el('div', { class: 'hint' });
+  const preview = el('div', { class: 'ad-prev' });
+  const file = el('input', { type: 'file', accept: 'image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime', hidden: true, onchange: async () => {
+    const x = file.files[0]; if (!x) return;
+    if (x.size > 40 * 1024 * 1024) { status.textContent = 'Files up to 40 MB'; return; }
+    status.textContent = `Uploading ${x.name}…`;
+    try {
+      const r = await fetch('/api/admin/ads/upload', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': x.type, 'x-file-name': encodeURIComponent(x.name), 'x-pingme': '1' }, body: x }).then(async (r) => { const j = await r.json(); if (!r.ok) throw new Error(j.error || 'Upload failed'); return j; });
+      Object.assign(f, { mediaId: r.mediaId, kind: r.kind, mediaUrl: r.url }); status.textContent = 'Uploaded.'; draw();
+    } catch (e) { status.textContent = e.message; }
+  } });
+  function draw() {
+    const m = f.mediaUrl ? (f.kind === 'video' ? el('video', { src: f.mediaUrl, muted: true, autoplay: true, loop: true, playsinline: true }) : el('img', { src: f.mediaUrl, alt: '' })) : el('div', { class: 'ad-prev-empty' }, 'No photo or video yet');
+    preview.replaceChildren(el('div', { class: 'ad-prev-card' }, el('div', { class: 'ad-prev-media' }, m),
+      el('div', { class: 'ad-prev-body' }, el('span', { class: 'ad-prev-tag' }, 'Sponsored' + (f.advertiser ? ' · ' + f.advertiser : '')), el('b', null, f.headline || 'Your headline'), f.text ? el('p', null, f.text) : null,
+        f.url ? el('span', { class: 'ad-prev-cta' }, f.cta || 'Learn more') : null)));
+  }
+  const save = el('button', { class: 'nf-btn', onclick: async () => {
+    try { save.disabled = true; await post('/api/admin/ads', f); status.textContent = 'Saved.'; adsPage(); }
+    catch (e) { status.textContent = e.message; } finally { save.disabled = false; }
+  } }, f.id ? 'Save changes' : 'Create ad');
+  draw();
+  const ctr = (a) => (a.views ? ((a.clicks / a.views) * 100).toFixed(1) + '%' : '—');
+  const totals = d.ads.reduce((t, a) => ({ v: t.v + a.views, c: t.c + a.clicks, live: t.live + (a.active ? 1 : 0) }), { v: 0, c: 0, live: 0 });
+  root.replaceChildren(el('div', { class: 'wrap' }, nav('ads', `${totals.live} running · last 30 days: ${fmt(totals.v)} views, ${fmt(totals.c)} taps`),
+    el('div', { class: 'kpis' },
+      kpiBox('Ads running', fmt(totals.live), `${fmt(d.ads.length)} in total`),
+      kpiBox('Views (30 days)', fmt(totals.v), 'half on screen for a second'),
+      kpiBox('Taps (30 days)', fmt(totals.c), 'on the ad or its button'),
+      kpiBox('Tap rate', totals.v ? ((totals.c / totals.v) * 100).toFixed(1) + '%' : '—', 'taps ÷ views')),
+    el('div', { class: 'grid2', style: 'margin-top:14px' },
+      el('div', { class: 'card' }, el('h3', null, f.id ? 'Edit ad' : 'New ad'), el('div', { class: 'hint' }, 'Photo or video, a headline, a short line and a button. Always shown as “Sponsored”.'),
+        el('div', { class: 'nf-row' }, el('button', { class: 'nf-btn ghost', onclick: () => file.click() }, f.mediaId ? 'Change photo / video' : 'Upload photo / video'), file, status),
+        inp('headline', { maxlength: 90, placeholder: 'Headline' }), inp('text', { maxlength: 180, placeholder: 'Short text (optional)' }),
+        inp('advertiser', { maxlength: 40, placeholder: 'Advertiser name (shown next to “Sponsored”)' }),
+        el('div', { class: 'nf-grid' }, inp('cta', { maxlength: 24, placeholder: 'Button text' }), inp('url', { placeholder: 'Link — https://…' })),
+        el('div', { class: 'nf-grid' },
+          el('label', { class: 'nf-field' }, el('span', null, 'Where'), sel('placement', [['buzz', 'In the Buzz feed'], ['chats', 'Banner above chats']])),
+          el('label', { class: 'nf-field' }, el('span', null, 'Who'), sel('region', d.cities.map((c) => [c.id, c.name]))),
+          el('label', { class: 'nf-field' }, el('span', null, 'In Buzz, one every'), sel('every', [4, 6, 8, 10, 12, 15, 20].map((n) => [n, `${n} stories`]))),
+          el('label', { class: 'nf-field' }, el('span', null, 'Weight'), sel('weight', [1, 2, 3, 5, 10].map((n) => [n, n === 1 ? 'Normal' : `${n}× more often`])))),
+        el('div', { class: 'nf-grid' }, el('label', { class: 'nf-field' }, el('span', null, 'Starts (optional)'), dateInp('startAt')), el('label', { class: 'nf-field' }, el('span', null, 'Ends (optional)'), dateInp('endAt'))),
+        el('div', { class: 'nf-row' }, save, f.id ? el('button', { class: 'nf-btn ghost', onclick: () => adsPage() }, 'Cancel') : null)),
+      el('div', { class: 'card' }, el('h3', null, 'Preview'), el('div', { class: 'hint' }, 'How it looks in the app'), preview)),
+    el('h2', null, 'All ads', el('small', null, 'last 30 days')),
+    el('div', { class: 'card' }, table(['', 'Ad', 'Where', 'Who', 'Runs', ['Views', 'num'], ['Taps', 'num'], ['Tap rate', 'num'], ['Today', 'num'], 'On', ''],
+      d.ads.map((a) => el('tr', null,
+        el('td', null, a.mediaUrl ? (a.kind === 'video' ? el('video', { class: 'ad-row-media', src: a.mediaUrl, muted: true }) : el('img', { class: 'ad-row-media', src: a.mediaUrl, alt: '' })) : '—'),
+        el('td', null, el('b', null, a.headline), el('div', { class: 'hint' }, a.advertiser || a.url || '')),
+        el('td', null, a.placement === 'buzz' ? `Buzz · every ${a.every}` : 'Chats banner'),
+        el('td', null, (d.cities.find((c) => c.id === a.region) || {}).name || a.region),
+        el('td', null, a.startAt || a.endAt ? `${a.startAt ? when(a.startAt) : 'now'} → ${a.endAt ? when(a.endAt) : 'no end'}` : 'Always'),
+        el('td', { class: 'num' }, fmt(a.views)), el('td', { class: 'num' }, fmt(a.clicks)), el('td', { class: 'num' }, ctr(a)),
+        el('td', { class: 'num' }, `${fmt(a.todayViews)} / ${fmt(a.todayClicks)}`),
+        el('td', null, (() => { let on = a.active; const b = el('button', { class: 'nf-switch' + (on ? ' on' : ''), role: 'switch', onclick: async () => { on = !on; b.classList.toggle('on', on); await post(`/api/admin/ads/${a.id}/active`, { active: on }); } }, el('i')); return b; })()),
+        el('td', null, el('button', { class: 'chip', onclick: () => adsPage({ ...a }) }, 'Edit'), ' ',
+          el('button', { class: 'chip', onclick: async () => { if (confirm(`Delete “${a.headline}”? Its numbers are deleted too.`)) { await post(`/api/admin/ads/${a.id}/delete`, {}); adsPage(); } } }, 'Delete')))), 'No ads yet — create your first one above'))));
+}
+
 // ───── Notifications: send your own, and control the automatic ones ─────
 async function notifyPage() {
   loading('Loading notifications…');

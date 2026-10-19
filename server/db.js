@@ -269,6 +269,26 @@ const SCHEMA = [
     fed_at DATETIME(3) NULL,
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
   )`,
+  // In-app ads run from the admin page (details encrypted like everything else) and their daily numbers.
+  `CREATE TABLE IF NOT EXISTS ads (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    placement VARCHAR(10) NOT NULL,
+    media_id BIGINT UNSIGNED NULL,
+    data_enc TEXT NOT NULL,
+    weight TINYINT NOT NULL DEFAULT 1,
+    active TINYINT NOT NULL DEFAULT 1,
+    start_at DATETIME(3) NULL,
+    end_at DATETIME(3) NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX (active, placement)
+  )`,
+  `CREATE TABLE IF NOT EXISTS ad_stats (
+    ad_id BIGINT UNSIGNED NOT NULL,
+    day CHAR(10) NOT NULL,
+    views INT NOT NULL DEFAULT 0,
+    clicks INT NOT NULL DEFAULT 0,
+    PRIMARY KEY (ad_id, day)
+  )`,
   // Owner-controlled settings (e.g. automatic notifications), as small JSON values.
   `CREATE TABLE IF NOT EXISTS app_config (
     k VARCHAR(40) PRIMARY KEY,

@@ -1851,6 +1851,8 @@ require('./unfurl')({ app, db, C, auth, wrap, bad, rateLimit, publicOrigin });
 // Usage analytics + the owner's admin portal (/admin, unlocked with ADMIN_KEY).
 const adminPortal = require('./admin')({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online, buzz, monitor, activeCalls: () => calls.size, petState: advanced.petState });
 // Owner notifications: one-off messages from the admin page + automatic Buzz / hungry-pet alerts.
+// In-app ads (photo/video, in Buzz and above the chat list), managed from the admin page.
+require('./ads')({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, isAdmin: adminPortal.isAdmin, media, express, buzz });
 const notifier = require('./notify')({ app, db, C, push, emitToUser, getUser, isAdmin: adminPortal.isAdmin, wrap, bad, toInt, clampStr, buzz, petState: advanced.petState, monitor });
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));

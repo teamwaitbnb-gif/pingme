@@ -1,3 +1,4 @@
+import { loadAds, adBanner, bannerHidden, rotation } from './ads.js';
 import { openPetShop, coinIcon } from './pet-shop.js';
 import { openCamera } from './camera.js';
 import { mountPet, petHidden } from './pet.js';
@@ -198,6 +199,14 @@ function showConnecting(attempt) {
   });
 }
 
+// A sponsored banner above the chat list (if the owner is running one); closable for the session.
+async function showChatAd() {
+  const ads = (await loadAds('chats', S.me?.settings?.buzzRegion || 'india')).filter((a) => !bannerHidden(a));
+  if (!els.adSlot) return;
+  const ad = ads.length ? rotation(ads)() : null;
+  els.adSlot.replaceChildren(...(ad ? [adBanner(ad, () => els.adSlot.replaceChildren())] : []));
+}
+
 function showAuth(mode) {
   S.pet?.destroy(); S.pet = null;
   stopPersonalPets();
@@ -327,11 +336,13 @@ function startApp() {
     els.title,
     els.safetyBar,
     h('div', { class: 'sb-search' }, icon('search'), search, clearBtn),
+    els.adSlot = h('div', { class: 'ad-slot' }),
     els.list,
     // Bottom tabs: Chats | Buzz
     els.tabs = h('nav', { class: 'sb-tabs', 'aria-label': 'Sections' },
       h('button', { class: 'on', 'data-tab': 'chats', onclick: () => setTab('chats') }, icon('msg'), h('span', null, 'Chats')),
       h('button', { 'data-tab': 'buzz', onclick: () => setTab('buzz') }, icon('fire'), h('span', null, 'Buzz'))));
+  showChatAd();
   els.conv = h('section', { class: 'conv' });
   els.buzz = h('div', { class: 'buzz-pane', hidden: true });
   els.main = h('div', { class: 'main' }, els.sidebar, els.conv, els.buzz);

@@ -2116,3 +2116,25 @@ html.fp-cw { --sat: env(safe-area-inset-right); --sab: env(safe-area-inset-left)
 .connecting span { color: var(--text2); max-width: 300px; }
 .connecting .btn { margin-top: 6px; }
 .bz-results.bz-busy > * { opacity: .45; transition: opacity .15s; }
+/* Sponsored: Buzz card + chat-list banner */
+.ad-card { cursor: pointer; }
+.ad-card .ad-media { position: relative; display: block; aspect-ratio: 16 / 9; background: #000; overflow: hidden; }
+.ad-card .ad-media img, .ad-card .ad-media video { width: 100%; height: 100%; object-fit: cover; display: block; }
+.ad-tag { font-size: 11px; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; color: var(--bz-text2, var(--text2)); background: var(--bz-accent-soft, rgba(127,127,127,.15)); padding: 2px 7px; border-radius: 6px; }
+.ad-h { display: block; font-size: 18px; line-height: 1.3; margin-top: 6px; }
+.ad-cta { display: inline-flex; align-items: center; gap: 4px; margin-top: 10px; padding: 9px 16px; border-radius: 999px; background: var(--bz-accent, var(--accent)); color: #fff; font-weight: 700; font-size: 14px; }
+.ad-cta svg { width: 14px; height: 14px; }
+.ad-cta.sm { margin: 0; padding: 6px 12px; font-size: 13px; flex-shrink: 0; }
+.ad-sound { position: absolute; right: 10px; bottom: 10px; width: 34px; height: 34px; border-radius: 50%; background: rgba(0,0,0,.55); color: #fff; display: grid; place-items: center; }
+.ad-sound svg { width: 16px; height: 16px; }
+.ad-slot:empty { display: none; }
+.ad-banner { position: relative; display: flex; align-items: center; gap: 10px; margin: 0 12px 8px; padding: 8px 34px 8px 8px; border-radius: 14px; background: var(--fill, rgba(127,127,127,.14)); cursor: pointer; }
+.ad-banner .ad-thumb { position: relative; width: 56px; height: 56px; flex-shrink: 0; border-radius: 10px; overflow: hidden; background: #000; }
+.ad-banner .ad-thumb img, .ad-banner .ad-thumb video { width: 100%; height: 100%; object-fit: cover; }
+.ad-banner .ad-thumb .ad-sound { display: none; }
+.ad-banner .ad-bt { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ad-banner .ad-bt b { font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad-banner .ad-bt .ad-tag { align-self: flex-start; font-size: 10px; }
+.ad-banner .ad-sub { font-size: 12px; color: var(--text2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ad-banner .ad-x { position: absolute; top: 6px; right: 6px; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; color: var(--text2); }
+.ad-banner .ad-x svg { width: 14px; height: 14px; }

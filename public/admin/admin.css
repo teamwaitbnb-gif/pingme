@@ -138,3 +138,13 @@ select.search { -webkit-appearance: none; appearance: none; }
 .nf-switch.on { background: #34c759; }
 .nf-switch.on i { transform: translateX(18px); }
 .nf-result { margin-top: 8px; line-height: 1.4; }
+/* Ads page */
+.ad-prev-card { border-radius: 16px; overflow: hidden; background: var(--bg); box-shadow: 0 0 0 1px var(--line); max-width: 380px; }
+.ad-prev-media { aspect-ratio: 16 / 9; background: #000; display: grid; place-items: center; }
+.ad-prev-media img, .ad-prev-media video { width: 100%; height: 100%; object-fit: cover; }
+.ad-prev-empty { color: #999; font-size: 13px; }
+.ad-prev-body { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; }
+.ad-prev-tag { font-size: 11px; font-weight: 700; text-transform: uppercase; color: var(--text2); }
+.ad-prev-body p { margin: 0; color: var(--text2); font-size: 14px; }
+.ad-prev-cta { align-self: flex-start; padding: 7px 14px; border-radius: 999px; background: var(--accent); color: #fff; font-weight: 700; font-size: 13px; }
+.ad-row-media { width: 64px; height: 36px; object-fit: cover; border-radius: 6px; background: #000; display: block; }
