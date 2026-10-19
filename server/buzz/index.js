@@ -206,11 +206,13 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
 
   // ───── ranking ─────
   // Buckets and their share of a region's feed. Local first; everything interleaved.
-  const MIX_CITY = [['local', 30], ['india', 16], ['entertainment', 14], ['tech', 12], ['sports', 10], ['business', 9], ['world', 9]];
-  const MIX_INDIA = [['india', 26], ['entertainment', 18], ['tech', 15], ['sports', 14], ['business', 14], ['world', 13]];
+  const MIX_CITY = [['local', 28], ['india', 14], ['politics', 8], ['entertainment', 15], ['tech', 10], ['sports', 11], ['business', 8], ['world', 8]];
+  const MIX_INDIA = [['india', 22], ['politics', 10], ['entertainment', 19], ['tech', 12], ['sports', 15], ['business', 12], ['world', 10]];
 
   function bucketOf(row, region) {
     if (row.topic === 'local') return row.region === region ? 'local' : null;
+    // A state's politics shows in its cities; national politics everywhere.
+    if (row.topic === 'politics') return row.region === 'india' || row.region === region ? 'politics' : null;
     if (row.topic === 'entertainment') return row.region === 'india' || row.region === region ? 'entertainment' : null;
     return row.topic === 'video' ? 'entertainment' : row.topic;
   }
@@ -681,6 +683,60 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     const page = rest.slice(0, limit);
     const eng = await engagementFor(page.map((x) => x.row.id), req.uid);
     res.json({ region, items: page.map((x) => present(x, eng.get(x.row.id))), hasMore: rest.length > limit });
+  }));
+
+  // Search and filters. Words are matched in titles and summaries (all words must appear), within
+  // a time window; results are ranked by relevance + how big the story is, or newest first.
+  // Without a query, a section/type filter lists that slice of the feed, and the trending searches
+  // (Google Trends) are returned as suggestions.
+  const SECTIONS = new Set(['india', 'local', 'politics', 'entertainment', 'sports', 'tech', 'business', 'world']);
+  const WINDOWS = { hour: 3600e3, today: 24 * 3600e3, week: 7 * 24 * 3600e3 };
+  app.get('/api/feed/search', auth, wrap(async (req, res) => {
+    rateLimit?.('buzz-search:' + req.uid, 60, 60000);
+    const region = REGIONS.has(String(req.query.region)) ? String(req.query.region) : 'india';
+    const q = String(req.query.q || '').trim().slice(0, 80);
+    const section = SECTIONS.has(String(req.query.section)) ? String(req.query.section) : null;
+    const type = ['video', 'social', 'news', 'viral'].includes(String(req.query.type)) ? String(req.query.type) : null;
+    const win = WINDOWS[String(req.query.time)] || WINDOWS.week;
+    const sort = req.query.sort === 'latest' ? 'latest' : 'top';
+    const words = [...new Set(q.toLowerCase().split(/\s+/).map((w) => w.replace(/[%_\\]/g, '')).filter((w) => w.length >= 2))].slice(0, 6);
+    const where = ['COALESCE(published_at, fetched_at) > ?'], args = [new Date(Date.now() - win)];
+    if (section === 'local') { where.push("topic='local' AND region=?"); args.push(region); }
+    else if (section) { where.push('topic=?'); args.push(section); where.push("(region IN (?, 'india', 'world'))"); args.push(region); }
+    else { where.push("(region IN (?, 'india', 'world') OR topic NOT IN ('local','politics'))"); args.push(region); }
+    if (type === 'video') where.push('video_url IS NOT NULL');
+    if (type === 'news') where.push('video_url IS NULL');
+    if (type === 'social') { const ids = SOURCES.filter((x) => x.social).map((x) => x.id); where.push('source_id IN (?)'); args.push(ids.length ? ids : ['-']); }
+    if (type === 'viral') where.push('engagement IS NOT NULL');
+    for (const w of words) { where.push('(title LIKE ? OR summary LIKE ? OR ai_summary LIKE ?)'); const l = `%${w}%`; args.push(l, l, l); }
+    const rows = await db.q(`SELECT id, source_id, region, topic, url, title, COALESCE(ai_summary, summary) summary, image_url, video_url, via, discuss_url, engagement, src_rank, published_at, fetched_at
+      FROM feed_items WHERE ${where.join(' AND ')} ORDER BY COALESCE(published_at, fetched_at) DESC LIMIT 400`, args);
+    const eng = await engagementFor(rows.map((r) => r.id), null);
+    const seenTitle = new Set();
+    let list = [];
+    for (const r of rows) {
+      const key = r.title.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim().slice(0, 80);
+      if (seenTitle.has(key)) continue; // the same headline from several feeds
+      seenTitle.add(key);
+      const x = { row: r, ...score(r, eng.get(r.id), region) };
+      const title = r.title.toLowerCase();
+      x.rel = words.reduce((n, w) => n + (title.includes(w) ? 2 : 0.5), 0) + (words.length && title.includes(words.join(' ')) ? 2 : 0);
+      list.push(x);
+    }
+    if (sort === 'latest') list.sort((a, b) => b.ts - a.ts);
+    else list.sort((a, b) => (b.rel + b.score * 3) - (a.rel + a.score * 3));
+    list = list.slice(0, 40);
+    const e2 = await engagementFor(list.map((x) => x.row.id), req.uid);
+    let trending = [];
+    if (!words.length) {
+      const tr = await db.q(`SELECT title, engagement FROM feed_items WHERE source_id IN (?) AND fetched_at > ? ORDER BY fetched_at DESC LIMIT 60`,
+        [['trends-in', ...SOURCES.filter((x) => x.trends && x.region === region).map((x) => x.id)], new Date(Date.now() - 24 * 3600e3)]);
+      const seen = new Set();
+      trending = tr.map((t) => ({ t: t.title.split(/\s[-–|·]\s/)[0].trim(), n: (() => { try { return JSON.parse(t.engagement)?.searchesN || 0; } catch { return 0; } })() }))
+        .filter((t) => t.t.length >= 3 && t.t.length <= 40 && !seen.has(t.t.toLowerCase()) && seen.add(t.t.toLowerCase()))
+        .sort((a, b) => b.n - a.n).slice(0, 10).map((t) => t.t);
+    }
+    res.json({ q, items: list.map((x) => present({ ...x, slot: 's' }, e2.get(x.row.id))), trending });
   }));
 
   // Cities people can pick (and the coordinates used to find the nearest one).

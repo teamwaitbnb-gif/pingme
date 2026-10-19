@@ -93,6 +93,8 @@ export function openSettings() {
         cell({ icon: 'msg', color: '#30b0c7', label: 'SMS backup', sub: me.settings.smsBackup && me.settings.smsPhone ? 'On · ' + me.settings.smsPhone : 'Text when the internet is down', chevron: true, onClick: () => openSmsBackup(draw) }),
         isMobile() ? cell({ icon: 'phone', color: '#34c759', label: 'Never miss a call', sub: 'Ring loud even when Ping Me is closed', chevron: true, onClick: openRingHelp }) : null,
         cell({ icon: 'eye', color: '#ff9500', label: 'Show previews', right: toggle(me.settings.previews, (v) => setPriv('previews', v)) }),
+        cell({ icon: 'fire', color: '#ff6b2c', label: 'Trending on Buzz', sub: 'Up to a couple of big stories a day', right: toggle(me.settings.buzzAlerts !== false, (v) => setPriv('buzzAlerts', v)) }),
+        cell({ icon: 'paw', color: '#af52de', label: 'Hungry group pets', sub: 'When a group’s pet needs feeding', right: toggle(me.settings.petAlerts !== false, (v) => setPriv('petAlerts', v)) }),
         cell({ icon: 'vol', color: '#ff2d55', label: 'In-app sounds', right: toggle(p.sounds, (v) => store.set('sounds', v)) })),
 
       h('div', { class: 'group-label' }, 'Privacy'),

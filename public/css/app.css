@@ -2090,3 +2090,28 @@ html.fp-cw { --sat: env(safe-area-inset-right); --sab: env(safe-area-inset-left)
 .tray .tray-wait .spinner { width: 18px; height: 18px; }
 .tray .ti .ti-prog { position: absolute; left: 0; bottom: 0; height: 3px; width: calc(var(--p, 0) * 100%); background: #0a84ff; z-index: 1; transition: width .2s; }
 .tray .ti .ti-prog.done { width: 100%; background: #34c759; }
+/* Buzz search & filters */
+.bz-search { display: flex; gap: 8px; align-items: center; padding: 2px 16px 8px; }
+.bz-qwrap { flex: 1; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 10px 0 12px; border-radius: 12px; background: var(--bz-card); border: 1px solid var(--bz-line); color: var(--bz-text2); }
+.bz-qwrap > svg { width: 17px; height: 17px; flex-shrink: 0; }
+.bz-q { flex: 1; min-width: 0; border: 0; background: transparent; color: var(--bz-text); font-size: 16px; outline: none; -webkit-appearance: none; }
+.bz-q::-webkit-search-cancel-button { display: none; }
+.bz-qx { display: none; color: var(--bz-text2); width: 24px; height: 24px; place-items: center; }
+.bz-qx svg { width: 17px; height: 17px; }
+.bz-searching .bz-qx, .bz-qwrap:focus-within .bz-qx { display: grid; }
+.bz-filt { width: 40px; height: 40px; border-radius: 12px; background: var(--bz-card); border: 1px solid var(--bz-line); color: var(--bz-text); display: grid; place-items: center; flex-shrink: 0; }
+.bz-filt svg { width: 19px; height: 19px; }
+.bz-chips { display: flex; gap: 8px; overflow-x: auto; padding: 0 16px 8px; scrollbar-width: none; -webkit-overflow-scrolling: touch; }
+.bz-chips::-webkit-scrollbar { display: none; }
+.bz-chip { flex-shrink: 0; padding: 7px 14px; border-radius: 999px; background: var(--bz-card); border: 1px solid var(--bz-line); color: var(--bz-text); font-size: 14px; font-weight: 600; white-space: nowrap; }
+.bz-chip.on { background: var(--bz-text); color: var(--bz-bg); border-color: transparent; }
+.bz-results { display: flex; flex-direction: column; gap: 16px; padding: 4px 16px 24px; }
+.bz-rhead { display: flex; justify-content: space-between; gap: 8px; font-size: 13px; color: var(--bz-text2); }
+.bz-trend b { display: flex; align-items: center; gap: 6px; font-size: 14px; margin-bottom: 10px; }
+.bz-trend b svg { width: 16px; height: 16px; color: #ff6b2c; }
+.bz-trend-list { display: flex; flex-wrap: wrap; gap: 8px; }
+@media (min-width: 761px) { .bz-search, .bz-chips, .bz-results { padding-left: 28px; padding-right: 28px; } }
+.connecting { position: fixed; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; padding: 24px; text-align: center; background: var(--bg); color: var(--text); }
+.connecting img { border-radius: 16px; }
+.connecting span { color: var(--text2); max-width: 300px; }
+.connecting .btn { margin-top: 6px; }

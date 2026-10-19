@@ -18,7 +18,7 @@ const COOKIE = 'mm_sess';
 // Identifies this running copy of the server (changes on every deploy).
 const INSTANCE_ID = (process.env.K_REVISION || 'local') + '-' + require('crypto').randomBytes(4).toString('hex');
 const REACTION_MAX = 16;
-const DEFAULT_SETTINGS = { readReceipts: true, typing: true, lastSeen: true, previews: true, dpViews: true };
+const DEFAULT_SETTINGS = { readReceipts: true, typing: true, lastSeen: true, previews: true, dpViews: true, buzzAlerts: true, petAlerts: true };
 // Advanced features each person can switch on/off (first-run setup + Settings → Features).
 const FEATURES = {
   scamRadar: true, promiseTracker: true, intentTags: true, secureMessages: true, eyesOnly: true,
@@ -1849,7 +1849,9 @@ const buzz = require('./buzz')({ app, db, C, auth, wrap, bad, notFound, toInt, c
 // Link previews for links shared in chats (+ Buzz share links).
 require('./unfurl')({ app, db, C, auth, wrap, bad, rateLimit, publicOrigin });
 // Usage analytics + the owner's admin portal (/admin, unlocked with ADMIN_KEY).
-require('./admin')({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online, buzz, monitor, activeCalls: () => calls.size, petState: advanced.petState });
+const adminPortal = require('./admin')({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online, buzz, monitor, activeCalls: () => calls.size, petState: advanced.petState });
+// Owner notifications: one-off messages from the admin page + automatic Buzz / hungry-pet alerts.
+const notifier = require('./notify')({ app, db, C, push, emitToUser, getUser, isAdmin: adminPortal.isAdmin, wrap, bad, toInt, clampStr, buzz, petState: advanced.petState, monitor });
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
@@ -2468,6 +2470,7 @@ db.init().then(async () => {
   await backfillCanon();
   loop(runScheduled, 10000);
   advanced.start(loop);
+  notifier.start(loop);
   loop(runExpiry, 15000);
   loop(runIncognitoTimeouts, 20000);
   loop(runCleanup, 3600000);

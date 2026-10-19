@@ -160,6 +160,11 @@ export function initBuzz(ctx) {
   let order = [];        // ids in display order
   let version = null, hasMore = false, inFlight = false, timer = null, visible = false, fromCache = false;
   let lastCheck = 0, lastNew = 0, offline = false;
+  // Search & filters: results show in their own list; the live feed keeps updating underneath.
+  let resultsEl = null, chipsEl = null, searchInput = null, found = new Map(), searchSeq = 0, searchTimer = 0;
+  const filters = { q: '', section: null, type: null, time: 'week', sort: 'top' };
+  const getCard = (id) => cards.get(id) || found.get(id);
+  const searching = () => !!(filters.q || filters.section || filters.type);
 
   function mount(container) {
     root = container;
@@ -168,12 +173,25 @@ export function initBuzz(ctx) {
     feedEl = h('div', { class: 'bz-feed' });
     moreBtn = h('div', { class: 'bz-loading', hidden: true }, h('span', { class: 'spinner' }));
     sourcesEl = h('details', { class: 'bz-sources' }, h('summary', null, 'Sources & status'), h('div', { class: 'bz-src-list' }, 'Loading…'));
+    resultsEl = h('div', { class: 'bz-results', hidden: true });
+    searchInput = h('input', { type: 'search', class: 'bz-q', placeholder: 'Search news, stars, teams, places…', enterkeyhint: 'search', autocomplete: 'off', value: filters.q,
+      oninput: () => { filters.q = searchInput.value.trim(); clearTimeout(searchTimer); searchTimer = setTimeout(runSearch, 350); },
+      onfocus: () => { if (!searching()) runSearch(); },
+      onblur: () => setTimeout(() => { if (!searching() && document.activeElement !== searchInput) runSearch(); }, 250),
+      onkeydown: (e) => { if (e.key === 'Enter') { e.preventDefault(); clearTimeout(searchTimer); runSearch(); searchInput.blur(); } } });
+    const filtBtn = h('button', { class: 'bz-filt', 'aria-label': 'Filters', onclick: openFilters }, icon('sliders'));
+    chipsEl = h('div', { class: 'bz-chips', role: 'tablist' });
+    drawChips();
     sourcesEl.addEventListener('toggle', () => { if (sourcesEl.open) loadSources(); });
     root.replaceChildren(
       h('header', { class: 'bz-head' },
         h('div', { class: 'bz-title' }, h('b', null, 'Buzz'), h('span', { class: 'bz-live', title: 'Live' }, h('i'))),
         chip),
+      h('div', { class: 'bz-search' }, h('label', { class: 'bz-qwrap' }, icon('search'), searchInput,
+        h('button', { class: 'bz-qx', 'aria-label': 'Clear search', onclick: () => clearSearch() }, icon('xc'))), filtBtn),
+      chipsEl,
       h('div', { class: 'bz-sub' }, statusEl),
+      resultsEl,
       region === 'india' && !store.get('buzzAskedCity') ? cityPrompt() : null,
       !ctx.me()?.settings?.buzzFromChats && !store.get('buzzChatAsked') ? chatPrompt() : null,
       feedEl, moreBtn, sourcesEl);
@@ -247,6 +265,7 @@ export function initBuzz(ctx) {
     cards = new Map(); order = []; version = null; fromCache = false;
     if (root) mount(root);
     check(true);
+    if (searching()) runSearch();
   }
 
   function setStatus(t) { if (statusEl) statusEl.textContent = t; }
@@ -318,7 +337,7 @@ export function initBuzz(ctx) {
   }
 
   function patch(it) {
-    const c = cards.get(it.id);
+    const c = getCard(it.id);
     if (!c) return;
     c.data = { ...c.data, ...it };
     const r = c.el._refs;
@@ -406,6 +425,65 @@ export function initBuzz(ctx) {
     loadingMore = false; moreBtn.hidden = true;
   }
 
+  // ───── search & filters ─────
+  const CHIPS = [[null, null, 'All'], ['politics', null, 'Politics'], ['entertainment', null, 'Movies & stars'], ['sports', null, 'Sports'],
+    ['india', null, 'India'], ['local', null, 'Near you'], [null, 'viral', 'Viral'], [null, 'video', 'Videos'], ['tech', null, 'Tech'], ['business', null, 'Business'], ['world', null, 'World']];
+  function drawChips() {
+    chipsEl.replaceChildren(...CHIPS.filter(([s]) => s !== 'local' || region !== 'india').map(([section, type, label]) => {
+      const on = filters.section === section && filters.type === type;
+      return h('button', { class: 'bz-chip' + (on ? ' on' : ''), role: 'tab', 'aria-selected': String(on), onclick: (e) => {
+        filters.section = section; filters.type = type; drawChips();
+        e.currentTarget.scrollIntoView({ inline: 'center', block: 'nearest', behavior: 'smooth' });
+        runSearch();
+      } }, label);
+    }));
+  }
+  function clearSearch() {
+    filters.q = ''; filters.section = null; filters.type = null;
+    if (searchInput) { searchInput.value = ''; searchInput.blur(); }
+    drawChips(); runSearch();
+  }
+  async function runSearch() {
+    const seq = ++searchSeq;
+    root.classList.toggle('bz-searching', searching());
+    const focused = document.activeElement === searchInput;
+    if (!searching() && !focused) { resultsEl.hidden = true; feedEl.hidden = false; found = new Map(); return; }
+    resultsEl.hidden = false; feedEl.hidden = true; moreBtn.hidden = true;
+    if (!resultsEl.firstChild) resultsEl.replaceChildren(h('div', { class: 'bz-loading' }, h('span', { class: 'spinner' })));
+    const qs = new URLSearchParams({ region, time: filters.time, sort: filters.sort });
+    if (filters.q) qs.set('q', filters.q);
+    if (filters.section) qs.set('section', filters.section);
+    if (filters.type) qs.set('type', filters.type);
+    try {
+      const r = await ctx.api('GET', '/api/feed/search?' + qs);
+      if (seq !== searchSeq) return;
+      if (filters.q) track({ t: 'buzz_search', v: r.items.length });
+      found = new Map();
+      const nodes = r.items.map((it) => { const el = card(it); found.set(it.id, { el, data: it }); return el; });
+      const sug = !filters.q && r.trending?.length ? h('div', { class: 'bz-trend' }, h('b', null, icon('fire'), 'Trending searches'),
+        h('div', { class: 'bz-trend-list' }, r.trending.map((t) => h('button', { class: 'bz-chip', onclick: () => { filters.q = t; searchInput.value = t; runSearch(); } }, t)))) : null;
+      const head = searching() ? h('div', { class: 'bz-rhead' }, h('span', null, r.items.length ? `${r.items.length}${r.items.length >= 40 ? '+' : ''} stories${filters.q ? ` for “${filters.q}”` : ''}` : ''),
+        h('span', { class: 'bz-rmeta' }, `${{ hour: 'Last hour', today: 'Today', week: 'This week' }[filters.time]} · ${filters.sort === 'latest' ? 'Newest' : 'Top'}`)) : null;
+      const empty = searching() && !r.items.length ? h('div', { class: 'bz-empty' }, filters.q ? `Nothing found for “${filters.q}”. Try fewer words, or a longer time in Filters.` : 'Nothing here right now. Try a longer time in Filters.') : null;
+      resultsEl.replaceChildren(...[sug, head, empty, ...nodes].filter(Boolean));
+      if (searching()) root.scrollTop = 0;
+    } catch (e) {
+      if (seq === searchSeq) resultsEl.replaceChildren(h('div', { class: 'bz-empty' }, 'Search isn’t available right now. Check your connection.'));
+    }
+  }
+  function openFilters() {
+    const s = openSheet({ title: 'Filters', left: { label: 'Reset', onClick: (close) => { Object.assign(filters, { type: null, time: 'week', sort: 'top' }); drawChips(); close(); runSearch(); } }, right: { label: 'Done', onClick: (close) => { close(); runSearch(); } } });
+    const group = (label, key, opts) => [h('div', { class: 'group-label' }, label), h('div', { class: 'group' }, opts.map(([v, l]) => {
+      const b = h('button', { class: 'cell' + (filters[key] === v ? ' on' : ''), onclick: () => { filters[key] = v; drawChips(); draw(); } }, h('span', { class: 'lb' }, l), filters[key] === v ? icon('check') : null);
+      return b;
+    }))];
+    const draw = () => s.body.replaceChildren(
+      ...group('Time', 'time', [['hour', 'Last hour'], ['today', 'Today'], ['week', 'This week']]),
+      ...group('Sort by', 'sort', [['top', 'Top stories'], ['latest', 'Newest first']]),
+      ...group('Type', 'type', [[null, 'Everything'], ['news', 'News articles'], ['video', 'Videos'], ['viral', 'Trending & viral'], ['social', 'Social posts (YouTube, Instagram, X)']]));
+    draw();
+  }
+
   async function loadSources() {
     const list = sourcesEl.querySelector('.bz-src-list');
     try {
@@ -420,21 +498,21 @@ export function initBuzz(ctx) {
 
   // ───── reactions ─────
   async function react(id) {
-    const c = cards.get(id); if (!c) return;
+    const c = getCard(id); if (!c) return;
     const d = c.data; const liked = !d.liked;
     patch({ ...d, liked, likes: Math.max(0, (d.likes || 0) + (liked ? 1 : -1)) }); // instant
     try {
       const r = await ctx.api('POST', `/api/feed/${id}/like`, { region, have: order.slice(0, 600) });
       const { related, ...counts } = r;
-      patch({ ...cards.get(id).data, ...counts });
+      patch({ ...getCard(id).data, ...counts });
       // More like this: related stories slide in right after the one you liked.
-      if (liked && related?.length) setTimeout(() => insertAhead(related.slice(0, 3), { after: cards.get(id)?.el }), 450);
+      if (liked && related?.length && cards.has(id)) setTimeout(() => insertAhead(related.slice(0, 3), { after: cards.get(id)?.el }), 450);
     } catch (e) { patch(d); toast(e.message, { error: true }); }
   }
   async function repost(id) {
-    const c = cards.get(id); if (!c) return;
+    const c = getCard(id); if (!c) return;
     const d = c.data;
-    try { const r = await ctx.api('POST', `/api/feed/${id}/repost`); patch({ ...cards.get(id).data, ...r }); toast(r.reposted ? 'Reposted — it now counts toward what’s buzzing' : 'Repost removed', { timeout: 1800 }); } catch (e) { patch(d); toast(e.message, { error: true }); }
+    try { const r = await ctx.api('POST', `/api/feed/${id}/repost`); patch({ ...getCard(id).data, ...r }); toast(r.reposted ? 'Reposted — it now counts toward what’s buzzing' : 'Repost removed', { timeout: 1800 }); } catch (e) { patch(d); toast(e.message, { error: true }); }
   }
 
   // Comments: the story on top, a clean list, and a simple input at the bottom.
@@ -488,7 +566,7 @@ export function initBuzz(ctx) {
     const s = openSheet({ title: 'Send to…', left: { label: 'Close' }, full: true });
     s.body.append(h('div', { class: 'group' }, chats.length ? chats.map((c) => h('button', { class: 'user-row', style: { cursor: 'pointer', width: '100%' }, onclick: async () => {
       s.close();
-      try { /* shows as a Buzz card in the chat */ await ctx.sendToChat(c.id, `${location.origin}/b/${it.id}`); await ctx.api('POST', `/api/feed/${it.id}/repost`, { on: true }).then((r) => patch({ ...cards.get(it.id).data, ...r })).catch(() => {}); toast(`Sent to ${ctx.chatTitle(c)}`); } catch (e) { toast(e.message, { error: true }); }
+      try { /* shows as a Buzz card in the chat */ await ctx.sendToChat(c.id, `${location.origin}/b/${it.id}`); await ctx.api('POST', `/api/feed/${it.id}/repost`, { on: true }).then((r) => { const c = getCard(it.id); if (c) patch({ ...c.data, ...r }); }).catch(() => {}); toast(`Sent to ${ctx.chatTitle(c)}`); } catch (e) { toast(e.message, { error: true }); }
     } }, avatar({ id: c.id, name: ctx.chatTitle(c), src: ctx.chatAvatar(c), size: 40, group: c.type === 'group' }), h('div', { class: 't' }, h('b', null, ctx.chatTitle(c))))) : h('div', { class: 'bz-empty' }, 'Start a chat first')));
   }
 

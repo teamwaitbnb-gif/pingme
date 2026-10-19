@@ -69,11 +69,11 @@ const heat = (v) => {
 // ───── dashboard ─────
 // /admin → full dashboard · /admin#algorithm → the Buzz suggestion algorithm on its own page.
 // Pages: #overview (default) · #speed · #errors · #users · #user/<id> · #calls · #activity · #algorithm
-const PAGES = [['overview', 'Overview'], ['speed', 'Speed'], ['errors', 'Errors'], ['users', 'Users'], ['calls', 'Calls'], ['pets', 'Pets'], ['activity', 'Activity'], ['algorithm', 'Buzz algorithm']];
+const PAGES = [['overview', 'Overview'], ['speed', 'Speed'], ['errors', 'Errors'], ['users', 'Users'], ['calls', 'Calls'], ['pets', 'Pets'], ['activity', 'Activity'], ['algorithm', 'Buzz algorithm'], ['notify', 'Notifications']];
 const route = () => {
   clearInterval(liveTimer);
   const [page, arg] = location.hash.replace(/^#/, '').split('/');
-  const fn = { speed: speedPage, errors: errorsPage, users: usersPage, user: () => userPage(arg), calls: callsPage, pets: petsPage, activity: activityPage, algorithm: algorithmPage }[page] || dashboard;
+  const fn = { speed: speedPage, errors: errorsPage, users: usersPage, user: () => userPage(arg), calls: callsPage, pets: petsPage, activity: activityPage, algorithm: algorithmPage, notify: notifyPage }[page] || dashboard;
   window.scrollTo(0, 0);
   return fn();
 };
@@ -253,6 +253,81 @@ async function callsPage() {
 
 // ───── Pets ─────
 const PET_ACTIONS = { feed: '🍖 Feed', play: '🎾 Play', poke: '🤚 Pet', rename: '✏️ Rename', outfit: '🎀 Outfit', cage: '🔒 Cage', release: '🔓 Let out' };
+// ───── Notifications: send your own, and control the automatic ones ─────
+async function notifyPage() {
+  loading('Loading notifications…');
+  let d; try { d = await api('/api/admin/notify'); } catch (e) { return fail(e); }
+  const c = d.config;
+  const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
+  const field = (label, input, hint) => el('label', { class: 'nf-field' }, el('span', null, label), input, hint ? el('small', null, hint) : null);
+  // Compose
+  const title = el('input', { class: 'search', maxlength: 80, placeholder: 'Title — e.g. New in Ping Me' });
+  const body = el('textarea', { class: 'search nf-body', maxlength: 300, rows: 3, placeholder: 'Message (up to 300 characters)' });
+  const link = el('input', { class: 'search', placeholder: 'Optional link: /?chat=123 or https://…' });
+  const to = el('select', { class: 'search' }, [['all', 'Everyone'], ['active', 'Active in the last 7 days'], ['city', 'People in a city'], ['users', 'Specific usernames']].map(([v, l]) => el('option', { value: v }, l)));
+  const city = el('select', { class: 'search', hidden: true }, d.cities.map((x) => el('option', { value: x.id }, x.name)));
+  const users = el('input', { class: 'search', hidden: true, placeholder: 'Usernames, comma separated — e.g. vijay, asha' });
+  const status = el('div', { class: 'hint' });
+  to.onchange = () => { city.hidden = to.value !== 'city'; users.hidden = to.value !== 'users'; status.textContent = ''; };
+  const payload = (preview) => ({ title: title.value, body: body.value, url: link.value, to: to.value, city: city.value, usernames: users.value, preview });
+  const send = el('button', { class: 'nf-btn', onclick: async () => {
+    try {
+      const p = await post('/api/admin/notify/send', payload(true));
+      if (!confirm(`Send “${title.value.trim()}” to ${p.recipients} ${p.recipients === 1 ? 'person' : 'people'} (${p.audience})?`)) return;
+      send.disabled = true; status.textContent = 'Sending…';
+      const r = await post('/api/admin/notify/send', payload(false));
+      status.textContent = `Sent to ${r.recipients} ${r.recipients === 1 ? 'person' : 'people'}.`;
+      title.value = ''; body.value = ''; link.value = '';
+      setTimeout(notifyPage, 1200);
+    } catch (e) { status.textContent = e.message; } finally { send.disabled = false; }
+  } }, 'Send notification');
+  // Automatic
+  const sw = (on, fn) => { const b = el('button', { class: 'nf-switch' + (on ? ' on' : ''), role: 'switch', 'aria-checked': String(on), onclick: () => { on = !on; b.classList.toggle('on', on); b.setAttribute('aria-checked', String(on)); fn(on); } }, el('i')); return b; };
+  const num = (v, min, max, fn) => { const i = el('input', { type: 'number', class: 'search nf-num', value: v, min, max }); i.onchange = () => fn(Number(i.value)); return i; };
+  const save = async (patch) => { try { const r = await post('/api/admin/notify/config', patch); Object.assign(c, r.config); savedNote.textContent = 'Saved'; setTimeout(() => (savedNote.textContent = ''), 1500); } catch (e) { savedNote.textContent = e.message; } };
+  const savedNote = el('span', { class: 'hint' });
+  const runNow = (path, label) => el('button', { class: 'nf-btn ghost', onclick: async (e) => {
+    const b = e.currentTarget; b.disabled = true;
+    try { const r = await post(path, {}); b.textContent = r.recipients ? `Sent to ${r.recipients}` : 'Nobody to send to right now'; } catch (er) { b.textContent = er.message; }
+    setTimeout(() => { b.textContent = label; b.disabled = false; }, 3000);
+  } }, label);
+  const today = d.last24h || {};
+  root.replaceChildren(el('div', { class: 'wrap' }, nav('notify', `${fmt(d.reachable)} people can get notifications · last 24 h: ${fmt(today.people || 0)} sent`),
+    el('div', { class: 'kpis' },
+      kpiBox('Reachable people', fmt(d.reachable), 'used Ping Me in the last 60 days'),
+      kpiBox('Buzz alerts (24 h)', fmt(today.buzz || 0), `${fmt(d.optedOut.buzz)} turned them off`),
+      kpiBox('Pet alerts (24 h)', fmt(today.pets || 0), `${fmt(d.optedOut.pets)} turned them off`),
+      kpiBox('Your messages (24 h)', fmt(today.admin || 0), 'sent from this page')),
+    el('div', { class: 'grid2', style: 'margin-top:14px' },
+      el('div', { class: 'card' }, el('h3', null, 'Send a notification'), el('div', { class: 'hint' }, 'Arrives as a phone notification, and as a banner if the app is open.'),
+        title, body, link, to, city, users, el('div', { class: 'nf-row' }, send, status)),
+      el('div', { class: 'card' }, el('h3', null, 'Automatic notifications', savedNote),
+        el('div', { class: 'nf-auto' },
+          el('div', { class: 'nf-head' }, el('b', null, 'Trending on Buzz'), sw(c.buzz.on, (v) => save({ buzz: { on: v } }))),
+          el('div', { class: 'hint' }, d.nextBuzz ? `Next up: “${d.nextBuzz.title}” (${d.nextBuzz.outlets} outlets)` : 'No big story right now — it waits for one.'),
+          el('div', { class: 'nf-grid' },
+            field('Per person per day', num(c.buzz.perDay, 0, 6, (v) => save({ buzz: { perDay: v } }))),
+            field('Hours between', num(c.buzz.gapHours, 1, 24, (v) => save({ buzz: { gapHours: v } }))),
+            field('Covered by at least', num(c.buzz.minOutlets, 1, 10, (v) => save({ buzz: { minOutlets: v } })), 'outlets (or trending)'),
+            field('From (IST hour)', num(c.buzz.from, 0, 23, (v) => save({ buzz: { from: v } }))),
+            field('Until (IST hour)', num(c.buzz.to, 1, 24, (v) => save({ buzz: { to: v } })))),
+          runNow('/api/admin/notify/buzz-now', 'Send the top story now')),
+        el('div', { class: 'nf-auto' },
+          el('div', { class: 'nf-head' }, el('b', null, 'Hungry group pets'), sw(c.pets.on, (v) => save({ pets: { on: v } }))),
+          el('div', { class: 'hint' }, 'Reminds a group when its pet’s hunger drops low. Only groups that chatted recently.'),
+          el('div', { class: 'nf-grid' },
+            field('Hunger below', num(c.pets.below, 5, 60, (v) => save({ pets: { below: v } })), 'out of 100'),
+            field('Hours between', num(c.pets.gapHours, 2, 48, (v) => save({ pets: { gapHours: v } })), 'per group'),
+            field('Chatted in last', num(c.pets.activeDays, 1, 30, (v) => save({ pets: { activeDays: v } })), 'days'),
+            field('From (IST hour)', num(c.pets.from, 0, 23, (v) => save({ pets: { from: v } }))),
+            field('Until (IST hour)', num(c.pets.to, 1, 24, (v) => save({ pets: { to: v } })))),
+          runNow('/api/admin/notify/pets-now', 'Check pets and remind now')))),
+    el('h2', null, 'Sent', el('small', null, 'newest first')),
+    el('div', { class: 'card' }, table(['When', 'Kind', 'Title', 'Message', 'To', ['People', 'num']],
+      d.history.map((x) => el('tr', null, el('td', null, when(x.createdAt)), el('td', null, { admin: 'You', buzz: 'Buzz', pet: 'Pets' }[x.kind] || x.kind),
+        el('td', null, el('b', null, x.title)), el('td', null, x.body), el('td', null, x.audience), el('td', { class: 'num' }, fmt(x.recipients)))), 'Nothing sent yet'))));
+}
+
 async function petsPage() {
   loading('Loading pets…');
   let d; try { d = await api(`/api/admin/pets?days=${range}`); } catch (e) { return fail(e); }

@@ -269,6 +269,30 @@ const SCHEMA = [
     fed_at DATETIME(3) NULL,
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
   )`,
+  // Owner-controlled settings (e.g. automatic notifications), as small JSON values.
+  `CREATE TABLE IF NOT EXISTS app_config (
+    k VARCHAR(40) PRIMARY KEY,
+    v TEXT NOT NULL,
+    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
+  )`,
+  // When each automatic notification was last sent (per person / per group), so nobody is spammed.
+  `CREATE TABLE IF NOT EXISTS notify_log (
+    k VARCHAR(100) PRIMARY KEY,
+    n INT NOT NULL DEFAULT 1,
+    at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+  )`,
+  // Every notification the owner sent or the app sent automatically (for the admin page).
+  `CREATE TABLE IF NOT EXISTS notify_history (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    kind VARCHAR(16) NOT NULL,
+    title VARCHAR(120) NOT NULL,
+    body VARCHAR(400) NOT NULL,
+    url VARCHAR(300) NULL,
+    audience VARCHAR(120) NOT NULL,
+    recipients INT NOT NULL DEFAULT 0,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX (created_at)
+  )`,
   // Chat-bubble previews (thumbId inside a message) aren't any message's own attachment; listing
   // them here keeps the clean-up of abandoned uploads from deleting them. (A separate small table,
   // so the big attachments table never has to be rebuilt.)

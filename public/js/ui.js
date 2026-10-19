@@ -162,6 +162,7 @@ const P = {
   bubbles: '<path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>',
   heart: '<path d="M20.8 4.6a5.5 5.5 0 00-7.8 0L12 5.7l-1-1.1a5.5 5.5 0 00-7.8 7.8l1 1.1L12 21l7.8-7.5 1-1.1a5.5 5.5 0 000-7.8z"/>',
   mail: '<rect x="2" y="4" width="20" height="16" rx="2"/><path d="M22 6l-10 7L2 6"/>',
+  sliders: '<path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/>',
   hand: '<path d="M18 11V6a2 2 0 00-4 0v5M14 10V4a2 2 0 00-4 0v6M10 10.5V6a2 2 0 00-4 0v8"/><path d="M18 8a2 2 0 014 0v6a8 8 0 01-8 8h-2c-2.8 0-4.5-.9-6-2.4l-3.6-3.6a2 2 0 012.8-2.8L6 14"/>',
 };
 
@@ -327,7 +328,7 @@ const layer = () => document.getElementById('layer');
 // back) closes just that layer — never the whole app.
 const stack = [];
 let popping = false;   // closing because the user pressed Back (entry already gone)
-let skipPops = 0;      // Back steps we triggered ourselves after closing a layer from the UI
+const ownBacks = [];   // Back steps we triggered ourselves after closing a layer from the UI (oldest first)
 const settled = [];
 
 export function closeTop() {
@@ -338,9 +339,9 @@ export function closeTop() {
 
 // Called from the app's popstate handler. Returns true if a layer handled this Back press.
 export function handleLayerPop() {
-  if (skipPops > 0) {
-    skipPops--;
-    if (!skipPops) settled.splice(0).forEach((fn) => fn());
+  if (ownBacks.length) {
+    clearTimeout(ownBacks.shift());
+    if (!ownBacks.length) settled.splice(0).forEach((fn) => fn());
     return true;
   }
   const top = stack[stack.length - 1];
@@ -351,7 +352,7 @@ export function handleLayerPop() {
 }
 
 // Run fn once our own history.back() calls have landed (avoids racing with pushState).
-export function whenHistorySettled(fn) { if (!skipPops) fn(); else settled.push(fn); }
+export function whenHistorySettled(fn) { if (!ownBacks.length) fn(); else settled.push(fn); }
 
 export function registerLayer(closer) { return pushLayer(closer); }
 
@@ -363,7 +364,16 @@ function pushLayer(closer) {
     const i = stack.indexOf(entry);
     if (i < 0) return;
     stack.splice(i, 1);
-    if (entry.pushed && !popping) { skipPops++; history.back(); }
+    if (entry.pushed && !popping) {
+      // If the browser never reports this step (it can drop one while the app is in the background),
+      // stop waiting for it — otherwise the next real Back press would be swallowed.
+      const t = setTimeout(() => {
+        const i = ownBacks.indexOf(t);
+        if (i >= 0) { ownBacks.splice(i, 1); if (!ownBacks.length) settled.splice(0).forEach((fn) => fn()); }
+      }, 1500);
+      ownBacks.push(t);
+      history.back();
+    }
   };
 }
 

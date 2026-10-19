@@ -87,6 +87,20 @@ async function checkRelease(first = false) {
 }
 setInterval(() => checkRelease(), 10 * 60000);
 
+// Coming back to the app: if the phone threw away the page while it was in the background and left
+// an empty screen, reload it instead of leaving a blank app that has to be closed and reopened.
+let hiddenAt = 0;
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  if (!hiddenAt || Date.now() - hiddenAt < 20000) return;
+  setTimeout(() => {
+    if (document.hidden || !window.__pmBooted || S.calls?.active()) return;
+    const root = document.getElementById('app');
+    const empty = !root || !root.firstElementChild || root.firstElementChild.getBoundingClientRect().height < 50;
+    if (empty) location.reload();
+  }, 2500);
+});
+
 async function boot() {
   applyPrefs();
   checkRelease(true);
@@ -114,9 +128,6 @@ async function boot() {
       if (document.hidden || window.__pmForceReload) go(); else document.addEventListener('visibilitychange', function v() { if (document.hidden) { document.removeEventListener('visibilitychange', v); go(); } });
     });
   }
-  // The app is running: tell the start-up watchdog in index.html (and forget an earlier retry).
-  window.__pmBooted = true;
-  try { sessionStorage.removeItem('pm:boot-retry'); } catch {}
   // Don't let a stalled network hold up start-up: give the config 5s, then carry on with defaults.
   try { S.config = { ...S.config, ...(await Promise.race([api('GET', '/api/config'), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 5000))])) }; } catch {}
   setSignedInHandler(startApp);
@@ -137,17 +148,24 @@ async function boot() {
   if (tk) { try { takeover = JSON.parse(atob(tk[1].replace(/-/g, '+').replace(/_/g, '/'))); } catch {} }
   if (authError || linked || m || tk) history.replaceState(null, '', '/');
   const join = /^\/join\/([\w-]+)/.exec(location.pathname);
-  if (join) return showJoin(join[1]);
+  if (join) { booted(); return showJoin(join[1]); }
   // Never nag people who already installed Ping Me (or opened it from a home-screen shortcut).
   // Phones must use the installed app (that's what makes calls ring and notifications arrive), so
   // there's no "continue in browser" there. Computers can still use the browser.
   const phoneOnly = isMobile() && !store.get('dev-browser', false);
   const needGate = !isStandalone() && !signup && !authError &&
     (phoneOnly || (!store.get('installed', false) && !sessionStorage.getItem('mm:gate-skip')));
-  if (needGate) await showInstallGate();
-  if (signup?.ticket) return showChooseUsername(signup);
+  if (needGate) { booted(); await showInstallGate(); }
+  if (signup?.ticket) { booted(); return showChooseUsername(signup); }
+  // Who's signed in. A signed-out phone gets { user: null }; a failed or stuck request means the
+  // network (or server) is down — show a clear "can't connect" screen that retries by itself,
+  // never a black screen and never the login page for someone who is signed in.
   let me = null;
-  try { ({ user: me } = await api('GET', '/api/session')); } catch {}
+  for (let attempt = 0; ; attempt++) {
+    try { ({ user: me } = await Promise.race([api('GET', '/api/session'), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000))])); break; }
+    catch { booted(); await showConnecting(attempt); }
+  }
+  booted();
   if (me) {
     S.me = me;
     const go = () => { startApp(); if (linked) toast('Google is now linked to your account'); };
@@ -157,6 +175,27 @@ async function boot() {
     if (authError) toast(authError, { error: true, timeout: 6000 });
     if (takeover?.ticket) askTakeover(takeover);
   }
+}
+
+// The first screen is up: tell the start-up watchdog in index.html (and forget an earlier retry).
+function booted() {
+  window.__pmBooted = true;
+  document.getElementById('boot')?.remove();
+  try { sessionStorage.removeItem('pm:boot-retry'); } catch {}
+}
+// Shown while Ping Me can't reach the server at start-up; resolves when it's time to try again.
+function showConnecting(attempt) {
+  return new Promise((resolve) => {
+    const wait = Math.min(15000, 2000 + attempt * 2000);
+    const retry = () => { clearTimeout(t); removeEventListener('online', retry); resolve(); };
+    const t = setTimeout(retry, wait);
+    addEventListener('online', retry);
+    app.replaceChildren(h('div', { class: 'connecting' },
+      h('img', { src: '/icons/icon-192.png', alt: '', width: 72, height: 72 }),
+      h('b', null, navigator.onLine === false ? 'You’re offline' : 'Connecting to Ping Me…'),
+      h('span', null, navigator.onLine === false ? 'Ping Me will open as soon as you’re back online.' : 'Your connection seems slow. Retrying automatically.'),
+      h('button', { class: 'btn', onclick: retry }, 'Try now')));
+  });
 }
 
 function showAuth(mode) {
@@ -438,6 +477,16 @@ function connectSocket() {
   socket.on('pet:event', (ev) => S.pet?.onEvent(ev));
   socket.on('personal-pet:changed', ev => { if (['buy', 'equip', 'customize', 'visibility'].includes(ev.action)) dispatchEvent(new Event('pm:personal-pet')); });
   socket.on('pingcoins', ev => dispatchEvent(new CustomEvent('pm:pingcoins', { detail: ev })));
+  // Messages from Ping Me (the owner's announcements, trending Buzz stories, a hungry group pet).
+  socket.on('notice', (n) => {
+    if (!n?.title) return;
+    const go = () => {
+      const chat = /^\/\?chat=(\d+)/.exec(n.url || '');
+      if (chat) openChat(Number(chat[1]));
+      else if (n.url && n.url !== '/') window.open(n.url, '_blank', 'noopener');
+    };
+    toast(null, { timeout: 7000, onClick: go, node: h('div', { class: 'row upd-toast' }, icon('bell'), h('div', null, h('b', null, n.title), h('span', null, String(n.body || '').slice(0, 140)))) });
+  });
   // Group calls going on right now (for the "Join" pill in the group header).
   socket.on('call:active', (ev) => {
     if (ev.callId) S.groupCalls.set(ev.chatId, ev); else S.groupCalls.delete(ev.chatId);
