@@ -451,6 +451,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     // Topics from the person's own chats (only if they turned it on): keywords, never messages.
     const chat = await chatInterests(uid);
     if (chat) {
+      p.chat = chat;
       for (const [w, v] of Object.entries(chat)) p.words[w] = Math.max(p.words[w] || 0, 0.8 * v);
       p.n += Object.keys(chat).length ? 1 : 0;
     }
@@ -470,8 +471,8 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     const out = {};
     const now = Date.now();
     let max = 0;
-    // A topic counts once it has come up at least twice (fading over ~2 weeks).
-    for (const [w, [v, t]] of Object.entries(d.words)) { if (CHAT_STOP.has(w)) continue; const x = v * Math.exp(-(now - t) / (14 * 86400e3)); if (x >= 1.6) { out[w] = x; max = Math.max(max, x); } }
+    // A topic counts from the first mention (fading over ~2 weeks); more mentions = stronger.
+    for (const [w, [v, t]] of Object.entries(d.words)) { if (CHAT_STOP.has(w)) continue; const x = v * Math.exp(-(now - t) / (14 * 86400e3)); if (x >= 0.9) { out[w] = x; max = Math.max(max, x); } }
     for (const w of Object.keys(out)) out[w] /= max || 1;
     return Object.keys(out).length ? out : null;
   }
@@ -563,11 +564,55 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     if (!p.n) out = pool.map((x) => ({ ...x, slot: 'g' }));
     // Video lovers get a video every 2nd–3rd story; people who skip videos get fewer.
     else out = spaceVideos(arrange(pool, p, region), p.video >= 1 ? 2 : p.video >= 0.4 ? 3 : p.video < 0 ? 7 : 4);
+    // Stories about what this person talks about (opt-in chat topics) are placed near the top —
+    // at most one in every few stories — and say why: "Because you talked about Whalefall".
+    if (p.chat) {
+      const picks = (await chatPicks(uid, p, region)).filter(({ x }) => !isSeen(x, seen.set));
+      if (picks.length) {
+        const ids = new Set(picks.map((pk) => pk.x.row.id));
+        const rest = out.filter((x) => !ids.has(x.row.id) && !(x.members || []).some((m) => ids.has(m)));
+        picks.forEach(({ x, w }, i) => rest.splice(Math.min(rest.length, [1, 4, 8, 12, 17, 22][i]), 0,
+          { ...x, slot: 'c', label: { kind: 'foryou', text: `Because you talked about ${w[0].toUpperCase()}${w.slice(1)}` } }));
+        out = rest;
+      }
+    }
     const version = require('crypto').createHash('sha1').update(out.slice(0, 60).map((x) => x.row.id).join(',')).digest('hex').slice(0, 16);
     const entry = { at: Date.now(), version, list: out };
     personalCache.set(key, { at: Date.now(), key: want, entry });
     if (personalCache.size > 5000) personalCache.delete(personalCache.keys().next().value);
     return entry;
+  }
+
+  // Stories (last 4 days) whose headline has one of the person's chat topics — strongest topics first,
+  // at most two per topic, newest first. Words that appear in lots of headlines ("india", "watch")
+  // say nothing about the person and are skipped. Cached for two minutes per person.
+  const chatPickCache = new Map();
+  async function chatPicks(uid, p, region) {
+    const words = Object.entries(p.chat).sort((a, b) => b[1] - a[1]).slice(0, 40).map(([w]) => w);
+    const key = region + ':' + words.join(',');
+    const hit = chatPickCache.get(uid);
+    if (hit && hit.key === key && Date.now() - hit.at < 120000) return hit.list;
+    await searchIndex().catch(() => {});
+    const rows = [...index.rows.values()];
+    const common = (w) => rows.reduce((n, e) => n + (e.tk?.has(w) ? 1 : 0), 0) > Math.max(25, rows.length * 0.01);
+    const useful = words.filter((w) => !common(w));
+    const found = [];
+    const okRegion = (e) => e.region === region || e.region === 'india' || e.region === 'world' || (e.topic !== 'local' && e.topic !== 'politics');
+    for (const w of useful) {
+      const m = rows.filter((e) => e.tk?.has(w) && okRegion(e) && !e.video && !found.some((f) => f.id === e.id)).sort((a, b) => b.ts - a.ts).slice(0, 2);
+      for (const e of m) found.push({ id: e.id, w });
+      if (found.length >= 6) break;
+    }
+    let list = [];
+    if (found.length) {
+      const full = await db.q(`SELECT id, source_id, region, topic, url, title, COALESCE(ai_summary, summary) summary, image_url, video_url, via, discuss_url, engagement, src_rank, published_at, fetched_at
+        FROM feed_items WHERE id IN (?)`, [found.map((f) => f.id)]);
+      const byIdRow = new Map(full.map((r) => [r.id, r]));
+      list = found.filter((f) => byIdRow.has(f.id)).map((f) => { const r = byIdRow.get(f.id); return { x: { row: r, ...score(r, null, region) }, w: f.w }; });
+    }
+    chatPickCache.set(uid, { at: Date.now(), key, list });
+    if (chatPickCache.size > 5000) chatPickCache.delete(chatPickCache.keys().next().value);
+    return list;
   }
 
   function arrange(pool, p, region) {
@@ -702,6 +747,40 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
   // Loaded once, then topped up with new stories every minute (on the background connections).
   const index = { rows: new Map(), last: 0, at: 0, loading: null };
   const searchCache = new Map();
+  const gnSearch = (q, when) => `https://news.google.com/rss/search?q=${encodeURIComponent(q)}+when:${when}&hl=en-IN&gl=IN&ceid=IN:en`;
+  // Fetch Google News for a phrase and keep the stories (as general India news, so everyone can find them).
+  async function fetchTopic(q, sourceId, when) {
+    const src = { id: sourceId, name: 'Google News', site: 'news.google.com', url: gnSearch(q, when), adapter: 'rss', region: 'india', topic: 'india', aggregator: true, timeout: 8000, poll: 3600e3 };
+    const r = await collect(src, {});
+    if (!r.items?.length) return [];
+    await store(src, r.items.slice(0, 20));
+    dirty = true;
+    index.at = 0; await searchIndex();
+    return r.items.slice(0, 20).map((it) => { const u = N.canonical(it.url); return u ? N.idFor(u) : null; }).filter(Boolean);
+  }
+  const liveAsked = new Map(); // phrase → time (each phrase is fetched at most every 15 min)
+  async function liveSearch(q, uid) {
+    const key = q.toLowerCase().trim();
+    if (Date.now() - (liveAsked.get(key) || 0) < 15 * 60000) return [];
+    rateLimit?.('buzz-live:' + uid, 12, 60000);
+    liveAsked.set(key, Date.now());
+    return fetchTopic(q, 'gn-search', '7d');
+  }
+  // Chat topics (for people who turned on "Make Buzz yours"): their strongest topics are looked up on
+  // Google News every 20 minutes, so stories about them exist to be ranked up — not only topics our
+  // regular sources happen to cover.
+  const topicAsked = new Map();
+  async function collectInterests() {
+    const rows = await bg.q('SELECT user_id FROM user_interests WHERE updated_at > ?', [new Date(Date.now() - 14 * 86400e3)]);
+    const want = new Map();
+    for (const r of rows) {
+      const ci = await chatInterests(Number(r.user_id)).catch(() => null);
+      if (!ci) continue;
+      for (const [w, v] of Object.entries(ci).sort((a, b) => b[1] - a[1]).slice(0, 4)) want.set(w, Math.max(want.get(w) || 0, v));
+    }
+    const due = [...want.entries()].sort((a, b) => b[1] - a[1]).map(([w]) => w).filter((w) => Date.now() - (topicAsked.get(w) || 0) > 2 * 3600e3).slice(0, 25);
+    for (const w of due) { topicAsked.set(w, Date.now()); await fetchTopic(w, 'gn-interest', '3d').catch(() => {}); }
+  }
   async function searchIndex() {
     if (Date.now() - index.at < 60000) return;
     if (index.loading) return index.loading;
@@ -713,7 +792,7 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
         const f = ms(r.fetched_at);
         if (f > index.last) index.last = f;
         index.rows.set(r.id, { id: r.id, source: r.source_id, region: r.region, topic: r.topic, video: !!Number(r.video), eng: !!Number(r.eng),
-          ts: r.published_at ? ms(r.published_at) : f, text: `${r.title} ${r.summary || ''}`.toLowerCase() });
+          ts: r.published_at ? ms(r.published_at) : f, text: `${r.title} ${r.summary || ''}`.toLowerCase(), tk: tokens(r.title) });
       }
       const old = Date.now() - 5 * 86400e3;
       for (const [id, e] of index.rows) if (e.ts < old) index.rows.delete(id);
@@ -744,8 +823,9 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     let list, trending;
     if (hit && Date.now() - hit.at < 30000) ({ list, trending } = hit);
     else {
-    // Match in memory (instant), then read just the matching stories by id.
-    await searchIndex();
+    // Match in memory (instant), then read just the matching stories by id. A dropped database
+    // connection while topping up the index just means searching what's already in memory.
+    await searchIndex().catch(() => {});
     const since = Date.now() - win;
     const social = type === 'social' ? new Set(SOURCES.filter((x) => x.social).map((x) => x.id)) : null;
     const hits = [];
@@ -760,6 +840,12 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
       if (social && !social.has(e.source)) continue;
       if (words.length && !words.every((w) => e.text.includes(w))) continue;
       hits.push(e);
+    }
+    // Not much here about it? Ask Google News right now (any topic, film, person or team) and add
+    // what it finds — so searching "Whalefall" finds Whalefall even if no regular source covered it.
+    if (words.some((w) => /\p{L}{3,}/u.test(w)) && hits.length < 6 && !hit) {
+      const fresh = await liveSearch(q, req.uid).catch(() => []);
+      for (const id of fresh) { const e = index.rows.get(id); if (e && !hits.includes(e)) hits.push(e); }
     }
     hits.sort((a, b) => b.ts - a.ts);
     const pick = hits.slice(0, 160).map((e) => e.id);
@@ -885,6 +971,8 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
   function start() {
     if (process.env.BUZZ_COLLECT === 'off') return;
     loadState().then(() => { tick(); setInterval(tick, 20000).unref(); setInterval(cleanup, 3600e3).unref(); }).catch((e) => console.error('buzz start', e.message));
+    setTimeout(() => collectInterests().catch(() => {}), 60000).unref();
+    setInterval(() => collectInterests().catch((e) => console.error('buzz interests', e.message)), 20 * 60000).unref();
   }
   return { start, tick, ranked, REGIONS, CITIES, learnFromChat, forgetChatInterests, markSeen, aiStatus: AI.status };
 };
