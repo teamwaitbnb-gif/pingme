@@ -174,6 +174,11 @@ function showMessage(d) {
 async function renderMessage(d) {
   // One notification per chat that stacks the latest lines, like a native app.
   const existing = (await self.registration.getNotifications({ tag: d.tag }))[0];
+  // A repeat of a message already on screen (the server re-sends unconfirmed ones): show it again
+  // quietly — phones need every push to show something — without adding a line or ringing.
+  if (d.msgId && existing?.data?.ids?.includes(d.msgId)) {
+    return self.registration.showNotification(existing.title, { body: existing.body, tag: d.tag, icon: existing.icon, badge: existing.badge, silent: true, renotify: false, data: existing.data });
+  }
   const prev = existing?.data?.lines || [];
   const line = d.sender ? `${d.sender}: ${d.body}` : d.body;
   const lines = [...prev, line].slice(-6);
@@ -194,7 +199,7 @@ async function renderMessage(d) {
     requireInteraction: !!d.urgent,
     silent: false,
     actions: canActions ? [{ action: 'reply', title: 'Reply' }, { action: 'read', title: 'Mark as read' }] : undefined,
-    data: { url: d.url || '/', chatId: d.chatId, lines, count, type: 'msg' },
+    data: { url: d.url || '/', chatId: d.chatId, lines, count, type: 'msg', ids: [...(existing?.data?.ids || []), d.msgId].filter(Boolean).slice(-20) },
   });
 }
 
@@ -226,6 +231,8 @@ self.addEventListener('push', (e) => {
   let d = {};
   try { d = e.data.json(); } catch { d = { type: 'msg', title: 'Ping Me', body: e.data?.text() || '', tag: 'meetme' }; }
   e.waitUntil((async () => {
+    // Confirm the message reached this phone (otherwise the server sends the notification again).
+    if (d.type === 'msg' && d.msgId && d.chatId) fetch('/api/push/got', { method: 'POST', credentials: 'include', headers: { 'content-type': 'application/json', 'x-pingme': '1' }, body: JSON.stringify({ chatId: d.chatId, msgId: d.msgId }) }).catch(() => {});
     if (d.type === 'call') {
       // The call is re-sent every few seconds while ringing, so the phone keeps sounding like a real call.
       // Stay quiet only when Ping Me is open on screen AND able to play its own ringtone.

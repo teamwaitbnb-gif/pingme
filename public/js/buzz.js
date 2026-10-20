@@ -368,11 +368,16 @@ export function initBuzz(ctx) {
     if (t && it.publishedAt) t.textContent = ago(it.publishedAt);
   }
 
+  let pinned = null; // a story opened from a notification stays on top for a while
   function renderAll(items) {
     // Reuse cards already on screen (their pictures stay loaded) and swap the rest in one go.
     const prev = cards;
     cards = new Map(); order = [];
     const nodes = [];
+    if (pinned && Date.now() - pinned.at < 10 * 60000 && prev.get(pinned.id)) {
+      const p = prev.get(pinned.id);
+      cards.set(pinned.id, p); order.push(pinned.id); nodes.push(p.el);
+    }
     for (const it of items) {
       if (cards.has(it.id)) continue;
       const old = prev.get(it.id);
@@ -392,6 +397,9 @@ export function initBuzz(ctx) {
     const els = fresh.map((it) => { const el = card(it); el.classList.add('bz-fresh'); cards.set(it.id, { el, data: it }); return el; });
     let anchor = after;
     if (!anchor) {
+      // At the very top new stories go first — but below a story opened from a notification.
+      const pin = pinned && Date.now() - pinned.at < 10 * 60000 ? cards.get(pinned.id)?.el : null;
+      if (root.scrollTop < 60 && !after && pin && pin.parentNode === feedEl) { pin.after(...els); order = [order[0], ...fresh.map((x) => x.id), ...order.slice(1)]; return fresh.length; }
       if (root.scrollTop < 60 && !after) { feedEl.prepend(...els); order = [...fresh.map((x) => x.id), ...order]; return fresh.length; }
       // The first card that starts below the bottom of the screen: new stories go right before it.
       const bottom = root.getBoundingClientRect().bottom;
@@ -593,6 +601,23 @@ export function initBuzz(ctx) {
     } }, avatar({ id: c.id, name: ctx.chatTitle(c), src: ctx.chatAvatar(c), size: 40, group: c.type === 'group' }), h('div', { class: 't' }, h('b', null, ctx.chatTitle(c))))) : h('div', { class: 'bz-empty' }, 'Start a chat first')));
   }
 
+  // Opened from a notification: that story goes to the very top, highlighted, and the feed scrolls up.
+  async function openStory(id) {
+    try {
+      let el = cards.get(id)?.el;
+      if (!el) {
+        const { item } = await ctx.api('GET', `/api/feed/story/${id}`);
+        el = card(item); cards.set(item.id, { el, data: item }); order.unshift(item.id);
+      }
+      pinned = { id, at: Date.now() };
+      if (searching()) clearSearch();
+      feedEl.prepend(el);
+      el.classList.remove('bz-focus'); void el.offsetWidth; el.classList.add('bz-focus');
+      root.scrollTo({ top: 0, behavior: 'smooth' });
+      track({ t: 'buzz_open', i: id });
+    } catch (e) { toast(e.message, { error: true }); }
+  }
+
   // ───── lifecycle ─────
   function show(container) {
     if (root !== container || !feedEl) mount(container);
@@ -609,5 +634,5 @@ export function initBuzz(ctx) {
   document.addEventListener('visibilitychange', () => { if (!document.hidden && visible) check(true); });
   addEventListener('online', () => { if (visible) check(true); });
 
-  return { show, hide, get offline() { return offline; } };
+  return { show, hide, openStory, get offline() { return offline; } };
 }

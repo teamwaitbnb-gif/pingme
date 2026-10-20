@@ -636,14 +636,41 @@ async function notifyMembers(chatId, senderId, msg, members) {
     const show = previews || msg.sos;
     let title = show ? (group || sender.name) : 'Ping Me';
     if (isMention) { title = group ? `${sender.name} mentioned you in ${group}` : `${sender.name} mentioned you`; if (!previews) body = 'Tap to see the message'; }
-    push.send(uid, {
+    sendMsgPush(uid, {
       type: 'msg', title, sender: show && group && !isMention ? sender.name : null, mention: isMention || undefined,
       body, tag: isMention ? 'mention-' + msg.id : 'chat-' + chatId, url: '/?chat=' + chatId, chatId, msgId: msg.id, ts: msg.createdAt, urgent, ping: msg.kind === 'ping',
       // Who + what, so the notification shows their face (or coloured initials) and a photo preview.
       kind: msg.kind, from: show ? { id: senderId, name: sender.name, avatar: sender.avatarV ? `/api/avatar/u/${senderId}?v=${sender.avatarV}` : null } : null,
       image: show && !hidden && !msg.incognito && msg.kind === 'image' && msg.att?.id ? `/api/files/${msg.att.id}` : null,
-    }, { urgency: 'high', ttl: 24 * 3600 }).catch(() => {}); // high = delivered right away even when the phone is idle (Doze)
+    });
   }
+}
+
+// Message notifications are confirmed by the phone: the notification handler (app closed) or the open
+// app reports each message it received. No confirmation in 45 s → send it again; still none after
+// 3 more minutes → one last time. The phone shows a repeat of a notification it already has quietly.
+const pushAcks = new Map(); // `${uid}:${msgId}` → time confirmed
+const pushStats = { sent: 0, retried: 0, confirmed: 0 };
+function ackPush(uid, msgId) { if (msgId) { pushAcks.set(`${uid}:${msgId}`, Date.now()); pushStats.confirmed++; } }
+setInterval(() => { const old = Date.now() - 15 * 60000; for (const [k, t] of pushAcks) if (t < old) pushAcks.delete(k); }, 5 * 60000).unref();
+function sendMsgPush(uid, payload, attempt = 0) {
+  pushStats[attempt ? 'retried' : 'sent']++;
+  // high = delivered right away even when the phone is idle (Doze)
+  push.send(uid, { ...payload, attempt }, { urgency: 'high', ttl: 24 * 3600 }).catch(() => {});
+  if (attempt >= 2 || !payload.msgId) return;
+  setTimeout(async () => {
+    try {
+      if (pushAcks.has(`${uid}:${payload.msgId}`)) return;
+      const r = await db.one('SELECT cm.last_read_id rd, m.deleted FROM chat_members cm JOIN messages m ON m.id=? WHERE cm.chat_id=? AND cm.user_id=?', [payload.msgId, payload.chatId, uid]);
+      if (!r || r.deleted || Number(r.rd) >= payload.msgId) return; // read already (or unsent)
+      sendMsgPush(uid, payload, attempt + 1);
+    } catch {}
+  }, attempt === 0 ? 45000 : 180000).unref();
+}
+async function confirmDelivered(uid, chatId, msgId) {
+  ackPush(uid, msgId);
+  const r = await db.q('UPDATE chat_members SET last_delivered_id=GREATEST(last_delivered_id,?) WHERE chat_id=? AND user_id=? AND active=1 AND last_delivered_id<?', [msgId, chatId, uid, msgId]);
+  if (r.affectedRows) io.to('c:' + chatId).emit('receipt', { chatId, userId: uid, lastDelivered: msgId });
 }
 
 // Broadcast a message update. Letters are rendered per viewer so sealed text never leaks.
@@ -1815,6 +1842,13 @@ app.get('/api/files/:id', auth, wrap(async (req, res) => {
   res.end(range ? entry.data.subarray(start, end + 1) : entry.data);
 }));
 
+// The notification handler on the phone confirms a message notification arrived (see sendMsgPush).
+app.post('/api/push/got', auth, wrap(async (req, res) => {
+  const chatId = toInt(req.body?.chatId), msgId = toInt(req.body?.msgId);
+  if (chatId && msgId) await confirmDelivered(req.uid, chatId, msgId);
+  res.json({ ok: true });
+}));
+
 app.post('/api/push/subscribe', auth, wrap(async (req, res) => {
   await push.subscribe(req.uid, req.body.subscription);
   res.json({ ok: true });
@@ -1855,7 +1889,7 @@ const adminPortal = require('./admin')({ app, io, db, C, auth, wrap, bad, rateLi
 require('./location')({ app, db, C, auth, wrap, bad, toInt, rateLimit, emitToUser, getUser, userPublic: publicUser, monitor });
 // In-app ads (photo/video, in Buzz and above the chat list), managed from the admin page.
 require('./ads')({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, isAdmin: adminPortal.isAdmin, media, express, buzz });
-const notifier = require('./notify')({ app, db, C, push, emitToUser, getUser, isAdmin: adminPortal.isAdmin, wrap, bad, toInt, clampStr, buzz, petState: advanced.petState, monitor });
+const notifier = require('./notify')({ app, db, C, push, emitToUser, getUser, isAdmin: adminPortal.isAdmin, wrap, bad, toInt, clampStr, buzz, petState: advanced.petState, monitor, pushStats: () => pushStats });
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
@@ -2029,6 +2063,9 @@ io.on('connection', (socket) => {
     const msg = await insertMessage({ chatId, senderId: uid, kind, body, attachmentId, replyTo, effect, forwarded: !!d.forwarded, silent: !!d.silent, vanish, clientId: clampStr(d.clientId || '', 64) || null });
     return { message: msg };
   }));
+
+  // The open app confirms messages it received (so their notification isn't sent again).
+  socket.on('msg:got', (d) => { const chatId = toInt(d?.chatId), msgId = toInt(d?.id); if (chatId && msgId) confirmDelivered(uid, chatId, msgId).catch(() => {}); });
 
   socket.on('msg:edit', sockHandler(socket, async (d) => {
     const id = toInt(d.id);

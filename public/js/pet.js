@@ -2,6 +2,7 @@
 // sleeps when the chat goes quiet, reacts to what people say, and makes its own sound when tapped.
 // Anyone can feed it, put it in a cage or let it out — everyone in the group sees the same pet.
 import { h, toast, actionSheet, promptDialog } from './ui.js';
+import { audioContext } from './media.js';
 
 const NS = 'http://www.w3.org/2000/svg';
 const svg = (markup) => { const d = document.createElement('div'); d.innerHTML = markup.trim(); return d.firstChild; };
@@ -185,14 +186,9 @@ const TREATS = {
 const HEART = '<svg viewBox="0 0 24 22"><path d="M12 21 C-6 9 4 -4 12 5 C20 -4 30 9 12 21 Z" fill="#ff4d6d"/></svg>';
 
 // ───── sounds (synthesised, so every pet sounds like itself) ─────
-let actx = null;
-function audio() {
-  const AC = window.AudioContext || window.webkitAudioContext;
-  if (!AC) return null;
-  if (!actx) actx = new AC();
-  if (actx.state === 'suspended') actx.resume().catch(() => {});
-  return actx;
-}
+// Same engine as the rest of Ping Me: it wakes up again after calls, other apps' audio or the app
+// going to the background (iPhone "interrupts" audio then — a separate engine stayed silent).
+const audio = () => audioContext();
 function tone(a, { type = 'sine', from, to, dur, vol = 0.25, delay = 0, filter = null, vibrato = 0 }) {
   const t0 = a.currentTime + delay;
   const o = a.createOscillator(), g = a.createGain();
@@ -227,6 +223,11 @@ const VOICE = {
   owl: (a) => { tone(a, { from: 420, to: 380, dur: 0.32, vol: 0.2 }); tone(a, { from: 420, to: 360, dur: 0.5, vol: 0.2, delay: 0.42 }); },
   dragon: (a) => { tone(a, { type: 'sawtooth', from: 110, to: 70, dur: 0.75, vol: 0.18, filter: { type: 'lowpass', f: 600 }, vibrato: 18 }); noise(a, { dur: 0.7, vol: 0.12, f: 300, q: 0.5 }); },
   unicorn: (a) => { tone(a, { type: 'sawtooth', from: 900, to: [[1200, 0.1], [600, 0.6]], dur: 0.62, vol: 0.12, filter: { type: 'bandpass', f: 1500, q: 1 }, vibrato: 14 }); [1568, 2093, 2637].forEach((f, i) => tone(a, { from: f, to: f, dur: 0.4, vol: 0.06, delay: 0.5 + i * 0.08 })); },
+  // Objects: a ball's bounce (louder for harder bounces), the bowl landing, a throw, a purr.
+  boing: (a, k = 1) => { tone(a, { type: 'sine', from: 520, to: 260, dur: 0.12, vol: 0.12 * k }); tone(a, { type: 'triangle', from: 1040, to: 600, dur: 0.06, vol: 0.05 * k }); },
+  clink: (a, k = 1) => { tone(a, { type: 'triangle', from: 1900, to: 1700, dur: 0.18, vol: 0.09 * k }); tone(a, { type: 'sine', from: 2850, to: 2700, dur: 0.12, vol: 0.05 * k, delay: 0.01 }); },
+  whoosh: (a) => { noise(a, { dur: 0.22, vol: 0.14, f: 2200, q: 0.6 }); },
+  purr: (a) => { for (let i = 0; i < 6; i++) tone(a, { type: 'sawtooth', from: 46, to: 40, dur: 0.16, vol: 0.09, delay: i * 0.19, filter: { type: 'lowpass', f: 260 } }); },
   egg: (a) => { noise(a, { dur: 0.05, vol: 0.25, f: 3000, q: 2 }); noise(a, { dur: 0.05, vol: 0.2, f: 2500, q: 2, delay: 0.09 }); },
   chomp: (a) => { for (let i = 0; i < 3; i++) noise(a, { dur: 0.06, vol: 0.18, f: 1600, q: 1.5, delay: i * 0.16 }); },
   cage: (a) => { [880, 1175, 660].forEach((f, i) => tone(a, { type: 'triangle', from: f, to: f * 0.98, dur: 0.35, vol: 0.08, delay: i * 0.05 })); },
@@ -247,7 +248,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
   let state = null, kind = 'egg', x = 40, y = 0, targetX = 40, facing = 1, mode = 'idle', perch = null;
   let raf = 0, last = 0, nextThink = 0, lastActivity = Date.now(), destroyed = false, menu = null, cageEl = null;
   const W = () => zone.clientWidth, H = () => zone.clientHeight, SIZE = () => pet.offsetWidth || 84;
-  const sound = (name) => { if (sounds()) { const a = audio(); if (a) VOICE[name]?.(a); } };
+  const sound = (name, k = 1) => { if (sounds()) { const a = audio(); if (a) VOICE[name]?.(a, Math.max(0.15, Math.min(1, k))); } };
 
   function fit() {
     // The pet's world is the message area (it never covers the header or the composer).
@@ -557,7 +558,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
   };
   const mouthX = () => x + SIZE() * (facing > 0 ? 0.82 : 0.18);
   // A little object that falls, bounces and rolls (used by the bowl, the ball and crumbs).
-  function body(el, { px, py, vx = 0, vy = 0, w, hgt, bounce = 0.55, friction = 260, spin = false, onRest }) {
+  function body(el, { px, py, vx = 0, vy = 0, w, hgt, bounce = 0.55, friction = 260, spin = false, onRest, sfx = null }) {
     const o = { el, px, py, vx, vy, w, hgt, rest: false, held: false, rot: 0 };
     let last = performance.now();
     const step = (t) => {
@@ -569,7 +570,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
         if (o.px < 0) { o.px = 0; o.vx = -o.vx * 0.6; } else if (o.px > W() - o.w) { o.px = W() - o.w; o.vx = -o.vx * 0.6; }
         if (o.py >= floor) {
           o.py = floor;
-          if (Math.abs(o.vy) > 90) { o.vy = -o.vy * bounce; o.vx *= 0.85; el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); }
+          if (Math.abs(o.vy) > 90) { if (sfx && Math.abs(o.vy) > 160) sound(sfx, Math.abs(o.vy) / 700); o.vy = -o.vy * bounce; o.vx *= 0.85; el.classList.remove('bump'); void el.offsetWidth; el.classList.add('bump'); }
           else { o.vy = 0; const f = friction * dt; o.vx = Math.abs(o.vx) <= f ? 0 : o.vx - Math.sign(o.vx) * f; if (!o.vx) { o.rest = true; onRest?.(o); } }
         }
         if (spin) o.rot += (o.vx * dt) / (o.w / 2) * 57.3;
@@ -603,7 +604,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
     const bx = Math.max(6, Math.min(W() - bw - 6, side > 0 ? x + s + 18 : x - bw - 18));
     if (mode === 'sleep') setMode('idle');
     perch = null; place(); look(bx, 0, 1500); react('perk', 700);
-    body(bowl, { px: bx, py: -bh - 10, vx: 0, w: bw, hgt: bh, bounce: 0.32, friction: 900, onRest: () => {
+    body(bowl, { px: bx, py: -bh - 10, vx: 0, w: bw, hgt: bh, bounce: 0.32, friction: 900, sfx: byMe ? 'clink' : null, onRest: () => {
       targetX = side > 0 ? bx - s * 0.74 : bx + bw - s * 0.26;
       facing = side; setMode('run');
       const go = setInterval(() => {
@@ -638,8 +639,8 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
     const ball = h('i', { class: 'pet-ball' }); ball.innerHTML = BALL; fx.append(ball);
     const startX = mouthX() - r / 2, startY = y + pet.offsetHeight * 0.35;
     const land = Math.max(10, Math.min(W() - r - 10, 10 + where * (W() - r - 20)));
-    const b = body(ball, { px: startX, py: startY, vx: (land - startX) / 1.05, vy: -680, w: r, hgt: r, bounce: 0.62, friction: 230, spin: true });
-    if (byMe) sound('chomp');
+    const b = body(ball, { px: startX, py: startY, vx: (land - startX) / 1.05, vy: -680, w: r, hgt: r, bounce: 0.62, friction: 230, spin: true, sfx: byMe ? 'boing' : null });
+    if (byMe) sound('whoosh');
     react('happy', 400);
     let phase = 'chase';
     const tick = setInterval(() => {
@@ -679,6 +680,7 @@ export function mountPet({ conv, msgs, chatId, api, me, userName, sounds, person
     react('petted', 2000);
     [0, 650, 1300].forEach((d) => setTimeout(() => { burst(HEART, 2); }, d + 300));
     sound(kind);
+    if (['cat', 'panda', 'bunny', 'fox', 'dragon'].includes(kind)) setTimeout(() => sound('purr'), 700);
     setTimeout(() => hand.remove(), 2000);
   }
 

@@ -2176,3 +2176,4 @@ html.fp-cw { --sat: env(safe-area-inset-right); --sab: env(safe-area-inset-left)
 .fm-card-btns { display: flex; gap: 10px; margin-top: 10px; }
 .fm-card-btns .btn { display: inline-flex; align-items: center; gap: 6px; text-decoration: none; }
 .fm-card-btns svg { width: 18px; height: 18px; }
+.bz-card.bz-focus { animation: bzFocus 2.4s ease; } @keyframes bzFocus { 0%, 60% { box-shadow: 0 0 0 3px var(--bz-accent); } 100% { box-shadow: 0 0 0 0 transparent; } }

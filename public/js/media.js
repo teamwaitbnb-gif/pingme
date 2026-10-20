@@ -373,6 +373,9 @@ const buzz = (pattern) => { if (navigator.userActivation?.hasBeenActive !== fals
 // For diagnostics/tests: the current Web Audio state.
 export const audioState = () => actx?.state || 'none';
 
+// The one shared sound engine (pets use it too, so their sounds come back after calls/background).
+export const audioContext = () => ac();
+
 export const sounds = {
   _loop: null,
   message() { play('message', { volume: 0.8 }); buzz([180, 100, 180]); },

@@ -796,6 +796,17 @@ module.exports = function buzz({ app, db, C, auth, wrap, bad, notFound, toInt, c
     res.json({ q, items: list.map((x) => present({ ...x, slot: 's' }, e2.get(x.row.id))), trending });
   }));
 
+  // One story (opening a Buzz notification shows exactly that post).
+  app.get('/api/feed/story/:id', auth, wrap(async (req, res) => {
+    const id = String(req.params.id);
+    if (!/^[a-f0-9]{24}$/.test(id)) throw notFound('Story not found');
+    const r = await db.one(`SELECT id, source_id, region, topic, url, title, COALESCE(ai_summary, summary) summary, image_url, video_url, via, discuss_url, engagement, src_rank, published_at, fetched_at
+      FROM feed_items WHERE id=?`, [id]);
+    if (!r) throw notFound('This story is no longer available');
+    const eng = await engagementFor([id], req.uid);
+    res.json({ item: present({ row: r, ...score(r, eng.get(id), 'india'), slot: 'n' }, eng.get(id)) });
+  }));
+
   // Cities people can pick (and the coordinates used to find the nearest one).
   app.get('/api/feed/regions', auth, (req, res) => {
     res.json({ regions: [...Object.entries(CITIES).map(([id, c]) => ({ id, name: c.name, lat: c.lat, lon: c.lon })).sort((a, b) => a.name.localeCompare(b.name)), { id: 'india', name: 'All of India' }] });

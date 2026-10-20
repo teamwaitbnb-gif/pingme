@@ -436,6 +436,10 @@ async function handleUrl(url = new URL(location.href)) {
   if (p.get('recovery') || p.get('recoveryAlert')) openRecoveryRequests();
   if (p.get('new')) openNewMessage();
   if (p.get('search')) setTimeout(() => els.search?.focus(), 300);
+  // From a Buzz notification: open Buzz with that exact story on top. Or straight to the Map.
+  const story = p.get('buzz');
+  if (story && /^[a-f0-9]{24}$/.test(story)) { setTab('buzz'); S.buzz?.openStory(story); }
+  if (p.get('tab') === 'map' || p.get('tab') === 'buzz') setTab(p.get('tab'));
   if (add && add !== S.me.username) {
     try {
       const { user: u } = await api('GET', '/api/users/lookup?u=' + encodeURIComponent(add));
@@ -499,9 +503,12 @@ function connectSocket() {
     if (!n?.title) return;
     const go = () => {
       const chat = /^\/\?chat=(\d+)/.exec(n.url || '');
+      const story = /^\/\?buzz=([a-f0-9]{24})/.exec(n.url || '');
       if (chat) openChat(Number(chat[1]));
+      else if (story) { setTab('buzz'); S.buzz?.openStory(story[1]); }
       else if (n.url && n.url !== '/') window.open(n.url, '_blank', 'noopener');
     };
+    if (prefs().sounds && !document.hidden) sounds.tick();
     toast(null, { timeout: 7000, onClick: go, node: h('div', { class: 'row upd-toast' }, icon('bell'), h('div', null, h('b', null, n.title), h('span', null, String(n.body || '').slice(0, 140)))) });
   });
   // Group calls going on right now (for the "Join" pill in the group header).
@@ -1310,6 +1317,8 @@ function renderTyping() {
 // ─────── messages ───────
 
 async function onNewMessage(m) {
+  // Tell the server this phone has it (so its notification isn't sent again).
+  if (m.senderId !== S.me?.id && m.id && !String(m.id).startsWith('c_')) S.socket?.emit('msg:got', { chatId: m.chatId, id: m.id });
   if (isHidden(m.chatId)) return;
   let chat = S.chats.get(m.chatId);
   let fresh = false;
