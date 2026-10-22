@@ -1,5 +1,6 @@
 import { loadAds, adBanner, bannerHidden, rotation } from './ads.js';
 import { initMap } from './map.js';
+import { initMoney } from './money.js';
 import { openPetShop, coinIcon } from './pet-shop.js';
 import { openCamera } from './camera.js';
 import { mountPet, petHidden } from './pet.js';
@@ -343,12 +344,14 @@ function startApp() {
     els.tabs = h('nav', { class: 'sb-tabs', 'aria-label': 'Sections' },
       h('button', { class: 'on', 'data-tab': 'chats', onclick: () => setTab('chats') }, icon('msg'), h('span', null, 'Chats')),
       h('button', { 'data-tab': 'map', onclick: () => setTab('map') }, icon('map'), h('span', null, 'Map')),
-      h('button', { 'data-tab': 'buzz', onclick: () => setTab('buzz') }, icon('fire'), h('span', null, 'Buzz'))));
+      h('button', { 'data-tab': 'buzz', onclick: () => setTab('buzz') }, icon('fire'), h('span', null, 'Buzz')),
+      h('button', { 'data-tab': 'money', onclick: () => setTab('money') }, icon('chart'), h('span', null, 'Money'))));
   showChatAd();
   els.conv = h('section', { class: 'conv' });
   els.buzz = h('div', { class: 'buzz-pane', hidden: true });
   els.mapPane = h('div', { class: 'buzz-pane map-pane', hidden: true });
-  els.main = h('div', { class: 'main' }, els.sidebar, els.conv, els.buzz, els.mapPane);
+  els.moneyPane = h('div', { class: 'buzz-pane money-pane', hidden: true });
+  els.main = h('div', { class: 'main' }, els.sidebar, els.conv, els.buzz, els.mapPane, els.moneyPane);
   app.append(els.main);
   S.buzz = initBuzz({
     api, me: () => S.me, userAvatar, chats: () => sortedChats(), chatTitle, chatAvatar,
@@ -358,8 +361,9 @@ function startApp() {
   });
   S.map = initMap({ api, socket: () => S.socket, me: () => S.me, userAvatar, mergeUsers, message: (u) => { setTab('chats'); startDirect(u).catch((e) => toast(e.message, { error: true })); } });
   S.map.resume(); // keep sharing your location with friends while the app is open (if you turned it on)
+  S.money = initMoney({ api, socket: () => S.socket });
   const savedTab = sessionStorage.getItem('pm:tab');
-  if (savedTab === 'buzz' || savedTab === 'map') setTimeout(() => setTab(savedTab), 0);
+  if (savedTab === 'buzz' || savedTab === 'map' || savedTab === 'money') setTimeout(() => setTab(savedTab), 0);
   let st;
   search.addEventListener('input', () => { clearBtn.hidden = !search.value; clearTimeout(st); st = setTimeout(() => onSearch(search.value), 150); });
   search.addEventListener('focus', () => { S.searchFocus = true; renderList(); });
@@ -427,6 +431,7 @@ export function refreshMe(me) {
   if (S.current) renderMessages();
 }
 
+let pendingShare = null;
 async function handleUrl(url = new URL(location.href)) {
   const p = url.searchParams;
   const add = p.get('add');
@@ -439,7 +444,16 @@ async function handleUrl(url = new URL(location.href)) {
   // From a Buzz notification: open Buzz with that exact story on top. Or straight to the Map.
   const story = p.get('buzz');
   if (story && /^[a-f0-9]{24}$/.test(story)) { setTab('buzz'); S.buzz?.openStory(story); }
-  if (p.get('tab') === 'map' || p.get('tab') === 'buzz') setTab(p.get('tab'));
+  if (['map', 'buzz', 'money'].includes(p.get('tab'))) setTab(p.get('tab'));
+  // Something shared to Ping Me from another app (Android "Share → Ping Me"): a bank SMS goes to
+  // Money; anything else starts a new message with it.
+  const shared = [p.get('share_text'), p.get('share_url')].filter(Boolean).join(' ').trim();
+  if (shared) {
+    api('POST', '/api/money/import', { text: shared }).then((r) => {
+      if (r.saved || r.duplicates) { setTab('money'); toast(r.saved ? 'Added to Money' : 'Already in Money', { timeout: 2000 }); }
+      else { pendingShare = shared; openNewMessage(); toast('Pick who to send it to', { timeout: 2000 }); }
+    }).catch(() => { pendingShare = shared; openNewMessage(); });
+  }
   if (add && add !== S.me.username) {
     try {
       const { user: u } = await api('GET', '/api/users/lookup?u=' + encodeURIComponent(add));
@@ -969,12 +983,14 @@ function setTab(t) {
   S.tab = t;
   try { sessionStorage.setItem('pm:tab', t); } catch {}
   els.tabs?.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
-  els.main?.classList.toggle('buzz-mode', t === 'buzz' || t === 'map');
+  els.main?.classList.toggle('buzz-mode', t === 'buzz' || t === 'map' || t === 'money');
   if (els.buzz) els.buzz.hidden = t !== 'buzz';
   if (els.mapPane) els.mapPane.hidden = t !== 'map';
   if (t === 'buzz') S.buzz?.show(els.buzz); else S.buzz?.hide();
   if (t === 'map') S.map?.show(els.mapPane); else S.map?.hide();
-  if (!S.current || innerWidth > 760) setScreen(t === 'buzz' || t === 'map' ? t : S.current ? (S.chats.get(S.current)?.type === 'group' ? 'group' : 'chat') : 'chats');
+  if (els.moneyPane) els.moneyPane.hidden = t !== 'money';
+  if (t === 'money') S.money?.show(els.moneyPane); else S.money?.hide();
+  if (!S.current || innerWidth > 760) setScreen(t === 'buzz' || t === 'map' || t === 'money' ? t : S.current ? (S.chats.get(S.current)?.type === 'group' ? 'group' : 'chat') : 'chats');
 }
 
 // The group pet lives in the open group chat.
@@ -2014,6 +2030,8 @@ function renderComposer() {
   els.intentBtn = feature('intentTags') ? h('button', { class: 'intent-btn', 'aria-label': 'Add intent tag', title: 'Intent tag', onclick: pickIntent }, icon('tag')) : null;
   els.ta = h('textarea', { rows: 1, placeholder: 'Message', enterkeyhint: prefs().enterSend ? 'send' : 'enter', 'aria-label': 'Message' });
   els.ta.value = store.get('draft:' + chat.id, '');
+  // Text shared to Ping Me from another app goes into the first chat you open.
+  if (pendingShare) { els.ta.value = pendingShare; pendingShare = null; }
   els.sendBtn = h('button', { class: 'send', 'aria-label': 'Send' }, icon('send'));
   els.micBtn = h('button', { class: 'mic', 'aria-label': 'Record voice message', onclick: startRecording }, icon('mic'));
   els.camBtn = navigator.mediaDevices?.getUserMedia ? h('button', { class: 'cam-btn', 'aria-label': 'Camera', onclick: () => openChatCamera(chat) }, icon('camera')) : null;

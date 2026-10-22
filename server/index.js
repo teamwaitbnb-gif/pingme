@@ -714,7 +714,9 @@ app.use('/api', (req, res, next) => {
 // CSRF guard: every mutating API call must carry our custom header
 // (browsers will not send it cross-site without a CORS preflight we never grant).
 app.use('/api', (req, res, next) => {
-  if (req.method !== 'GET' && req.method !== 'HEAD' && !OAUTH_CALLBACKS.has(req.path) && req.get('x-pingme') !== '1') {
+  // Bank SMS forwarded by the phone (Shortcuts / forwarder apps) carry a private secret in the link
+  // instead of a login cookie, so the custom header isn't needed there.
+  if (req.method !== 'GET' && req.method !== 'HEAD' && !OAUTH_CALLBACKS.has(req.path) && !req.path.startsWith('/money/in/') && req.get('x-pingme') !== '1') {
     return res.status(403).json({ error: 'Bad request origin' });
   }
   next();
@@ -1207,7 +1209,7 @@ app.delete('/api/me', auth, wrap(async (req, res) => {
   }
   const chats = await db.q('SELECT chat_id FROM chat_members WHERE user_id=? AND active=1', [req.uid]);
   await db.q('UPDATE chat_members SET active=0 WHERE user_id=?', [req.uid]);
-  for (const t of ['sessions', 'push_subs', 'oauth_accounts', 'user_locations']) await db.q(`DELETE FROM ${t} WHERE user_id=?`, [req.uid]);
+  for (const t of ['sessions', 'push_subs', 'oauth_accounts', 'user_locations', 'money_tx', 'money_prefs']) await db.q(`DELETE FROM ${t} WHERE user_id=?`, [req.uid]);
   await db.q('DELETE FROM blocks WHERE user_id=? OR blocked_id=?', [req.uid, req.uid]);
   await db.q('DELETE FROM scheduled_messages WHERE sender_id=?', [req.uid]);
   await db.q('DELETE FROM users WHERE id=?', [req.uid]);
@@ -1885,6 +1887,8 @@ require('./unfurl')({ app, db, C, auth, wrap, bad, rateLimit, publicOrigin });
 // Usage analytics + the owner's admin portal (/admin, unlocked with ADMIN_KEY).
 const adminPortal = require('./admin')({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online, buzz, monitor, activeCalls: () => calls.size, petState: advanced.petState });
 // Owner notifications: one-off messages from the admin page + automatic Buzz / hungry-pet alerts.
+// Money: expense tracker fed by the person's own bank SMS (forwarded by their phone).
+require('./money')({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, rateLimit, emitToUser, push, monitor, publicOrigin });
 // Friends map: opt-in location sharing with friends.
 require('./location')({ app, db, C, auth, wrap, bad, toInt, rateLimit, emitToUser, getUser, userPublic: publicUser, monitor });
 // In-app ads (photo/video, in Buzz and above the chat list), managed from the admin page.

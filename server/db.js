@@ -269,6 +269,25 @@ const SCHEMA = [
     fed_at DATETIME(3) NULL,
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
   )`,
+  // Money: each person's transactions (encrypted) and their settings (private link, learned
+  // categories, budgets). dedupe stops the same transaction being saved twice.
+  `CREATE TABLE IF NOT EXISTS money_tx (
+    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT UNSIGNED NOT NULL,
+    at DATETIME(3) NOT NULL,
+    data_enc TEXT NOT NULL,
+    dedupe CHAR(64) NOT NULL,
+    source VARCHAR(8) NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE KEY (dedupe),
+    INDEX (user_id, at)
+  )`,
+  `CREATE TABLE IF NOT EXISTS money_prefs (
+    user_id BIGINT UNSIGNED PRIMARY KEY,
+    data_enc TEXT NOT NULL,
+    link_hash CHAR(64) NULL,
+    UNIQUE KEY (link_hash)
+  )`,
   // Friends map: who each person shares their location with, and their latest location (both encrypted).
   `CREATE TABLE IF NOT EXISTS user_locations (
     user_id BIGINT UNSIGNED PRIMARY KEY,
