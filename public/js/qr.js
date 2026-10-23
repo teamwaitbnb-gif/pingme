@@ -1,7 +1,7 @@
 // QR codes: your own Ping Me code, a camera scanner to add friends, and spotting Ping Me codes
 // inside photos people send in a chat. Everything runs on the device.
-import { h, icon, toast, avatar, openSheet, registerLayer } from './ui.js';
-import { S } from './core.js';
+import { h, icon, toast, avatar, openSheet, registerLayer, confirmDialog } from './ui.js';
+import { S, api } from './core.js';
 import { ensurePermission } from './perm.js';
 
 const libs = new Map();
@@ -34,6 +34,26 @@ export function pingMeUsername(text) {
 }
 
 // Opens a chat with that person (app.js does the lookup).
+// A "log in on a computer" code (shown on the computer's sign-in screen).
+export function linkCode(text) {
+  try {
+    const u = new URL(String(text).trim());
+    const l = u.searchParams.get('link');
+    if (l && /^[\w]{6,20}\.[\w]{6,24}$/.test(l) && (u.origin === location.origin || /pingme/i.test(u.hostname))) return l;
+  } catch {}
+  return null;
+}
+// The phone approves a computer: say which computer it is, ask, then link it.
+export async function approveLink(link) {
+  try {
+    const { device } = await api('POST', '/api/link/info', { link });
+    const ok = await confirmDialog(`Log in to Ping Me on ${device}?\n\nOnly approve a code shown on your own computer. It will see your chats and get your notifications until you log it out (Settings → Active devices).`, { ok: 'Log in' });
+    if (!ok) return;
+    await api('POST', '/api/link/approve', { link });
+    toast(`${device} is now logged in`, { timeout: 2500 });
+  } catch (e) { toast(e.message, { error: true }); }
+}
+
 export function addFromCode(username) {
   if (username === S.me?.username) { toast('That’s your own Ping Me code'); return; }
   dispatchEvent(new CustomEvent('pm:add-user', { detail: username }));
@@ -43,7 +63,7 @@ export function addFromCode(username) {
 
 const loadImg = (src) => new Promise((res) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => res(null); i.src = src; });
 
-async function drawCode(text, size = 260) {
+export async function drawCode(text, size = 260) {
   const qrcode = await encoderLib();
   const qr = qrcode(0, 'H'); // high error correction, so the logo in the middle doesn't matter
   qr.addData(text);
@@ -165,11 +185,13 @@ export async function openScanner() {
   if (!(await ensurePermission(['camera'], 'To scan a friend’s Ping Me QR code. Nothing is recorded or sent.'))) return;
   const video = h('video', { autoplay: true, playsinline: true, muted: true });
   video.muted = true;
-  const status = h('div', { class: 'qs-status' }, 'Point your camera at a Ping Me QR code');
+  const status = h('div', { class: 'qs-status' }, 'Point your camera at a Ping Me QR code — a friend’s, or the one on your computer to log in there');
   const file = h('input', { type: 'file', accept: 'image/*', hidden: true });
   let stream = null, timer = null, closed = false, busy = false;
   const handle = (texts) => {
     if (closed) return false;
+    const link = texts.map(linkCode).find(Boolean);
+    if (link) { navigator.vibrate?.(40); close(); approveLink(link); return true; }
     const user = texts.map(pingMeUsername).find(Boolean);
     if (user) {
       navigator.vibrate?.(40);

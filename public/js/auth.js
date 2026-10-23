@@ -1,6 +1,6 @@
 // Sign in / sign up: username + password or Sign in with Google, the "choose your username"
 // step for new Google accounts, and password recovery through trusted friends.
-import { h, icon, toast, isStandalone, store, confirmDialog } from './ui.js';
+import { h, icon, toast, isStandalone, isMobile, store, confirmDialog } from './ui.js';
 import { S, api } from './core.js';
 
 let onSignedIn = () => {};
@@ -36,8 +36,12 @@ async function handleIdToken(provider, idToken, { link = false } = {}) {
 
 // One account, one device: signing in here means signing out on the other device first.
 export async function askTakeover(conflict) {
-  const ok = await confirmDialog(`You’re already signed in on ${conflict.device}. Ping Me works on one device at a time — log out there and continue on this device?`,
-    { ok: 'Log out there & continue' });
+  // On a computer, the better way is the QR code: the phone stays logged in and the computer is added.
+  const onComputer = !isMobile();
+  const ok = await confirmDialog(onComputer
+    ? `You’re signed in on ${conflict.device}. To use Ping Me on this computer too, scan the QR code on this page with your phone (Ping Me → scan). Or log out there and continue here?`
+    : `You’re already signed in on ${conflict.device}. Ping Me works on one phone at a time — log out there and continue on this device?`,
+  { ok: 'Log out there & continue', cancel: onComputer ? 'Use the QR code' : undefined });
   if (!ok) return false;
   try {
     const { user } = await api('POST', '/api/login/takeover', { ticket: conflict.ticket });
@@ -178,8 +182,46 @@ export function showAuth(mode = 'login') {
     h('div', { class: 'switch' }, mode === 'login' ? 'New here? ' : 'Have an account? ',
       h('a', { href: '#', class: 'link', onclick: (e) => { e.preventDefault(); showAuth(mode === 'login' ? 'register' : 'login'); } }, mode === 'login' ? 'Create an account' : 'Sign in')),
     h('div', { class: 'lock' }, icon('lock'), 'Messages and files are encrypted at rest'));
-  app().replaceChildren(h('div', { class: 'auth' }, form));
+  // On computers: log in by scanning a QR with the phone (like WhatsApp Web), next to the form.
+  const qr = mode === 'login' && !isMobile() ? qrLogin() : null;
+  app().replaceChildren(h('div', { class: 'auth' + (qr ? ' with-qr' : '') }, qr?.el, form));
   googleButton(google);
+}
+
+function qrLogin() {
+  const box = h('div', { class: 'aq-code' }, h('span', { class: 'spinner' }));
+  const note = h('small', { class: 'aq-note' });
+  const el = h('section', { class: 'card aq' },
+    h('b', { class: 'aq-title' }, 'Log in with your phone'),
+    h('ol', { class: 'aq-steps' },
+      h('li', null, 'Open ', h('b', null, 'Ping Me'), ' on your phone'),
+      h('li', null, 'Tap the ', h('b', null, 'scan'), ' button at the top of your chats'),
+      h('li', null, 'Point your phone at this code and tap ', h('b', null, 'Log in'))),
+    box, note);
+  let cur = null, timer = 0, refresh = 0, stopped = false;
+  const stop = () => { stopped = true; clearInterval(timer); clearTimeout(refresh); };
+  async function next() {
+    if (stopped || !el.isConnected && cur) return stop();
+    try {
+      cur = await api('POST', '/api/link/start');
+      const { drawCode } = await import('./qr.js');
+      const c = await drawCode(cur.url, 220);
+      box.replaceChildren(c);
+      note.textContent = 'The code refreshes every minute.';
+    } catch (e) { box.replaceChildren(h('span', null, 'Couldn’t load the code')); note.textContent = e.message; }
+    clearTimeout(refresh); refresh = setTimeout(next, 55000);
+  }
+  timer = setInterval(async () => {
+    if (!el.isConnected) return stop();
+    if (!cur || document.hidden) return;
+    try {
+      const r = await api('POST', '/api/link/status', { id: cur.id, secret: cur.secret });
+      if (r.state === 'approved') { stop(); S.me = r.user; onSignedIn(); }
+      else if (r.state === 'expired') { cur = null; next(); }
+    } catch {}
+  }, 2000);
+  next();
+  return { el };
 }
 
 export function showChooseUsername({ ticket, name: suggestedName = '', suggestions = [] }) {

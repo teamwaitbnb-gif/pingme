@@ -15,6 +15,7 @@ import { lockEnabled, hasDuress, setPin, setDuressPin, disableLock, hiddenChats,
 import { signPhoto } from './keys.js';
 import { installApp } from './install.js';
 import { openMyCode, openScanner } from './qr.js';
+import { STATUS, statusText, openStatusPicker } from './status.js';
 import { applyVideoEdits, clipPlayer } from './editor.js';
 import { petHidden, showPetAgain } from './pet.js';
 import { pushScreen, popScreen } from './analytics.js';
@@ -59,6 +60,7 @@ export function openSettings() {
         me.bio ? h('div', { class: 'bio' }, me.bio) : null),
 
       h('div', { class: 'group' },
+        cell({ iconHtml: null, icon: 'presence', color: STATUS[me.settings?.status?.kind]?.color || '#34c759', label: 'Status', value: statusText(me.settings?.status) || 'Set a status', chevron: true, onClick: () => openStatusPicker(draw) }),
         cell({ icon: 'user', label: 'Name', value: me.name, chevron: true, onClick: async () => { const v = await promptDialog({ title: 'Your name', value: me.name, maxlength: 60 }); if (v?.trim()) save({ name: v.trim() }); } }),
         cell({ icon: 'text', color: '#8e8e93', label: 'About', value: me.bio ? me.bio.slice(0, 22) + (me.bio.length > 22 ? '…' : '') : 'Add', chevron: true, onClick: async () => { const v = await promptDialog({ title: 'About', value: me.bio, multiline: true, maxlength: 200, placeholder: 'Available' }); if (v !== null) save({ bio: v }); } }),
         cell({ icon: 'qr', color: '#5856d6', label: 'My QR code', sub: 'Friends scan it to add you', chevron: true, onClick: () => openMyCode() }),
@@ -131,7 +133,8 @@ export function openSettings() {
 
       h('div', { class: 'group-label' }, 'Security'),
       h('div', { class: 'group' },
-        cell({ icon: 'device', color: '#0a84ff', label: 'Active devices', chevron: true, onClick: openSessions })),
+        cell({ icon: 'device', color: '#0a84ff', label: 'Active devices', sub: 'Your phone and linked computers · log in on a computer', chevron: true, onClick: openSessions }),
+        !isMobile() ? cell({ icon: 'keyboard', color: '#8e8e93', label: 'Keyboard shortcuts', sub: (navigator.platform.includes('Mac') ? '⌘' : 'Ctrl') + ' K to jump to any chat', chevron: true, onClick: () => dispatchEvent(new KeyboardEvent('keydown', { key: '/', ctrlKey: true, metaKey: true })) }) : null),
       h('div', { class: 'group-foot' }, 'All messages, names, photos and files are encrypted with AES-256-GCM before being stored. Passwords are hashed with scrypt.'),
 
       h('div', { class: 'group' },
@@ -367,7 +370,10 @@ async function openSessions() {
       return `${br} on ${os}`;
     };
     s.body.replaceChildren(
-      h('div', { class: 'group' }, sessions.map((x) => cell({ icon: 'device', color: x.current ? '#34c759' : '#8e8e93', label: label(x.ua), sub: x.current ? 'This device' : `Last active ${new Date(x.lastUsed).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}` }))),
+      h('div', { class: 'group' }, cell({ icon: 'qr', color: '#0a84ff', label: 'Log in on a computer', sub: 'Open Ping Me on your computer and scan the code', chevron: true, onClick: () => { s.close(); openScanner(); } })),
+      h('div', { class: 'group' }, sessions.map((x) => cell({ icon: 'device', color: x.current ? '#34c759' : x.linked ? '#0a84ff' : '#8e8e93', label: label(x.ua),
+        sub: (x.current ? 'This device' : `Last active ${new Date(x.lastUsed).toLocaleString([], { dateStyle: 'medium', timeStyle: 'short' })}`) + (x.linked ? ' · linked computer' : ''),
+        right: x.current ? null : h('button', { class: 'link', style: { color: 'var(--red)' }, onclick: async (e) => { e.stopPropagation(); if (!(await confirmDialog(`Log out ${label(x.ua)}?`, { ok: 'Log out', danger: true }))) return; await api('POST', `/api/me/sessions/${x.id}/logout`); toast('Logged out'); s.close(); openSessions(); } }, 'Log out') }))),
       sessions.length > 1 ? h('div', { class: 'group' }, cell({ label: 'Sign out all other devices', danger: true, onClick: async () => {
         if (!(await confirmDialog('Sign out all other devices?', { ok: 'Sign Out', danger: true }))) return;
         await api('POST', '/api/me/sessions/logout-others'); toast('Other devices signed out'); s.close();

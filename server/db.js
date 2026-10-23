@@ -269,6 +269,14 @@ const SCHEMA = [
     fed_at DATETIME(3) NULL,
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
   )`,
+  // Linked devices (laptop / browser signed in by scanning a QR code with the phone): these sessions
+  // live alongside the phone instead of replacing it.
+  `CREATE TABLE IF NOT EXISTS session_links (
+    token_hash CHAR(64) PRIMARY KEY,
+    user_id BIGINT UNSIGNED NOT NULL,
+    created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    INDEX (user_id)
+  )`,
   // Money: each person's transactions (encrypted) and their settings (private link, learned
   // categories, budgets). dedupe stops the same transaction being saved twice.
   `CREATE TABLE IF NOT EXISTS money_tx (

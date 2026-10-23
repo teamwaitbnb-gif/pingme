@@ -1,13 +1,14 @@
 import { loadAds, adBanner, bannerHidden, rotation } from './ads.js';
 import { initMap } from './map.js';
 import { initMoney } from './money.js';
+import { statusText, statusDot, openStatusPicker } from './status.js';
 import { openPetShop, coinIcon } from './pet-shop.js';
 import { openCamera } from './camera.js';
 import { mountPet, petHidden } from './pet.js';
 import { initBuzz } from './buzz.js';
 import { initAnalytics, setSocket, setScreen, pushScreen, popScreen, reportError, track } from './analytics.js';
 import {
-  h, reconcileChildren, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, handleLayerPop, whenHistorySettled, longPress, richText, emojiCount,
+  h, reconcileChildren, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, openSheet, handleLayerPop, whenHistorySettled, longPress, richText, emojiCount,
   fmtTime, fmtListTime, fmtDay, fmtDur, fmtSize, lastSeenText, isIOS, isMobile, isStandalone, store,
 } from './ui.js';
 import { videoMeta, VoiceRecorder, player, playScreenEffect, sounds, SCREEN_EFFECTS, BUBBLE_EFFECTS, makeThumb, lazyThumb } from './media.js';
@@ -415,12 +416,13 @@ function startApp() {
   setInterval(() => { if (S.me && S.current && !document.hidden) refreshRecent(S.current); }, 60000);
   addEventListener('online', () => { if (S.me) resync(); });
   addEventListener('keydown', (e) => { if (e.key === 'Escape') { if (!closeTop() && S.current) { if (history.state?.chat) history.back(); else closeChat(); } } });
+  addEventListener('keydown', onShortcut);
   addEventListener('mm:unlocked', () => { if (S.current && isHidden(S.current)) closeChat(); S.msgs.clear(); loadChats().then(() => { if (S.current) loadMessages(S.current, { reset: true }); }); });
   setInterval(tickCountdowns, 1000);
 }
 
 function renderMeBtn() {
-  els.meBtn.replaceChildren(avatar({ id: S.me.id, name: S.me.name, src: S.me.avatarV ? `/api/avatar/u/${S.me.id}?v=${S.me.avatarV}` : null, size: 34 }));
+  els.meBtn.replaceChildren(avatar({ id: S.me.id, name: S.me.name, src: S.me.avatarV ? `/api/avatar/u/${S.me.id}?v=${S.me.avatarV}` : null, size: 34 }), statusDot(S.me.settings?.status) || '');
 }
 
 export function refreshMe(me) {
@@ -441,6 +443,9 @@ async function handleUrl(url = new URL(location.href)) {
   if (p.get('recovery') || p.get('recoveryAlert')) openRecoveryRequests();
   if (p.get('new')) openNewMessage();
   if (p.get('search')) setTimeout(() => els.search?.focus(), 300);
+  // A computer's login QR scanned with the phone's camera app (opens this link): approve it here.
+  const link = p.get('link');
+  if (link) import('./qr.js').then((q) => q.approveLink(link));
   // From a Buzz notification: open Buzz with that exact story on top. Or straight to the Map.
   const story = p.get('buzz');
   if (story && /^[a-f0-9]{24}$/.test(story)) { setTab('buzz'); S.buzz?.openStory(story); }
@@ -490,6 +495,9 @@ function connectSocket() {
   socket.on('disconnect', () => setTimeout(updateSmsBar, 4000));
   socket.on('connect_error', (e) => { if (e.message === 'unauthorized') { S.me = null; showAuth(); } });
   // Someone signed in to this account on another device (one device at a time).
+  // A device was signed out from Settings: if it was this one, go back to the sign-in screen.
+  socket.on('session:check', () => { api('GET', '/api/session').then((r) => { if (!r.user) window.dispatchEvent(new Event('mm:unauthorized')); }).catch(() => {}); });
+  socket.on('device:linked', ({ device }) => toast(`Logged in on ${device}`, { timeout: 3000 }));
   socket.on('session:ended', () => {
     S.calls?.hangup?.();
     S.me = null; S.chats.clear(); S.msgs.clear();
@@ -678,6 +686,66 @@ export async function refreshChat(chatId) {
   updateBadge();
 }
 
+// ─────── keyboard shortcuts (computers) ───────
+// ⌘/Ctrl+K jump to any chat · Alt+↑/↓ previous / next chat · ⌘/Ctrl+N new message ·
+// ⌘/Ctrl+Shift+S set your status · ⌘/Ctrl+/ list of shortcuts · Esc close · ↑ edit your last message
+function onShortcut(e) {
+  const mod = e.metaKey || e.ctrlKey;
+  const k = e.key.toLowerCase();
+  if (mod && k === 'k') { e.preventDefault(); return openSwitcher(); }
+  if (mod && !e.shiftKey && k === 'n') { e.preventDefault(); return openNewMessage(); }
+  if (mod && e.shiftKey && k === 's') { e.preventDefault(); return openStatusPicker(() => renderMeBtn?.()); }
+  if (mod && (k === '/' || k === '?')) { e.preventDefault(); return openShortcutHelp(); }
+  if (e.altKey && (e.key === 'ArrowUp' || e.key === 'ArrowDown')) {
+    e.preventDefault();
+    const list = sortedChats();
+    if (!list.length) return;
+    const i = list.findIndex((c) => c.id === S.current);
+    const next = list[Math.max(0, Math.min(list.length - 1, i < 0 ? 0 : i + (e.key === 'ArrowDown' ? 1 : -1)))];
+    if (next) openChat(next.id);
+  }
+}
+function openSwitcher() {
+  if (document.querySelector('.qswitch')) return;
+  const input = h('input', { class: 'qs-in', placeholder: 'Jump to a chat or person…', autocomplete: 'off', spellcheck: 'false' });
+  const list = h('div', { class: 'qs-list' });
+  let sel = 0, items = [];
+  const close = () => { unregister(); wrap.remove(); };
+  const draw = () => {
+    const q = input.value.trim().toLowerCase().replace(/^@/, '');
+    const all = sortedChats();
+    items = (q ? all.filter((c) => chatTitle(c).toLowerCase().includes(q) || c.members.some((m) => (user(m.id).username || '').includes(q))) : all).slice(0, 9);
+    sel = Math.min(sel, Math.max(0, items.length - 1));
+    list.replaceChildren(...(items.length ? items.map((c, i) => {
+      const o = otherMember(c), u = o ? user(o) : null;
+      return h('button', { class: 'qs-row' + (i === sel ? ' on' : ''), onmouseenter: () => { sel = i; draw(); }, onclick: () => { close(); openChat(c.id); } },
+        avatar({ id: c.type === 'group' ? c.id : o, name: chatTitle(c), src: chatAvatar(c), size: 30, group: c.type === 'group' }),
+        h('span', { class: 'qs-t' }, chatTitle(c), c.type === 'direct' ? statusDot(u?.status) : null),
+        c.unread ? h('span', { class: 'badge' }, c.unread) : null, i < 9 ? h('kbd', null, (navigator.platform.includes('Mac') ? '⌘' : 'Ctrl+') + (i + 1)) : null);
+    }) : [h('div', { class: 'qs-empty' }, 'No chats match')]));
+  };
+  input.addEventListener('input', () => { sel = 0; draw(); });
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); sel = Math.min(items.length - 1, sel + 1); draw(); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); sel = Math.max(0, sel - 1); draw(); }
+    else if (e.key === 'Enter' && items[sel]) { e.preventDefault(); close(); openChat(items[sel].id); }
+    else if ((e.metaKey || e.ctrlKey) && /^[1-9]$/.test(e.key) && items[+e.key - 1]) { e.preventDefault(); close(); openChat(items[+e.key - 1].id); }
+  });
+  const wrap = h('div', { class: 'qswitch', onclick: (e) => { if (e.target === wrap) close(); } }, h('div', { class: 'qs-box' }, input, list));
+  const unregister = registerLayer(close);
+  document.body.append(wrap);
+  draw();
+  setTimeout(() => input.focus(), 20);
+}
+function openShortcutHelp() {
+  const m = navigator.platform.includes('Mac') ? '⌘' : 'Ctrl';
+  const s = openSheet({ title: 'Keyboard shortcuts', left: { label: 'Close' } });
+  s.body.append(h('div', { class: 'group' }, [
+    [`${m} K`, 'Jump to any chat'], ['Alt ↑ / ↓', 'Previous / next chat'], [`${m} N`, 'New message'], [`${m} Shift S`, 'Set your status'],
+    ['Enter', 'Send (Shift Enter for a new line)'], ['↑', 'Edit your last message'], ['Esc', 'Close'], [`${m} /`, 'This list'],
+  ].map(([k, l]) => h('div', { class: 'cell' }, h('span', { class: 'lb' }, l), h('kbd', null, k)))));
+}
+
 function sortedChats() {
   return [...S.chats.values()].filter((c) => !c.removed && !isHidden(c.id)).sort((a, b) => (b.lastMessage?.createdAt || b.lastMsgAt) - (a.lastMessage?.createdAt || a.lastMsgAt));
 }
@@ -793,7 +861,7 @@ function chatRow(c) {
     avatar({ id: c.type === 'group' ? c.id : other, name: chatTitle(c), src: chatAvatar(c), size: 50, online: u?.online, group: c.type === 'group', zoom: true }),
     h('div', { class: 'body' },
       h('div', { class: 'top' },
-        h('span', { class: 'name' }, chatTitle(c), u?.birthdayToday ? icon('gift', 'bday') : null, c.streak >= 2 && feature('usSpace') ? h('span', { class: 'streak', title: `${c.streak}-day streak` }, icon('fire'), c.streak) : null),
+        h('span', { class: 'name' }, chatTitle(c), c.type === 'direct' ? statusDot(u?.status) : null, u?.birthdayToday ? icon('gift', 'bday') : null, c.streak >= 2 && feature('usSpace') ? h('span', { class: 'streak', title: `${c.streak}-day streak` }, icon('fire'), c.streak) : null),
         h('span', { class: 'time' }, isMuted(c) ? icon('belloff') : null, c.lastMessage ? fmtListTime(c.lastMessage.createdAt) : '', c.unread ? h('span', { class: 'badge', style: isMuted(c) ? { background: 'var(--text3)' } : null }, c.unread > 99 ? '99+' : c.unread) : null)),
       h('div', { class: 'prev' }, chatPreview(c))));
   longPress(row, () => chatMenu(S.chats.get(c.id) || c)); // row may be reused: always the latest chat
@@ -1157,7 +1225,11 @@ export function renderHeader() {
   let status = '', on = false;
   if (typers.length) status = chat.type === 'group' ? `${typers.map((t) => user(t).name.split(' ')[0]).join(', ')} typing…` : 'typing…';
   else if (chat.type === 'group') status = `${chat.members.length} members`;
-  else if (u) { status = lastSeenText(u) || (u.username ? '@' + u.username : ''); on = !!u.online; }
+  else if (u) {
+    const st = statusText(u.status); // "In a meeting · until 3:00 PM"
+    status = st ? (u.online ? `${st} · online` : st) : lastSeenText(u) || (u.username ? '@' + u.username : '');
+    on = !!u.online;
+  }
   if (u?.deleted) status = 'Account deleted';
   const unreadElsewhere = [...S.chats.values()].reduce((s, c) => s + (c.id !== chat.id && !isMuted(c) ? c.unread || 0 : 0), 0);
   els.head.replaceChildren(
@@ -1165,7 +1237,7 @@ export function renderHeader() {
     h('div', { class: 'cv-who', onclick: () => openChatInfo(chat.id) },
       avatar({ id: chat.type === 'group' ? chat.id : other, name: chatTitle(chat), src: chatAvatar(chat), size: 38, online: on, group: chat.type === 'group' }),
       h('div', { class: 'txt' },
-        h('div', { class: 'nm' }, chatTitle(chat), chat.incognito ? icon('incognito') : null, isMuted(chat) ? icon('belloff') : null, chat.disappearSecs ? icon('timer') : null, icon('chev')),
+        h('div', { class: 'nm' }, chatTitle(chat), chat.type === 'direct' ? statusDot(u?.status) : null, chat.incognito ? icon('incognito') : null, isMuted(chat) ? icon('belloff') : null, chat.disappearSecs ? icon('timer') : null, icon('chev')),
         h('div', { class: 'st' + (on && !typers.length ? ' on' : '') }, status))),
     chat.type === 'direct' && feature('ping') && !isBlocked(chat) && !u?.deleted ? h('button', { class: 'icon-btn ping-btn', title: 'Send a Ping — thinking of you', 'aria-label': 'Send a Ping', onclick: () => sendPing(chat) }, h('img', { src: '/icons/hand.svg', alt: '' })) : null,
     (() => {

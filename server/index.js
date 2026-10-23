@@ -115,8 +115,19 @@ async function publicUser(id) {
     lastSeen: showPresence ? u.lastSeen : null,
     // Only "is it their birthday today" is shared — never the date itself.
     birthdayToday: isBirthdayToday(u.birth),
+    status: activeStatus(u),
   };
 }
+
+// Work status (Available / In a meeting / Busy / Away / On leave + a short note), until a time.
+const STATUS_KINDS = ['available', 'meeting', 'busy', 'away', 'leave'];
+function activeStatus(u) {
+  const st = u.settings?.status;
+  if (!st || !STATUS_KINDS.includes(st.kind) || (st.until && st.until < Date.now())) return null;
+  return { kind: st.kind, text: st.text || '', until: st.until || null };
+}
+// "Busy" mutes notifications (except @mentions and urgent messages).
+const isBusy = (u) => activeStatus(u)?.kind === 'busy';
 
 function isBirthdayToday(birth) {
   if (!birth) return false;
@@ -624,6 +635,7 @@ async function notifyMembers(chatId, senderId, msg, members) {
     if ((mu === -1 || mu > t) && !isMention) continue;
     const u = await getUser(uid);
     if (!u) continue;
+    if (isBusy(u) && !isMention && msg.intent !== 'urgent' && !msg.sos) continue; // Busy = do not disturb
     const group = chat.type === 'group' ? C.dec(chat.title_enc) || 'Group' : null;
     const previews = u.settings.previews;
     const urgent = msg.intent === 'urgent' || msg.sos;
@@ -785,6 +797,7 @@ async function createSession(req, res, userId) {
   monitor.log(userId, 'signin', { device: deviceLabel(req.get('user-agent') || ''), path: req.path });
   setSessionCookie(req, res, t);
   if (req.newDeviceCookie) addCookie(res, req.newDeviceCookie);
+  return C.sha256(t);
 }
 
 function deviceLabel(ua = '') {
@@ -797,7 +810,8 @@ function deviceLabel(ua = '') {
 // "log out there and continue here?" — the answer comes back to /api/login/takeover with this ticket.
 async function signInOrAsk(req, res, uid) {
   const other = await db.one(
-    'SELECT ua_enc, last_used FROM sessions WHERE user_id=? AND (device_hash IS NULL OR device_hash<>?) AND last_used > ? ORDER BY last_used DESC LIMIT 1',
+    // Linked devices (QR-linked laptops) don't count: they sit alongside the phone.
+    'SELECT ua_enc, last_used FROM sessions WHERE user_id=? AND (device_hash IS NULL OR device_hash<>?) AND last_used > ? AND token_hash NOT IN (SELECT token_hash FROM session_links) ORDER BY last_used DESC LIMIT 1',
     [uid, deviceHash(req), new Date(Date.now() - 90 * 86400000)]
   );
   if (!other) { await createSession(req, res, uid); return null; }
@@ -928,6 +942,56 @@ app.post('/api/login/takeover', wrap(async (req, res) => {
   await signOutEverywhere(uid);
   await createSession(req, res, uid);
   res.json({ user: await meView(uid) });
+}));
+
+// ───── Log in on a computer by scanning a QR code with the phone (like WhatsApp Web) ─────
+// The computer asks for a code and shows it as a QR (it changes every minute). The signed-in phone
+// scans it, shows which computer is asking, and the person approves. The computer then becomes a
+// linked device of the same account (up to 4), next to the phone. Only the computer that asked can
+// finish the login: it holds a secret that never appears in the QR.
+const links = new Map(); // id → { code, secret, exp, ua, uid, done }
+setInterval(() => { const t = Date.now(); for (const [id, l] of links) if (l.exp < t - 60000) links.delete(id); }, 60000).unref();
+const MAX_LINKED = 4;
+app.post('/api/link/start', wrap(async (req, res) => {
+  rateLimit('link-start:' + req.ip, 30, 60000);
+  const id = C.token().replace(/[^\w]/g, '').slice(0, 12), code = C.token().replace(/[^\w]/g, '').slice(0, 16), secret = C.token();
+  links.set(id, { code, secret, exp: Date.now() + 70000, ua: clampStr(req.get('user-agent') || '', 300), uid: null, done: false });
+  res.json({ id, secret, url: `${publicOrigin(req)}/?link=${id}.${code}`, expiresIn: 60 });
+}));
+// The computer checks every couple of seconds; once the phone approved, it's signed in.
+app.post('/api/link/status', wrap(async (req, res) => {
+  rateLimit('link-status:' + req.ip, 120, 60000);
+  const l = links.get(String(req.body?.id || ''));
+  if (!l || l.secret !== String(req.body?.secret || '')) return res.json({ state: 'expired' });
+  if (!l.uid) return res.json({ state: l.exp < Date.now() ? 'expired' : 'waiting' });
+  if (l.done) return res.json({ state: 'expired' });
+  l.done = true;
+  const uid = l.uid;
+  if (!(await getUser(uid))) return res.json({ state: 'expired' });
+  const hash = await createSession(req, res, uid);
+  await db.q('INSERT IGNORE INTO session_links (token_hash, user_id) VALUES (?,?)', [hash, uid]);
+  // Keep at most MAX_LINKED computers: the oldest linked one is signed out.
+  const linked = await db.q('SELECT l.token_hash FROM session_links l JOIN sessions s ON s.token_hash=l.token_hash WHERE l.user_id=? ORDER BY s.last_used DESC', [uid]);
+  for (const r of linked.slice(MAX_LINKED)) { await db.q('DELETE FROM sessions WHERE token_hash=?', [r.token_hash]); await db.q('DELETE FROM session_links WHERE token_hash=?', [r.token_hash]); }
+  monitor.log(uid, 'device-linked', { device: deviceLabel(l.ua) });
+  emitToUser(uid, 'device:linked', { device: deviceLabel(l.ua) });
+  res.json({ state: 'approved', user: await meView(uid) });
+}));
+// The phone: which computer is asking (shown before approving), then approve.
+app.post('/api/link/info', auth, wrap(async (req, res) => {
+  const [id, code] = String(req.body?.link || '').split('.');
+  const l = links.get(id);
+  if (!l || l.code !== code || l.exp < Date.now() || l.uid) throw bad('This code has expired — refresh it on the computer and scan again');
+  res.json({ device: deviceLabel(l.ua) });
+}));
+app.post('/api/link/approve', auth, wrap(async (req, res) => {
+  rateLimit('link-approve:' + req.uid, 10, 60000);
+  const [id, code] = String(req.body?.link || '').split('.');
+  const l = links.get(id);
+  if (!l || l.code !== code || l.exp < Date.now() || l.uid) throw bad('This code has expired — refresh it on the computer and scan again');
+  l.uid = req.uid;
+  l.exp = Date.now() + 30000; // the computer finishes within seconds
+  res.json({ ok: true, device: deviceLabel(l.ua) });
 }));
 
 app.post('/api/logout', auth, wrap(async (req, res) => {
@@ -1117,6 +1181,14 @@ app.patch('/api/me', auth, wrap(async (req, res) => {
     }
     // SMS backup: your number, shared only with people you chat with one-to-one, and only if you allow it.
     if (typeof inSet.smsBackup === 'boolean') s.smsBackup = inSet.smsBackup;
+    if ('status' in inSet) {
+      const st = inSet.status;
+      if (!st || !STATUS_KINDS.includes(st.kind)) delete s.status;
+      else {
+        const until = Number(st.until) > Date.now() ? Math.min(Number(st.until), Date.now() + 60 * 86400e3) : null;
+        s.status = { kind: st.kind, text: clampStr(String(st.text || ''), 80).trim(), until };
+      }
+    }
     if (typeof inSet.buzzFromChats === 'boolean') {
       s.buzzFromChats = inSet.buzzFromChats;
       if (!inSet.buzzFromChats) buzz.forgetChatInterests(req.uid).catch(() => {}); // turning it off forgets everything learned
@@ -1187,9 +1259,22 @@ app.delete('/api/me/links/:provider(google)', auth, wrap(async (req, res) => {
 }));
 
 app.get('/api/me/sessions', auth, wrap(async (req, res) => {
-  const rows = await db.q('SELECT token_hash, ua_enc, created_at, last_used FROM sessions WHERE user_id=? ORDER BY last_used DESC', [req.uid]);
+  const rows = await db.q('SELECT s.token_hash, s.ua_enc, s.created_at, s.last_used, l.token_hash linked FROM sessions s LEFT JOIN session_links l ON l.token_hash=s.token_hash WHERE s.user_id=? ORDER BY s.last_used DESC', [req.uid]);
   const cur = C.sha256(req.token);
-  res.json({ sessions: rows.map((r) => ({ id: r.token_hash.slice(0, 16), ua: C.dec(r.ua_enc), createdAt: ms(r.created_at), lastUsed: ms(r.last_used), current: r.token_hash === cur })) });
+  res.json({ sessions: rows.map((r) => ({ id: r.token_hash.slice(0, 16), ua: C.dec(r.ua_enc), device: deviceLabel(C.dec(r.ua_enc) || ''), linked: !!r.linked, createdAt: ms(r.created_at), lastUsed: ms(r.last_used), current: r.token_hash === cur, online: false })) });
+}));
+// Sign out one device (e.g. a linked laptop).
+app.post('/api/me/sessions/:id/logout', auth, wrap(async (req, res) => {
+  const id = String(req.params.id || '');
+  if (!/^[a-f0-9]{16}$/.test(id)) throw bad('Unknown device');
+  const rows = await db.q('SELECT token_hash FROM sessions WHERE user_id=? AND token_hash LIKE ?', [req.uid, id + '%']);
+  for (const r of rows) {
+    if (r.token_hash === C.sha256(req.token)) continue;
+    await db.q('DELETE FROM sessions WHERE token_hash=?', [r.token_hash]);
+    await db.q('DELETE FROM session_links WHERE token_hash=?', [r.token_hash]);
+  }
+  emitToUser(req.uid, 'session:check', {});
+  res.json({ ok: true });
 }));
 
 app.post('/api/me/sessions/logout-others', auth, wrap(async (req, res) => {
