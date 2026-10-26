@@ -1,5 +1,5 @@
-// Usage analytics for the owner's admin portal: which screen is open and for how long, plus Buzz
-// stories seen/opened. Activity only — never message text, never call content.
+// Usage analytics for the owner's admin portal: which screen is open and for how long.
+// Activity only — never message text, never call content.
 import { isIOS, isAndroid, isStandalone } from './ui.js';
 
 let api = null, socket = null, queue = [], base = 'chats', overlays = [], since = 0, started = false;
@@ -43,7 +43,7 @@ export function initAnalytics(opts) {
 
 export function setSocket(s) { socket = s; s?.on('connect', () => s.emit('screen', { s: current(), p: platform, a: isStandalone() })); }
 
-// The main screen: chats list, a chat, a group, or Buzz.
+// The main screen: chats list, a chat, a group, or a workspace.
 export function setScreen(name) {
   if (name === base && !overlays.length) return;
   endSegment(); base = name; beginSegment();

@@ -1,4 +1,4 @@
-// In-app ads (set up by the owner on the admin page): a card inside the Buzz feed, and a banner above
+// In-app ads (set up by the owner on the admin page): a banner above
 // the chat list. Always labelled "Sponsored". A view counts once per ad per session, after the ad has
 // been at least half on screen for a second; a tap on the ad or its button counts as a click.
 import { h, icon } from './ui.js';
@@ -57,19 +57,6 @@ function mediaOf(ad, cls) {
     return [v, sound];
   }
   return [h('img', { class: cls, src: ad.media, alt: ad.headline, loading: 'lazy', decoding: 'async' })];
-}
-
-// A card in the Buzz feed.
-export function adCard(ad) {
-  const el = h('article', { class: 'bz-card ad-card', 'data-ad': ad.id, role: 'link', tabindex: '0', onclick: () => open(ad) },
-    h('div', { class: 'bz-media ad-media' }, ...mediaOf(ad, '')),
-    h('div', { class: 'bz-body' },
-      h('div', { class: 'bz-meta' }, h('span', { class: 'ad-tag' }, 'Sponsored'), ad.advertiser ? h('span', { class: 'bz-src' }, ad.advertiser) : null),
-      h('b', { class: 'bz-h ad-h' }, ad.headline),
-      ad.text ? h('p', { class: 'bz-d' }, ad.text) : null,
-      ad.url ? h('button', { class: 'ad-cta', onclick: (e) => { e.stopPropagation(); open(ad); } }, ad.cta || 'Learn more', icon('chev')) : null));
-  observer?.observe(el);
-  return el;
 }
 
 // A slim banner above the chat list; can be closed (for this session).

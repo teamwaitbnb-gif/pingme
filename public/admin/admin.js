@@ -1,4 +1,4 @@
-// Ping Me admin portal — the owner's view of users, screens, retention and Buzz.
+// Ping Me admin portal — the owner's view of users, screens, retention.
 const root = document.getElementById('root');
 const H = { 'content-type': 'application/json', 'x-pingme': '1' };
 const api = async (path, opts = {}) => {
@@ -17,7 +17,7 @@ const el = (tag, attrs = {}, ...kids) => {
   return e;
 };
 const fmt = (x) => (x == null ? '—' : Number(x).toLocaleString('en-IN'));
-const SCREEN_NAMES = { chats: 'Chats list', chat: 'One-to-one chat', group: 'Group chat', buzz: 'Buzz', call: 'Call', camera: 'Camera', settings: 'Settings', auth: 'Sign in', install: 'Install screen', other: 'Other' };
+const SCREEN_NAMES = { chats: 'Chats list', chat: 'One-to-one chat', group: 'Group chat', call: 'Call', camera: 'Camera', settings: 'Settings', auth: 'Sign in', install: 'Install screen', other: 'Other' };
 const ago = (t) => { if (!t) return '—'; const m = Math.round((Date.now() - t) / 60000); return m < 1 ? 'moments' : m < 60 ? `${m} min` : `${Math.round(m / 60)} h`; };
 let range = Number(localStorage.getItem('pmAdminRange') || 30), liveTimer = null;
 
@@ -67,13 +67,13 @@ const heat = (v) => {
 };
 
 // ───── dashboard ─────
-// /admin → full dashboard · /admin#algorithm → the Buzz suggestion algorithm on its own page.
-// Pages: #overview (default) · #speed · #errors · #users · #user/<id> · #calls · #activity · #algorithm
-const PAGES = [['overview', 'Overview'], ['speed', 'Speed'], ['errors', 'Errors'], ['users', 'Users'], ['calls', 'Calls'], ['pets', 'Pets'], ['activity', 'Activity'], ['algorithm', 'Buzz algorithm'], ['notify', 'Notifications'], ['ads', 'Ads']];
+// Owner dashboard.
+// Pages: #overview (default) · #speed · #errors · #users · #user/<id> · #calls · #activity
+const PAGES = [['overview', 'Overview'], ['speed', 'Speed'], ['errors', 'Errors'], ['users', 'Users'], ['calls', 'Calls'], ['pets', 'Pets'], ['activity', 'Activity'], ['notify', 'Notifications'], ['ads', 'Ads']];
 const route = () => {
   clearInterval(liveTimer);
   const [page, arg] = location.hash.replace(/^#/, '').split('/');
-  const fn = { speed: speedPage, errors: errorsPage, users: usersPage, user: () => userPage(arg), calls: callsPage, pets: petsPage, activity: activityPage, algorithm: algorithmPage, notify: notifyPage, ads: adsPage }[page] || dashboard;
+  const fn = { speed: speedPage, errors: errorsPage, users: usersPage, user: () => userPage(arg), calls: callsPage, pets: petsPage, activity: activityPage, notify: notifyPage, ads: adsPage }[page] || dashboard;
   window.scrollTo(0, 0);
   return fn();
 };
@@ -218,7 +218,6 @@ async function userPage(id) {
     el('div', { class: 'kpis', style: 'margin-top:14px' },
       kpiBox('Messages sent', fmt(d.messages.total), Object.entries(d.messages.kinds).filter(([k]) => k !== 'call').map(([k, v]) => `${v} ${k}`).join(' · ')),
       kpiBox('Calls (90d)', fmt(d.calls.total), `${d.calls.minutes} min · ${d.calls.missed} missed · ${d.calls.video} video`),
-      kpiBox('Buzz (30d)', fmt(d.buzz.opens), `opened · ${fmt(d.buzz.seen)} seen · ${d.buzz.watchMinutes} min video`),
       kpiBox('Photo views (90d)', fmt(d.photoViews.received), `${d.photoViews.people} people · viewed others ${d.photoViews.made}×`),
       kpiBox('App speed', msFmt(d.speed.bootP50 || null), `to open · send ${msFmt(d.speed.sendP50 || null)} · ${d.speed.slowRequests} slow requests`),
       kpiBox('Errors', fmt(d.errors.length), 'on their phone', d.errors.length ? 'bad' : 'good')),
@@ -227,8 +226,7 @@ async function userPage(id) {
       el('div', { class: 'card' }, el('h3', null, 'Time in each screen (30 days)'), d.screens.length ? el('div', { class: 'bars' }, d.screens.map((s) => el('div', { class: 'bar' }, el('span', null, SCREEN_NAMES[s.screen] || s.screen), el('div', { class: 'track' }, el('i', { style: `width:${Math.min(100, (s.minutes / Math.max(...d.screens.map((x) => x.minutes))) * 100)}%` })), el('span', { class: 'val' }, s.minutes + ' min')))) : el('div', { class: 'empty' }, 'No screen time yet')),
       el('div', { class: 'card' }, el('h3', null, 'Conversations'), el('div', { class: 'hint' }, 'Messages they sent in each'), table(['Chat', 'Type', ['Their messages', 'num'], 'Last activity'], d.messages.chats.map((c) => el('tr', null, el('td', null, c.title), el('td', null, c.type), el('td', { class: 'num' }, fmt(c.mine)), el('td', null, c.last ? ago(c.last) + ' ago' : '—'))))),
       el('div', { class: 'card' }, el('h3', null, 'Devices & sign-ins'), el('div', { class: 'hint' }, d.device ? `Main device: ${d.device.platform}${d.device.installed ? ' · installed app' : ' · browser'}` : ''), table(['Device', 'Signed in', 'Last used'], d.sessions.map((s) => el('tr', null, el('td', null, s.device), el('td', null, when(s.signedIn)), el('td', null, ago(s.lastUsed) + ' ago'))))),
-      el('div', { class: 'card' }, el('h3', null, 'Recent calls'), table(['When', 'Type', 'Role', 'Result'], d.calls.recent.map((c) => el('tr', null, el('td', null, when(c.at)), el('td', null, c.video ? 'video' : 'audio'), el('td', null, c.caller ? 'made' : 'received'), el('td', null, c.missed ? 'missed' : durFmt(c.dur)))), 'No calls')),
-      el('div', { class: 'card' }, el('h3', null, 'Buzz'), el('div', { class: 'hint' }, `${d.buzz.likes} likes · ${d.buzz.comments} comments · ${d.buzz.reposts} reposts · ${d.buzz.plays} videos watched`), d.buzz.topics.length ? el('div', { class: 'bars' }, d.buzz.topics.map((t) => el('div', { class: 'bar' }, el('span', null, t.topic), el('div', { class: 'track' }, el('i', { style: `width:${(t.n / d.buzz.topics[0].n) * 100}%;background:var(--orange)` })), el('span', { class: 'val' }, t.n)))) : el('div', { class: 'empty' }, 'No Buzz activity'))),
+      el('div', { class: 'card' }, el('h3', null, 'Recent calls'), table(['When', 'Type', 'Role', 'Result'], d.calls.recent.map((c) => el('tr', null, el('td', null, when(c.at)), el('td', null, c.video ? 'video' : 'audio'), el('td', null, c.caller ? 'made' : 'received'), el('td', null, c.missed ? 'missed' : durFmt(c.dur)))), 'No calls'))),
     el('h2', null, 'Timeline', el('small', null, 'everything they did, newest first')),
     el('div', { class: 'card' }, d.timeline.length ? el('div', { class: 'timeline' }, d.timeline.map((t) => el('div', { class: 'ev k-' + t.kind }, el('span', { class: 't' }, when(t.at)), el('span', null, actText(t))))) : el('div', { class: 'empty' }, 'No activity recorded yet (the activity log started with this release)')),
     d.errors.length ? el('div', null, el('h2', null, 'Errors on their phone'), el('div', { class: 'card' }, table(['When', 'Where', 'Error'], d.errors.map((e) => el('tr', null, el('td', null, when(e.at)), el('td', null, el('span', { class: 'chip' }, e.where)), el('td', { class: 'title-cell' }, e.msg)))))) : null));
@@ -253,12 +251,12 @@ async function callsPage() {
 
 // ───── Pets ─────
 const PET_ACTIONS = { feed: '🍖 Feed', play: '🎾 Play', poke: '🤚 Pet', rename: '✏️ Rename', outfit: '🎀 Outfit', cage: '🔒 Cage', release: '🔓 Let out' };
-// ───── Ads: photo/video ads in Buzz and above the chat list ─────
+// ───── Ads: photo/video ads above the chat list ─────
 async function adsPage(editing = null) {
   loading('Loading ads…');
   let d; try { d = await api('/api/admin/ads'); } catch (e) { return fail(e); }
   const post = (path, body) => api(path, { method: 'POST', body: JSON.stringify(body) });
-  const f = editing || { placement: 'buzz', region: 'all', cta: 'Learn more', every: 8, weight: 1, active: true };
+  const f = editing || { placement: 'chats', region: 'all', cta: 'Learn more', every: 8, weight: 1, active: true };
   const inp = (key, attrs = {}) => { const i = el('input', { class: 'search', value: f[key] ?? '', ...attrs }); i.oninput = () => { f[key] = i.value; draw(); }; return i; };
   const sel = (key, opts) => { const s = el('select', { class: 'search' }, opts.map(([v, l]) => el('option', { value: v, selected: String(f[key]) === String(v) }, l))); s.onchange = () => { f[key] = s.value; draw(); }; return s; };
   const local = (t) => (t ? new Date(t - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '');
@@ -300,9 +298,8 @@ async function adsPage(editing = null) {
         inp('advertiser', { maxlength: 40, placeholder: 'Advertiser name (shown next to “Sponsored”)' }),
         el('div', { class: 'nf-grid' }, inp('cta', { maxlength: 24, placeholder: 'Button text' }), inp('url', { placeholder: 'Link — https://…' })),
         el('div', { class: 'nf-grid' },
-          el('label', { class: 'nf-field' }, el('span', null, 'Where'), sel('placement', [['buzz', 'In the Buzz feed'], ['chats', 'Banner above chats']])),
+          el('label', { class: 'nf-field' }, el('span', null, 'Where'), sel('placement', [['chats', 'Banner above chats']])),
           el('label', { class: 'nf-field' }, el('span', null, 'Who'), sel('region', d.cities.map((c) => [c.id, c.name]))),
-          el('label', { class: 'nf-field' }, el('span', null, 'In Buzz, one every'), sel('every', [4, 6, 8, 10, 12, 15, 20].map((n) => [n, `${n} stories`]))),
           el('label', { class: 'nf-field' }, el('span', null, 'Weight'), sel('weight', [1, 2, 3, 5, 10].map((n) => [n, n === 1 ? 'Normal' : `${n}× more often`])))),
         el('div', { class: 'nf-grid' }, el('label', { class: 'nf-field' }, el('span', null, 'Starts (optional)'), dateInp('startAt')), el('label', { class: 'nf-field' }, el('span', null, 'Ends (optional)'), dateInp('endAt'))),
         el('div', { class: 'nf-row' }, save, f.id ? el('button', { class: 'nf-btn ghost', onclick: () => adsPage() }, 'Cancel') : null)),
@@ -312,7 +309,7 @@ async function adsPage(editing = null) {
       d.ads.map((a) => el('tr', null,
         el('td', null, a.mediaUrl ? (a.kind === 'video' ? el('video', { class: 'ad-row-media', src: a.mediaUrl, muted: true }) : el('img', { class: 'ad-row-media', src: a.mediaUrl, alt: '' })) : '—'),
         el('td', null, el('b', null, a.headline), el('div', { class: 'hint' }, a.advertiser || a.url || '')),
-        el('td', null, a.placement === 'buzz' ? `Buzz · every ${a.every}` : 'Chats banner'),
+        el('td', null, 'Chats banner'),
         el('td', null, (d.cities.find((c) => c.id === a.region) || {}).name || a.region),
         el('td', null, a.startAt || a.endAt ? `${a.startAt ? when(a.startAt) : 'now'} → ${a.endAt ? when(a.endAt) : 'no end'}` : 'Always'),
         el('td', { class: 'num' }, fmt(a.views)), el('td', { class: 'num' }, fmt(a.clicks)), el('td', { class: 'num' }, ctr(a)),
@@ -333,12 +330,11 @@ async function notifyPage() {
   const title = el('input', { class: 'search', maxlength: 80, placeholder: 'Title — e.g. New in Ping Me' });
   const body = el('textarea', { class: 'search nf-body', maxlength: 300, rows: 3, placeholder: 'Message (up to 300 characters)' });
   const link = el('input', { class: 'search', placeholder: 'Optional link: /?chat=123 or https://…' });
-  const to = el('select', { class: 'search' }, [['all', 'Everyone'], ['active', 'Active in the last 7 days'], ['city', 'People in a city'], ['users', 'Specific usernames']].map(([v, l]) => el('option', { value: v }, l)));
-  const city = el('select', { class: 'search', hidden: true }, d.cities.map((x) => el('option', { value: x.id }, x.name)));
+  const to = el('select', { class: 'search' }, [['all', 'Everyone'], ['active', 'Active in the last 7 days'], ['users', 'Specific usernames']].map(([v, l]) => el('option', { value: v }, l)));
   const users = el('input', { class: 'search', hidden: true, placeholder: 'Usernames, comma separated — e.g. vijay, asha' });
   const status = el('div', { class: 'hint' });
-  to.onchange = () => { city.hidden = to.value !== 'city'; users.hidden = to.value !== 'users'; status.textContent = ''; };
-  const payload = (preview) => ({ title: title.value, body: body.value, url: link.value, to: to.value, city: city.value, usernames: users.value, preview });
+  to.onchange = () => { users.hidden = to.value !== 'users'; status.textContent = ''; };
+  const payload = (preview) => ({ title: title.value, body: body.value, url: link.value, to: to.value, usernames: users.value, preview });
   const send = el('button', { class: 'nf-btn', onclick: async () => {
     try {
       const p = await post('/api/admin/notify/send', payload(true));
@@ -384,23 +380,12 @@ async function notifyPage() {
     el('div', { class: 'kpis' },
       kpiBox('Notifications on', `${fmt(d.pushOn)} / ${fmt(d.reachable)}`, 'people whose phone allows Ping Me notifications', d.pushOn < d.reachable / 2 ? 'warn' : 'good'),
       d.delivery ? kpiBox('Message delivery (since start)', fmt(d.delivery.confirmed), `confirmed by phones · ${fmt(d.delivery.sent)} sent · ${fmt(d.delivery.retried)} re-sent`) : null,
-      kpiBox('Buzz alerts (24 h)', fmt(today.buzz || 0), `${fmt(d.optedOut.buzz)} turned them off`),
       kpiBox('Pet alerts (24 h)', fmt(today.pets || 0), `${fmt(d.optedOut.pets)} turned them off`),
       kpiBox('Your messages (24 h)', fmt(today.admin || 0), 'sent from this page')),
     el('div', { class: 'grid2', style: 'margin-top:14px' },
       el('div', { class: 'card' }, el('h3', null, 'Send a notification'), el('div', { class: 'hint' }, 'Arrives as a phone notification, and as a banner if the app is open.'),
-        title, body, link, to, city, users, el('div', { class: 'nf-row' }, send, status)),
+        title, body, link, to, users, el('div', { class: 'nf-row' }, send, status)),
       el('div', { class: 'card' }, el('h3', null, 'Automatic notifications', savedNote),
-        el('div', { class: 'nf-auto' },
-          el('div', { class: 'nf-head' }, el('b', null, 'Trending on Buzz'), sw(c.buzz.on, (v) => save({ buzz: { on: v } }))),
-          el('div', { class: 'hint' }, d.nextBuzz ? `Top viral story now: “${d.nextBuzz.title}” (${d.nextBuzz.outlets} outlet${d.nextBuzz.outlets === 1 ? '' : 's'}). Tapping a notification opens that story in Buzz.` : 'No fresh stories right now.'),
-          el('div', { class: 'nf-grid' },
-            field('Per person per day', num(c.buzz.perDay, 0, 30, (v) => save({ buzz: { perDay: v } })), 'different stories'),
-            field('Minutes between', num(c.buzz.gapMinutes, 15, 600, (v) => save({ buzz: { gapMinutes: v } }))),
-            field('Covered by at least', num(c.buzz.minOutlets, 1, 10, (v) => save({ buzz: { minOutlets: v } })), 'outlets (or trending)'),
-            field('From (IST hour)', num(c.buzz.from, 0, 23, (v) => save({ buzz: { from: v } }))),
-            field('Until (IST hour)', num(c.buzz.to, 1, 24, (v) => save({ buzz: { to: v } })))),
-          runNow('/api/admin/notify/buzz-now', 'Send the top story now')),
         el('div', { class: 'nf-auto' },
           el('div', { class: 'nf-head' }, el('b', null, 'Hungry group pets'), sw(c.pets.on, (v) => save({ pets: { on: v } }))),
           el('div', { class: 'hint' }, 'Reminds a group when its pet’s hunger drops low. Only groups that chatted recently.'),
@@ -413,7 +398,7 @@ async function notifyPage() {
           runNow('/api/admin/notify/pets-now', 'Check pets and remind now')))),
     el('h2', null, 'Sent', el('small', null, 'newest first')),
     el('div', { class: 'card' }, table(['When', 'Kind', 'Title', 'Message', 'To', ['People', 'num']],
-      d.history.map((x) => el('tr', null, el('td', null, when(x.createdAt)), el('td', null, { admin: 'You', buzz: 'Buzz', pet: 'Pets' }[x.kind] || x.kind),
+      d.history.map((x) => el('tr', null, el('td', null, when(x.createdAt)), el('td', null, { admin: 'You', pet: 'Pets' }[x.kind] || x.kind),
         el('td', null, el('b', null, x.title)), el('td', null, x.body), el('td', null, x.audience), el('td', { class: 'num' }, fmt(x.recipients)))), 'Nothing sent yet'))));
 }
 
@@ -472,24 +457,11 @@ async function activityPage(kind = '') {
     el('div', { class: 'card', style: 'margin-top:14px' }, d.events.length ? el('div', { class: 'timeline' }, d.events.map((t) => el('div', { class: 'ev clickable k-' + t.kind, onclick: () => t.userId && (location.hash = 'user/' + t.userId) }, el('span', { class: 't' }, when(t.at)), el('b', null, t.name), el('span', null, actText(t))))) : el('div', { class: 'empty' }, 'No activity yet — it’s recorded from this release on'))));
 }
 
-async function algorithmPage() {
-  clearInterval(liveTimer);
-  root.replaceChildren(el('div', { class: 'loading' }, 'Loading algorithm performance…'));
-  let algo;
-  try { algo = await api(`/api/admin/algo?days=${range}`); } catch (e) { if (e.status === 401) return boot(); root.replaceChildren(el('div', { class: 'loading' }, e.message)); return; }
-  const seg = el('div', { class: 'seg' }, [7, 30, 90].map((d) => el('button', { class: d === range ? 'on' : '', onclick: () => { range = d; localStorage.setItem('pmAdminRange', d); algorithmPage(); } }, `${d} days`)));
-  const kpi = (l, v, s2, cls) => el('div', { class: 'kpi ' + (cls || '') }, el('div', { class: 'l' }, l), el('div', { class: 'v' }, v), s2 ? el('div', { class: 's' }, s2) : null);
-  root.replaceChildren(el('div', { class: 'wrap' },
-    nav('algorithm', `How well For You suggestions work · updated ${new Date().toLocaleTimeString()}`, [seg]),
-    ...algoSection(algo, kpi),
-    el('p', { class: 'foot' }, '“Engaged” = opened, liked, commented, reposted, or read at least 60% of the story. Lift = how much more often people engage with stories picked for them than with trending stories (above 1× means personalisation works). Learning curve = engagement as people see more stories — rising means suggestions get better with use.')));
-}
-
 async function dashboard() {
   root.replaceChildren(el('div', { class: 'loading' }, 'Loading dashboard…'));
-  const [ov, ts, ret, scr, bz, live, users, algo, errs] = await Promise.all([
+  const [ov, ts, ret, scr, live, users, errs] = await Promise.all([
     api('/api/admin/overview'), api(`/api/admin/timeseries?days=${range}`), api('/api/admin/retention'),
-    api(`/api/admin/screens?days=${range}`), api(`/api/admin/buzz?days=${range}`), api('/api/admin/live'), api('/api/admin/users'), api(`/api/admin/algo?days=${range}`), api('/api/admin/errors'),
+    api(`/api/admin/screens?days=${range}`), api('/api/admin/live'), api('/api/admin/users'), api('/api/admin/errors'),
   ]).catch((e) => { if (e.status === 401) { boot(); return []; } root.replaceChildren(el('div', { class: 'loading' }, e.message)); return []; });
   if (!ov) return;
   const seg = el('div', { class: 'seg' }, [7, 30, 90].map((d) => el('button', { class: d === range ? 'on' : '', onclick: () => { range = d; localStorage.setItem('pmAdminRange', d); dashboard(); } }, `${d} days`)));
@@ -507,7 +479,6 @@ async function dashboard() {
       kpi('Stickiness', ov.mau ? Math.round((ov.dau / ov.mau) * 100) + '%' : '—', 'daily ÷ monthly active'),
       kpi('Avg time today', `${ov.avgMinutesToday} min`, 'per active user'),
       kpi('Messages today', fmt(ov.messagesToday), `${fmt(ov.callsToday)} calls`),
-      kpi('Buzz today', fmt(ov.buzzUsersToday), `${ov.buzzMinutesToday} min per Buzz user`),
       kpi('Installed app', deviceTotal ? Math.round((installed / deviceTotal) * 100) + '%' : '—', `${fmt(installed)} of ${fmt(deviceTotal)} devices`)),
 
     el('h2', null, 'Live now', el('small', null, 'refreshes every 10 seconds')),
@@ -515,32 +486,16 @@ async function dashboard() {
 
     el('h2', null, 'Growth & activity', el('small', null, `last ${range} days`)),
     el('div', { class: 'grid2' },
-      el('div', { class: 'card' }, el('h3', null, 'Daily active users'), el('div', { class: 'hint' }, 'People who opened Ping Me that day'), chart(ts.days, [{ key: 'dau', label: 'active users', color: 'var(--accent)' }, { key: 'buzzUsers', label: 'used Buzz', color: 'var(--orange)' }])),
+      el('div', { class: 'card' }, el('h3', null, 'Daily active users'), el('div', { class: 'hint' }, 'People who opened Ping Me that day'), chart(ts.days, [{ key: 'dau', label: 'active users', color: 'var(--accent)' }])),
       el('div', { class: 'card' }, el('h3', null, 'New users'), el('div', { class: 'hint' }, 'Sign-ups per day'), chart(ts.days, [{ key: 'newUsers', label: 'new users', color: 'var(--blue)' }], { type: 'bar' })),
       el('div', { class: 'card' }, el('h3', null, 'Messages & calls'), el('div', { class: 'hint' }, 'Sent per day'), chart(ts.days, [{ key: 'messages', label: 'messages', color: 'var(--purple)' }, { key: 'calls', label: 'calls', color: 'var(--accent)' }], { type: 'bar' })),
       el('div', { class: 'card' }, el('h3', null, 'Time spent'), el('div', { class: 'hint' }, 'Average minutes per active user'), chart(ts.days, [{ key: 'avgMinutes', label: 'minutes / user', color: 'var(--pink)' }]))),
 
     el('h2', null, 'Retention', el('small', null, 'of people who started that week, how many came back')),
-    el('div', { class: 'grid2' }, retentionCard('Ping Me (by sign-up week)', ret.app), retentionCard('Buzz (by first Buzz week)', ret.buzz)),
+    el('div', { class: 'grid2' }, retentionCard('Ping Me (by sign-up week)', ret.app)),
 
     el('h2', null, 'Where people spend time', el('small', null, `last ${range} days`)),
     el('div', { class: 'grid2' }, screensCard(scr.screens), devicesCard(ov.devices)),
-
-    el('h2', null, 'Buzz', el('small', null, `last ${range} days`)),
-    el('div', { class: 'kpis' },
-      kpi('Buzz readers', fmt(bz.users)), kpi('Stories seen', fmt(bz.seen)), kpi('Stories opened', fmt(bz.opens), `${bz.ctr}% of seen`),
-      kpi('Likes', fmt(bz.likes)), kpi('Comments', fmt(bz.comments)), kpi('Reposts', fmt(bz.reposts))),
-    el('div', { class: 'grid2', style: 'margin-top:14px' },
-      el('div', { class: 'card' }, el('h3', null, 'Stories opened per day'), chart(ts.days, [{ key: 'buzzOpens', label: 'opens', color: 'var(--orange)' }], { type: 'bar' })),
-      barsCard('Cities chosen in Buzz', Object.entries(bz.regions).sort((a, b) => b[1] - a[1]).map(([k, v]) => [k[0].toUpperCase() + k.slice(1), v]), 'readers'),
-      barsCard('Most-opened sources', bz.sources.map((s) => [s.source, s.opens]), 'opens')),
-    el('div', { class: 'card', style: 'margin-top:14px' }, el('h3', null, 'Top stories'), el('div', { class: 'hint' }, 'Ranked by opens, comments, reposts and likes'),
-      bz.top.length ? el('div', { class: 'tablewrap' }, el('table', null,
-        el('tr', null, el('th', null, 'Story'), el('th', null, 'Source'), el('th', { class: 'num' }, 'Opens'), el('th', { class: 'num' }, 'Likes'), el('th', { class: 'num' }, 'Comments'), el('th', { class: 'num' }, 'Reposts')),
-        bz.top.map((t) => el('tr', null, el('td', { class: 'title-cell', title: t.title }, t.title), el('td', null, t.source), el('td', { class: 'num' }, fmt(t.opens)), el('td', { class: 'num' }, fmt(t.likes)), el('td', { class: 'num' }, fmt(t.comments)), el('td', { class: 'num' }, fmt(t.reposts))))))
-        : el('div', { class: 'empty' }, 'No story activity yet')),
-
-    ...algoSection(algo, kpi),
 
     el('h2', null, 'App errors', el('small', null, 'crashes on people’s phones · last 14 days')),
     el('div', { class: 'card' }, errs.errors.length ? el('div', { class: 'tablewrap' }, el('table', null,
@@ -549,64 +504,15 @@ async function dashboard() {
 
     el('h2', null, 'Users', el('small', null, 'most recently active first')),
     el('div', { class: 'card' }, el('div', { class: 'tablewrap' }, el('table', null,
-      el('tr', null, el('th', null, ''), el('th', null, 'Name'), el('th', null, 'Username'), el('th', null, 'Last active'), el('th', { class: 'num' }, 'Active days (30d)'), el('th', { class: 'num' }, 'Minutes (7d)'), el('th', { class: 'num' }, 'Messages (7d)'), el('th', { class: 'num' }, 'Buzz days'), el('th', null, 'Device')),
+      el('tr', null, el('th', null, ''), el('th', null, 'Name'), el('th', null, 'Username'), el('th', null, 'Last active'), el('th', { class: 'num' }, 'Active days (30d)'), el('th', { class: 'num' }, 'Minutes (7d)'), el('th', { class: 'num' }, 'Messages (7d)'), el('th', null, 'Device')),
       users.users.map((u) => el('tr', null, el('td', null, el('span', { class: 'dot' + (u.online ? '' : ' off'), title: u.online ? 'online' : 'offline' })), el('td', null, u.name), el('td', null, u.username ? '@' + u.username : '—'),
-        el('td', null, u.lastActive || '—'), el('td', { class: 'num' }, fmt(u.activeDays30)), el('td', { class: 'num' }, u.minutes7d), el('td', { class: 'num' }, fmt(u.messages7d)), el('td', { class: 'num' }, fmt(u.buzzDays30)),
+        el('td', null, u.lastActive || '—'), el('td', { class: 'num' }, fmt(u.activeDays30)), el('td', { class: 'num' }, u.minutes7d), el('td', { class: 'num' }, fmt(u.messages7d)),
         el('td', null, `${u.platform}${u.installed ? ' · app' : u.platform !== '—' ? ' · browser' : ''}`)))))),
-    el('p', { class: 'foot' }, 'Ping Me records activity only — which screen is open and for how long, app opens, and which Buzz stories were seen or opened. Message text and calls are never recorded. Raw events are kept for 120 days; daily summaries stay.'));
+    el('p', { class: 'foot' }, 'Ping Me records activity only — which screen is open and for how long, app opens, app usage. Message text and calls are never recorded. Raw events are kept for 120 days; daily summaries stay.'));
   root.replaceChildren(page);
   renderLive(liveBox, live);
   clearInterval(liveTimer);
   liveTimer = setInterval(async () => { try { renderLive(liveBox, await api('/api/admin/live')); } catch {} }, 10000);
-}
-
-// ───── suggestion algorithm ─────
-const P = (v) => (v == null ? '—' : v + '%');
-const delta = (v) => (v == null ? el('span', { style: 'color:var(--text2)' }, '—') : el('b', { class: v > 0 ? 'up' : v < 0 ? 'down' : '' }, (v > 0 ? '+' : '') + v + ' pts'));
-function algoSection(a, kpi) {
-  const s = a.summary;
-  const liftCls = s.lift == null ? '' : s.lift >= 1.1 ? 'good' : s.lift >= 0.9 ? '' : 'bad';
-  return [
-    el('h2', null, 'Suggestion algorithm', el('small', null, `how well For You is working · last ${range} days`)),
-    el('div', { class: 'card verdict' }, el('h3', null, 'How it’s doing'),
-      a.notes.length && s.impressions ? el('ul', null, a.notes.map((t) => el('li', null, t))) : el('div', { class: 'empty' }, 'No Buzz impressions recorded yet — numbers appear once people scroll Buzz on the new version.')),
-    el('div', { class: 'kpis', style: 'margin-top:14px' },
-      kpi('Engagement rate', P(s.engagedRate), `of ${fmt(s.impressions)} stories seen by ${fmt(s.users)} people`),
-      kpi('Personal picks', P(s.personalRate), 'engaged when chosen for the person'),
-      kpi('Trending picks', P(s.trendingRate), 'engaged when chosen by popularity'),
-      kpi('Personalisation lift', s.lift == null ? '—' : s.lift + '×', 'personal ÷ trending (above 1 = it works)', liftCls),
-      kpi('Skip rate', P(s.skipRate), 'flicked past in under a second'),
-      kpi('Avg reading', s.avgRead == null ? '—' : s.avgRead + '%', 'of a story’s reading time'),
-      kpi('Repeats', fmt(s.repeats), s.repeats ? `${s.repeatRate}% shown twice` : 'no story shown twice', s.repeats ? 'bad' : 'good'),
-      kpi('Learn from chats', fmt(s.chatOptIn), 'people opted in')),
-    el('div', { class: 'grid2', style: 'margin-top:14px' },
-      el('div', { class: 'card' }, el('h3', null, 'Engagement per day'), el('div', { class: 'hint' }, '% of seen stories people engaged with (opened, liked, commented, reposted or read 60%+)'),
-        chart(a.daily, [{ key: 'personal', label: 'personal picks %', color: 'var(--accent)' }, { key: 'trending', label: 'trending picks %', color: 'var(--orange)' }, { key: 'skip', label: 'skip %', color: 'var(--pink)' }])),
-      el('div', { class: 'card' }, el('h3', null, 'Learning curve'), el('div', { class: 'hint' }, 'Engagement by how many stories a person has already seen — rising bars mean suggestions get better the more someone uses Buzz'),
-        a.curve.length ? curveBars(a.curve) : el('div', { class: 'empty' }, 'Not enough data yet'))),
-    el('div', { class: 'card', style: 'margin-top:14px' }, el('h3', null, 'Each part of the algorithm'), el('div', { class: 'hint' }, 'Every story is chosen by one part; this is how each part performs'),
-      a.slots.length ? el('div', { class: 'tablewrap' }, el('table', null,
-        el('tr', null, el('th', null, 'Part'), el('th', { class: 'num' }, 'Share of feed'), el('th', { class: 'num' }, 'Seen'), el('th', { class: 'num' }, 'Engaged'), el('th', { class: 'num' }, 'Opened'), el('th', { class: 'num' }, 'Liked'), el('th', { class: 'num' }, 'Skipped'), el('th', { class: 'num' }, 'Avg reading')),
-        a.slots.map((r) => el('tr', null, el('td', null, r.name), el('td', { class: 'num' }, P(r.share)), el('td', { class: 'num' }, fmt(r.impressions)), el('td', { class: 'num' }, heat(r.engagedRate == null ? null : Math.round(r.engagedRate))), el('td', { class: 'num' }, P(r.openRate)), el('td', { class: 'num' }, P(r.likeRate)), el('td', { class: 'num' }, P(r.skipRate)), el('td', { class: 'num' }, r.avgRead == null ? '—' : r.avgRead + '%')))))
-        : el('div', { class: 'empty' }, 'No data yet')),
-    el('div', { class: 'grid2', style: 'margin-top:14px' },
-      el('div', { class: 'card' }, el('h3', null, 'Topics: shown vs loved'), el('div', { class: 'hint' }, 'If a topic’s share of engagement is bigger than its share of the feed, people want more of it'),
-        a.topics.length ? el('div', { class: 'tablewrap' }, el('table', null,
-          el('tr', null, el('th', null, 'Topic'), el('th', { class: 'num' }, 'Share shown'), el('th', { class: 'num' }, 'Share engaged'), el('th', { class: 'num' }, 'Engaged')),
-          a.topics.map((t) => el('tr', null, el('td', null, t.topic[0].toUpperCase() + t.topic.slice(1)), el('td', { class: 'num' }, P(t.share)), el('td', { class: 'num' }, el('b', { class: t.engagedShare > t.share + 2 ? 'up' : t.engagedShare < t.share - 2 ? 'down' : '' }, P(t.engagedShare))), el('td', { class: 'num' }, P(t.engagedRate))))))
-          : el('div', { class: 'empty' }, 'No data yet')),
-      el('div', { class: 'card' }, el('h3', null, 'Per person'), el('div', { class: 'hint' }, 'Engagement in their first 50 stories vs their latest 50'),
-        a.users.length ? el('div', { class: 'tablewrap' }, el('table', null,
-          el('tr', null, el('th', null, 'Person'), el('th', { class: 'num' }, 'Seen'), el('th', { class: 'num' }, 'Engaged'), el('th', { class: 'num' }, 'First → latest'), el('th', null, 'Loves')),
-          a.users.map((u) => el('tr', null, el('td', null, u.name), el('td', { class: 'num' }, fmt(u.impressions)), el('td', { class: 'num' }, P(u.engagedRate)),
-            el('td', { class: 'num' }, u.early == null ? el('span', { style: 'color:var(--text2)' }, 'needs 60+') : el('span', null, `${u.early}% → ${u.recent}% `, delta(u.change))), el('td', null, u.loves.join(', ') || '—')))))
-          : el('div', { class: 'empty' }, 'No data yet'))),
-  ];
-}
-function curveBars(rows) {
-  const max = Math.max(1, ...rows.map((r) => r.engagedRate || 0));
-  return el('div', { class: 'bars', style: 'margin-top:10px' }, rows.map((r) => el('div', { class: 'bar' }, el('span', null, r.bucket),
-    el('div', { class: 'track' }, el('i', { style: `width:${((r.engagedRate || 0) / max) * 100}%` })), el('span', { class: 'val', title: `${r.users} people · ${r.impressions} stories · skip ${r.skipRate}%` }, P(r.engagedRate)))));
 }
 
 function renderLive(box, live) {

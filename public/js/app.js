@@ -1,11 +1,10 @@
+import { initWorkspaces, captureWorkspaceInvite } from './workspaces.js';
 import { loadAds, adBanner, bannerHidden, rotation } from './ads.js';
-import { initMap } from './map.js';
 import { initMoney } from './money.js';
 import { statusText, statusDot, openStatusPicker } from './status.js';
-import { openPetShop, coinIcon } from './pet-shop.js';
+import { openPetShop } from './pet-shop.js';
 import { openCamera } from './camera.js';
 import { mountPet, petHidden } from './pet.js';
-import { initBuzz } from './buzz.js';
 import { initAnalytics, setSocket, setScreen, pushScreen, popScreen, reportError, track } from './analytics.js';
 import {
   h, reconcileChildren, icon, esc, avatar, toast, actionSheet, confirmDialog, closeTop, registerLayer, openSheet, handleLayerPop, whenHistorySettled, longPress, richText, emojiCount,
@@ -55,7 +54,7 @@ if (window.visualViewport) {
 
 // Keep the app pinned like a native app: no page rubber-banding, no pinch / double-tap zoom.
 // Only real scroll areas (lists, chats, sheets) move.
-const SCROLLERS = '.msgs, .mention-bar, .sb-list, .sheet-body, .onboard-in, .actions .grp, .ctx .menu, .tray, .people-row, .story-strip, .emoji-grid, .eo-content, textarea, .tabs, .chips, .opts-bar, .sugg-row, .stats, .gate, .auth, .vb, .st-text, .lockscreen, .wrapped, .buzz-pane, .ed-options, .ed-tools, .cam-tools, .bz-src-list';
+const SCROLLERS = '.msgs, .mention-bar, .sb-list, .sheet-body, .onboard-in, .actions .grp, .ctx .menu, .tray, .people-row, .story-strip, .emoji-grid, .eo-content, textarea, .tabs, .chips, .opts-bar, .sugg-row, .stats, .gate, .auth, .vb, .st-text, .lockscreen, .wrapped, .section-pane, .ed-options, .ed-tools, .cam-tools';
 document.addEventListener('touchmove', (e) => {
   if (e.touches.length > 1) { if (!e.target.closest('.vb')) e.preventDefault(); return; }
   if (!e.target.closest(SCROLLERS)) e.preventDefault();
@@ -106,6 +105,7 @@ document.addEventListener('visibilitychange', () => {
 });
 
 async function boot() {
+  captureWorkspaceInvite();
   applyPrefs();
   checkRelease(true);
   if ('serviceWorker' in navigator) {
@@ -167,7 +167,7 @@ async function boot() {
   let me = null;
   for (let attempt = 0; ; attempt++) {
     try { ({ user: me } = await Promise.race([api('GET', '/api/session'), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 6000))])); break; }
-    catch { booted(); await showConnecting(attempt); }
+    catch (error) { booted(); await showConnecting(attempt, error); }
   }
   booted();
   if (me) {
@@ -188,29 +188,35 @@ function booted() {
   try { sessionStorage.removeItem('pm:boot-retry'); } catch {}
 }
 // Shown while Ping Me can't reach the server at start-up; resolves when it's time to try again.
-function showConnecting(attempt) {
+function showConnecting(attempt, error) {
   return new Promise((resolve) => {
+    const offline = navigator.onLine === false;
+    let message = 'Unable to reach Ping Me. Retrying automatically.';
+    if (error?.status === 404) message = 'This server could not find Ping Me’s sign-in service. Check the app address or server deployment.';
+    else if (error?.status >= 500) message = 'Ping Me’s server is temporarily unavailable. Retrying automatically.';
+    else if (error?.message === 'timeout') message = 'Ping Me is taking too long to respond. Retrying automatically.';
     const wait = Math.min(15000, 2000 + attempt * 2000);
     const retry = () => { clearTimeout(t); removeEventListener('online', retry); resolve(); };
     const t = setTimeout(retry, wait);
     addEventListener('online', retry);
     app.replaceChildren(h('div', { class: 'connecting' },
       h('img', { src: '/icons/icon-192.png', alt: '', width: 72, height: 72 }),
-      h('b', null, navigator.onLine === false ? 'You’re offline' : 'Connecting to Ping Me…'),
-      h('span', null, navigator.onLine === false ? 'Ping Me will open as soon as you’re back online.' : 'Your connection seems slow. Retrying automatically.'),
+      h('b', null, offline ? 'You’re offline' : 'Connecting to Ping Me…'),
+      h('span', null, offline ? 'Ping Me will open as soon as you’re back online.' : message),
       h('button', { class: 'btn', onclick: retry }, 'Try now')));
   });
 }
 
 // A sponsored banner above the chat list (if the owner is running one); closable for the session.
 async function showChatAd() {
-  const ads = (await loadAds('chats', S.me?.settings?.buzzRegion || 'india')).filter((a) => !bannerHidden(a));
+  const ads = (await loadAds('chats', 'india')).filter((a) => !bannerHidden(a));
   if (!els.adSlot) return;
   const ad = ads.length ? rotation(ads)() : null;
   els.adSlot.replaceChildren(...(ad ? [adBanner(ad, () => els.adSlot.replaceChildren())] : []));
 }
 
 function showAuth(mode) {
+  S.work?.hide();
   S.pet?.destroy(); S.pet = null;
   stopPersonalPets();
   S.socket?.disconnect();
@@ -332,7 +338,6 @@ function startApp() {
       h('img', { class: 'sb-logo', src: '/icons/logo-h.svg', alt: 'pingme' }),
       h('div', { class: 'spacer' }),
       installed() ? null : h('button', { class: 'get-app', onclick: () => installApp().then((r) => { if (r === 'installed') renderMeBtn(); }), 'aria-label': 'Get app' }, icon('download'), h('span', { class: 'ga-t' }, 'Get app')),
-      els.coinChip = h('button', { class: 'coin-chip', hidden: true, title: 'PingCoins', 'aria-label': 'PingCoins', onclick: () => openPetShop({ intro: true }) }, h('span', { class: 'cc-coin' }, coinIcon(20)), h('b', null, '0')),
       h('button', { class: 'icon-btn', title: 'Scan QR code', 'aria-label': 'Scan QR code', onclick: () => openScanner() }, icon('scan')),
       h('button', { class: 'icon-btn', title: 'New message', 'aria-label': 'New message', onclick: () => openNewMessage() }, icon('compose')),
       els.meBtn),
@@ -341,30 +346,22 @@ function startApp() {
     h('div', { class: 'sb-search' }, icon('search'), search, clearBtn),
     els.adSlot = h('div', { class: 'ad-slot' }),
     els.list,
-    // Bottom tabs: Chats | Buzz
+    // Messaging and organization workspaces.
     els.tabs = h('nav', { class: 'sb-tabs', 'aria-label': 'Sections' },
       h('button', { class: 'on', 'data-tab': 'chats', onclick: () => setTab('chats') }, icon('msg'), h('span', null, 'Chats')),
-      h('button', { 'data-tab': 'map', onclick: () => setTab('map') }, icon('map'), h('span', null, 'Map')),
-      h('button', { 'data-tab': 'buzz', onclick: () => setTab('buzz') }, icon('fire'), h('span', null, 'Buzz')),
+      h('button', { 'data-tab': 'work', onclick: () => setTab('work') }, icon('users'), h('span', null, 'Workspace')),
       h('button', { 'data-tab': 'money', onclick: () => setTab('money') }, icon('chart'), h('span', null, 'Money'))));
   showChatAd();
   els.conv = h('section', { class: 'conv' });
-  els.buzz = h('div', { class: 'buzz-pane', hidden: true });
-  els.mapPane = h('div', { class: 'buzz-pane map-pane', hidden: true });
-  els.moneyPane = h('div', { class: 'buzz-pane money-pane', hidden: true });
-  els.main = h('div', { class: 'main' }, els.sidebar, els.conv, els.buzz, els.mapPane, els.moneyPane);
+  els.moneyPane = h('div', { class: 'section-pane money-pane', hidden: true });
+  els.workPane = h('div', { class: 'section-pane workspace-pane', hidden: true });
+  els.main = h('div', { class: 'main' }, els.sidebar, els.conv, els.moneyPane, els.workPane);
   app.append(els.main);
-  S.buzz = initBuzz({
-    api, me: () => S.me, userAvatar, chats: () => sortedChats(), chatTitle, chatAvatar,
-    sendToChat: (chatId, text) => sendPayload(chatId, { kind: 'text', text }),
-    saveRegion: (r) => api('PATCH', '/api/me', { settings: { buzzRegion: r } }).then(({ user: u }) => { S.me = u; }).catch(() => {}),
-    saveSettings: (settings) => api('PATCH', '/api/me', { settings }).then(({ user: u }) => { S.me = u; }).catch((e) => toast(e.message, { error: true })),
-  });
-  S.map = initMap({ api, socket: () => S.socket, me: () => S.me, userAvatar, mergeUsers, message: (u) => { setTab('chats'); startDirect(u).catch((e) => toast(e.message, { error: true })); } });
-  S.map.resume(); // keep sharing your location with friends while the app is open (if you turned it on)
+  S.work = initWorkspaces({ api, me: () => S.me, openChannel: async (id) => { await refreshChat(id); setTab('chats'); openChat(id); } });
   S.money = initMoney({ api, socket: () => S.socket });
   const savedTab = sessionStorage.getItem('pm:tab');
-  if (savedTab === 'buzz' || savedTab === 'map' || savedTab === 'money') setTimeout(() => setTab(savedTab), 0);
+  if (sessionStorage.getItem('pm:workspace-invite')) setTimeout(() => setTab('work'), 0);
+  else if (savedTab === 'money' || savedTab === 'work') setTimeout(() => setTab(savedTab), 0);
   let st;
   search.addEventListener('input', () => { clearBtn.hidden = !search.value; clearTimeout(st); st = setTimeout(() => onSearch(search.value), 150); });
   search.addEventListener('focus', () => { S.searchFocus = true; renderList(); });
@@ -376,7 +373,7 @@ function startApp() {
   connectSocket();
   initAnalytics({ api, socket: S.socket });
   setSocket(S.socket);
-  setScreen(sessionStorage.getItem('pm:tab') === 'buzz' ? 'buzz' : 'chats');
+  setScreen('chats');
   S.calls = initCalls({
     onCallStart: () => pushScreen('call'),
     onCallChange: (c) => { if (!c) popScreen('call'); },
@@ -446,10 +443,8 @@ async function handleUrl(url = new URL(location.href)) {
   // A computer's login QR scanned with the phone's camera app (opens this link): approve it here.
   const link = p.get('link');
   if (link) import('./qr.js').then((q) => q.approveLink(link));
-  // From a Buzz notification: open Buzz with that exact story on top. Or straight to the Map.
-  const story = p.get('buzz');
-  if (story && /^[a-f0-9]{24}$/.test(story)) { setTab('buzz'); S.buzz?.openStory(story); }
-  if (['map', 'buzz', 'money'].includes(p.get('tab'))) setTab(p.get('tab'));
+  // Open supported sections from notification links.
+  if (['money'].includes(p.get('tab'))) setTab(p.get('tab'));
   // Something shared to Ping Me from another app (Android "Share → Ping Me"): a bank SMS goes to
   // Money; anything else starts a new message with it.
   const shared = [p.get('share_text'), p.get('share_url')].filter(Boolean).join(' ').trim();
@@ -520,14 +515,12 @@ function connectSocket() {
   socket.on('pet:event', (ev) => S.pet?.onEvent(ev));
   socket.on('personal-pet:changed', ev => { if (['buy', 'equip', 'customize', 'visibility'].includes(ev.action)) dispatchEvent(new Event('pm:personal-pet')); });
   socket.on('pingcoins', ev => dispatchEvent(new CustomEvent('pm:pingcoins', { detail: ev })));
-  // Messages from Ping Me (the owner's announcements, trending Buzz stories, a hungry group pet).
+  // Messages from Ping Me (the owner's announcements, a hungry group pet).
   socket.on('notice', (n) => {
     if (!n?.title) return;
     const go = () => {
       const chat = /^\/\?chat=(\d+)/.exec(n.url || '');
-      const story = /^\/\?buzz=([a-f0-9]{24})/.exec(n.url || '');
       if (chat) openChat(Number(chat[1]));
-      else if (story) { setTab('buzz'); S.buzz?.openStory(story[1]); }
       else if (n.url && n.url !== '/') window.open(n.url, '_blank', 'noopener');
     };
     if (prefs().sounds && !document.hidden) sounds.tick();
@@ -587,6 +580,7 @@ function connectSocket() {
     renderList();
     if (S.current) { renderHeader(); renderMessages(); }
   });
+  socket.on('workspace:changed', () => { S.work?.refresh(); loadChats(); });
   socket.on('chat:changed', ({ chatId }) => refreshChat(chatId));
   socket.on('scheduled:sent', ({ chatId }) => loadScheduled(chatId));
   socket.on('us:changed', ({ chatId }) => { if (S.current === chatId) renderUsBar(); });
@@ -1015,7 +1009,7 @@ export function openChat(id, { around = null, push = true } = {}) {
   // Opening a chat is one Back step (on every screen size), so Back returns to the list instead of exiting.
   if (push) whenHistorySettled(() => { if (history.state?.chat !== id) history.pushState({ chat: id }, ''); });
   els.main.classList.add('show-conv');
-  if (S.tab === 'buzz' && innerWidth > 760) setTab('chats'); // on computers the chat replaces Buzz
+  if (['money', 'work'].includes(S.tab) && innerWidth > 760) setTab('chats'); // on computers the chat replaces the section
   setScreen(chat.type === 'group' ? 'group' : 'chat');
   if (switching || !els.msgs) buildConv(chat);
   renderList();
@@ -1031,7 +1025,7 @@ export function openChat(id, { around = null, push = true } = {}) {
 
 export function closeChat() {
   saveDraft();
-  setScreen(S.tab === 'buzz' ? 'buzz' : 'chats');
+  setScreen(S.tab === 'money' ? 'money' : 'chats');
   S.pet?.destroy(); S.pet = null;
   stopPersonalPets();
   S.current = null;
@@ -1046,19 +1040,19 @@ function onPopState(e) {
   if (S.current && !e.state?.chat) closeChat();
 }
 
-// Chats | Buzz tabs at the bottom of the main page.
+// Chats | Money tabs at the bottom of the main page.
+addEventListener('pm:workspace', () => { closeChat(); setTab('work'); });
 function setTab(t) {
+  if (!['chats', 'money', 'work'].includes(t)) t = 'chats';
   S.tab = t;
   try { sessionStorage.setItem('pm:tab', t); } catch {}
   els.tabs?.querySelectorAll('button').forEach((b) => b.classList.toggle('on', b.dataset.tab === t));
-  els.main?.classList.toggle('buzz-mode', t === 'buzz' || t === 'map' || t === 'money');
-  if (els.buzz) els.buzz.hidden = t !== 'buzz';
-  if (els.mapPane) els.mapPane.hidden = t !== 'map';
-  if (t === 'buzz') S.buzz?.show(els.buzz); else S.buzz?.hide();
-  if (t === 'map') S.map?.show(els.mapPane); else S.map?.hide();
+  els.main?.classList.toggle('section-mode', t === 'money' || t === 'work');
+  if (els.workPane) els.workPane.hidden = t !== 'work';
+  if (t === 'work') S.work?.show(els.workPane); else S.work?.hide();
   if (els.moneyPane) els.moneyPane.hidden = t !== 'money';
   if (t === 'money') S.money?.show(els.moneyPane); else S.money?.hide();
-  if (!S.current || innerWidth > 760) setScreen(t === 'buzz' || t === 'map' || t === 'money' ? t : S.current ? (S.chats.get(S.current)?.type === 'group' ? 'group' : 'chat') : 'chats');
+  if (!S.current || innerWidth > 760) setScreen(t === 'money' || t === 'work' ? t : S.current ? (S.chats.get(S.current)?.type === 'group' ? 'group' : 'chat') : 'chats');
 }
 
 // The group pet lives in the open group chat.
@@ -1165,6 +1159,7 @@ function stopPersonalPets() { (S.personalPets || []).forEach((p) => p.destroy())
 let petsLoad = 0;
 async function startPersonalPet(chat) {
   stopPersonalPets();
+  if (chat.workspaceId) return;
   const ticket = ++petsLoad;
   let w; try { w = await api('GET', '/api/pets/me'); } catch { return; }
   if (ticket !== petsLoad || S.current !== chat.id || !els.msgs) return;
@@ -1177,6 +1172,7 @@ async function startPersonalPet(chat) {
 function startPet(chat) {
   S.pet?.destroy(); S.pet = null;
   stopPersonalPets();
+  if (chat.workspaceId) return;
   startPersonalPet(chat);
   if (chat.type !== 'group' || !feature('groupPets') || petHidden(chat.id)) return; // pets live in group chats only
   S.pet = mountPet({
@@ -1640,7 +1636,7 @@ function getNode(id, key, build) {
 
 // ─────── link previews ───────
 // The first link in a text message gets a card (title, picture, site) read by our server. A message
-// that is only a link shows just the card. Buzz share links show the story as a Buzz card.
+// that is only a link shows just the card.
 const linkPreviews = new Map(); // url → preview | null | Promise
 const URL_IN_TEXT = /https?:\/\/[^\s<]+[^\s<.,;:!?)\]'"]/;
 const firstUrl = (text) => URL_IN_TEXT.exec(text || '')?.[0] || null;
@@ -1657,12 +1653,10 @@ function linkCard(url, bubble, onlyLink) {
   const keepBottom = () => { if (conv.nearBottom && bubble.isConnected) scrollToBottom(); };
   const fill = (p) => {
     if (!p || (!p.title && !p.image)) return;
-    const site = p.kind === 'buzz' ? [icon('hand'), h('span', null, 'Buzz · ' + p.site)]
-      : p.icon ? [h('img', { class: 'lc-ic', src: p.icon, alt: '', onerror: (e) => e.target.remove() }), h('span', null, p.site)]
+    const site = p.icon ? [h('img', { class: 'lc-ic', src: p.icon, alt: '', onerror: (e) => e.target.remove() }), h('span', null, p.site)]
       : p.kind === 'map' ? [icon('map'), h('span', null, p.site)] : [icon('link'), h('span', null, p.site)];
     const img = p.image ? h('img', { class: 'lc-img', src: p.image, alt: '', decoding: 'async', onload: keepBottom, onerror: (e) => e.target.remove() }) : null;
     card.className = 'link-card k-' + p.kind + (img ? '' : ' no-img');
-    if (p.kind === 'buzz' && p.url) card.href = p.url;
     card.replaceChildren(img || '', h('div', { class: 'lc-body' },
       h('div', { class: 'lc-site' }, site),
       p.title ? h('div', { class: 'lc-title' }, p.title) : null,

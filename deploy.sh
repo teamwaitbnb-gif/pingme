@@ -3,7 +3,7 @@
 # Usage: ./deploy.sh [service-name] [region]
 set -euo pipefail
 
-SERVICE="${1:-ping-me}"
+SERVICE="${1:-pingme}"
 REGION="${2:-asia-south1}"
 cd "$(dirname "$0")"
 

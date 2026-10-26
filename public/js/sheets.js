@@ -95,7 +95,6 @@ export function openSettings() {
         cell({ icon: 'msg', color: '#30b0c7', label: 'SMS backup', sub: me.settings.smsBackup && me.settings.smsPhone ? 'On · ' + me.settings.smsPhone : 'Text when the internet is down', chevron: true, onClick: () => openSmsBackup(draw) }),
         isMobile() ? cell({ icon: 'phone', color: '#34c759', label: 'Never miss a call', sub: 'Ring loud even when Ping Me is closed', chevron: true, onClick: openRingHelp }) : null,
         cell({ icon: 'eye', color: '#ff9500', label: 'Show previews', right: toggle(me.settings.previews, (v) => setPriv('previews', v)) }),
-        cell({ icon: 'fire', color: '#ff6b2c', label: 'Trending on Buzz', sub: 'Up to a couple of big stories a day', right: toggle(me.settings.buzzAlerts !== false, (v) => setPriv('buzzAlerts', v)) }),
         cell({ icon: 'paw', color: '#af52de', label: 'Hungry group pets', sub: 'When a group’s pet needs feeding', right: toggle(me.settings.petAlerts !== false, (v) => setPriv('petAlerts', v)) }),
         cell({ icon: 'vol', color: '#ff2d55', label: 'In-app sounds', right: toggle(p.sounds, (v) => store.set('sounds', v)) })),
 
@@ -103,7 +102,6 @@ export function openSettings() {
       h('div', { class: 'group' },
         cell({ icon: 'check', color: '#0a84ff', label: 'Send read receipts', right: toggle(me.settings.readReceipts, (v) => setPriv('readReceipts', v)) }),
         cell({ icon: 'eye', color: '#af52de', label: 'Show when I view photos', sub: 'Off: your views show as “Someone”, and you can’t see who viewed yours', right: toggle(me.settings.dpViews !== false, (v) => setPriv('dpViews', v)) }),
-        cell({ icon: 'fire', color: '#ff9f0a', label: 'Personalise Buzz from my chats', sub: 'Topic keywords only — never your messages. Off forgets them.', right: toggle(!!me.settings.buzzFromChats, (v) => setPriv('buzzFromChats', v)) }),
         cell({ icon: 'dots', color: '#5856d6', label: 'Show typing indicator', right: toggle(me.settings.typing, (v) => setPriv('typing', v)) }),
         cell({ icon: 'clock', color: '#34c759', label: 'Show online & last seen', right: toggle(me.settings.lastSeen, (v) => setPriv('lastSeen', v)) }),
         cell({ icon: 'ban', color: '#ff3b30', label: 'Blocked contacts', chevron: true, onClick: openBlocked })),
@@ -525,14 +523,15 @@ export function openChatInfo(chatId) {
     const chat = S.chats.get(chatId);
     if (!chat) return s.close();
     const group = chat.type === 'group';
+    const channel = !!chat.workspaceId;
     const other = otherMember(chat);
     const u = other ? user(other) : null;
     const meRole = chat.members.find((m) => m.id === S.me.id)?.role;
     const blocked = other && S.blocked.has(other);
     s.body.replaceChildren(
       h('div', { class: 'profile-top' },
-        h('button', { onclick: group ? () => changeGroupPhoto(chat) : null }, avatar({ id: group ? chat.id : other, name: chatTitle(chat), src: chatAvatar(chat), size: 96, group, zoom: !group })),
-        group ? h('button', { class: 'link small', onclick: () => changeGroupPhoto(chat) }, chat.avatarV ? 'Change photo' : 'Add photo') : null,
+        h('button', { onclick: group && !channel ? () => changeGroupPhoto(chat) : null }, avatar({ id: group ? chat.id : other, name: chatTitle(chat), src: chatAvatar(chat), size: 96, group, zoom: !group })),
+        group && !channel ? h('button', { class: 'link small', onclick: () => changeGroupPhoto(chat) }, chat.avatarV ? 'Change photo' : 'Add photo') : null,
         h('h3', null, chatTitle(chat)),
         u ? h('div', { class: 'u' }, u.username ? '@' + u.username : '', u.online ? ' · Online' : lastSeenText(u) ? ' · ' + lastSeenText(u) : '') : h('div', { class: 'u' }, `${chat.members.length} members`),
         u?.bio ? h('div', { class: 'bio' }, u.bio) : null),
@@ -542,10 +541,10 @@ export function openChatInfo(chatId) {
         h('button', { onclick: () => muteMenu(chat).then(draw) }, icon(isMuted(chat) ? 'bell' : 'belloff'), isMuted(chat) ? 'Unmute' : 'Mute'),
         h('button', { onclick: () => searchInChat(chat, s) }, icon('search'), 'Search')),
 
-      group && feature('groupPets') ? petCard(chat) : null,
-      feature('wrapped') ? h('div', { class: 'group' }, cell({ icon: 'star', color: '#111111', label: 'Chat Wrapped', sub: 'Your month & year together, as a shareable card', chevron: true, onClick: () => openWrapped(chat) })) : null,
+      group && !channel && feature('groupPets') ? petCard(chat) : null,
+      !channel && feature('wrapped') ? h('div', { class: 'group' }, cell({ icon: 'star', color: '#111111', label: 'Chat Wrapped', sub: 'Your month & year together, as a shareable card', chevron: true, onClick: () => openWrapped(chat) })) : null,
 
-      group ? h('div', { class: 'group' },
+      group && !channel ? h('div', { class: 'group' },
         cell({ icon: 'edit', label: 'Group name', value: chat.title || 'Add', chevron: true, onClick: async () => {
           const v = await promptDialog({ title: 'Group name', value: chat.title === 'Group' ? '' : chat.title, maxlength: 80 });
           if (v !== null) { await api('PATCH', `/api/chats/${chat.id}`, { title: v }).catch(err); await refreshChat(chat.id); draw(); }
@@ -557,15 +556,15 @@ export function openChatInfo(chatId) {
           avatar({ id: m.id, name: mu.name, src: userAvatar(m.id), size: 40, online: mu.online, zoom: true }),
           h('div', { class: 't' }, h('b', null, m.id === S.me.id ? `${mu.name} (You)` : mu.name), h('small', null, mu.username ? '@' + mu.username : '')),
           m.role === 'admin' ? h('span', { class: 'tag' }, 'Admin') : null); }),
-        cell({ icon: 'useradd', label: 'Add people', accent: true, onClick: () => addMembers(chat).then(draw) })) : null,
+        !channel ? cell({ icon: 'useradd', label: 'Add people', accent: true, onClick: () => addMembers(chat).then(draw) }) : cell({ icon: 'users', label: 'Manage in Workspace', onClick: () => { s.close(); dispatchEvent(new Event('pm:workspace')); } })) : null,
 
       h('div', { class: 'group' },
-        cell({ icon: 'incognito', color: '#6d4aff', label: chat.incognito ? 'End incognito chat' : 'Incognito chat', sub: chat.incognito ? 'On · messages are deleted when it ends' : 'Messages are deleted for both when it ends', onClick: async () => { s.close(); await toggleIncognito(chat); } }),
-        cell({ icon: 'timer', color: '#5856d6', label: 'Disappearing messages', value: disappearLabel(chat.disappearSecs), chevron: true, onClick: async () => {
+        !channel ? cell({ icon: 'incognito', color: '#6d4aff', label: chat.incognito ? 'End incognito chat' : 'Incognito chat', sub: chat.incognito ? 'On · messages are deleted when it ends' : 'Messages are deleted for both when it ends', onClick: async () => { s.close(); await toggleIncognito(chat); } }) : null,
+        !channel ? cell({ icon: 'timer', color: '#5856d6', label: 'Disappearing messages', value: disappearLabel(chat.disappearSecs), chevron: true, onClick: async () => {
           const opts = [0, -1, 30, 300, 3600, 86400, 604800, 7776000];
           const v = await actionSheet({ title: 'New messages disappear after this time. “After read” removes each message once it’s read — longer messages stay a little longer.', actions: opts.map((x) => ({ label: disappearLabel(x) + (x === chat.disappearSecs ? ' ✓' : ''), value: String(x) })) });
           if (v !== null) { await api('PATCH', `/api/chats/${chat.id}`, { disappearSecs: Number(v) }).catch(err); await refreshChat(chat.id); draw(); }
-        } }),
+        } }) : null,
         cell({ icon: 'pin', color: '#ff9500', label: 'Pinned messages', chevron: true, onClick: () => openPinned(chat) }),
         cell({ icon: 'pin', color: '#8e8e93', label: chat.pinned ? 'Unpin conversation' : 'Pin conversation', onClick: async () => { chat.pinned = !chat.pinned; await api('PATCH', `/api/chats/${chat.id}/prefs`, { pinned: chat.pinned }); renderList(); draw(); } })),
 
@@ -582,7 +581,7 @@ export function openChatInfo(chatId) {
           if (!(await confirmDialog('Clear all messages in this conversation on your devices?', { ok: 'Clear', danger: true }))) return;
           await api('POST', `/api/chats/${chat.id}/clear`); S.msgs.delete(chat.id); s.close(); openChat(chat.id);
         } }),
-        group ? cell({ icon: 'logout', color: '#ff3b30', label: 'Leave this conversation', danger: true, onClick: async () => {
+        channel ? cell({ icon: 'users', label: 'Organization membership', onClick: () => { s.close(); dispatchEvent(new Event('pm:workspace')); } }) : group ? cell({ icon: 'logout', color: '#ff3b30', label: 'Leave this conversation', danger: true, onClick: async () => {
           if (!(await confirmDialog('Leave this group? You won’t get new messages.', { ok: 'Leave', danger: true }))) return;
           await api('DELETE', `/api/chats/${chat.id}/members/${S.me.id}`).catch(err); s.close(); S.chats.delete(chat.id); closeChat();
         } }) : cell({ icon: 'trash', color: '#ff3b30', label: 'Delete conversation', danger: true, onClick: async () => { s.close(); await deleteConversation(chat); } })));
@@ -619,7 +618,7 @@ async function changeGroupPhoto(chat) {
 async function memberMenu(chat, m, meRole) {
   if (m.id === S.me.id) return;
   const u = user(m.id);
-  const isAdmin = meRole === 'admin';
+  const isAdmin = meRole === 'admin' && !chat.workspaceId;
   const r = await actionSheet({
     title: u.name, align: 'left',
     actions: [

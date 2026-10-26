@@ -1,12 +1,11 @@
 // Link previews for links shared in chats: title, description, picture and site name, read by our
 // server (never by the recipient's phone, so a link can't reveal their IP address). Pictures are
-// served through a signed proxy. Every fetch goes through the Buzz collector's safeGet: public
+// served through a signed proxy. Every fetch goes through the safe HTTP helper: public
 // addresses only, size and redirect caps, short timeouts.
 const net = require('net');
 const dns = require('dns').promises;
-const { safeGet } = require('./buzz/collect');
-const N = require('./buzz/normalize');
-const { byId } = require('./buzz/sources');
+const { safeGet } = require('./safe-fetch');
+const N = require('./link-text');
 
 const PAGE_BYTES = 1200 * 1024; // safeGet keeps the first part of a larger page instead of failing
 const IMG_BYTES = 4 * 1024 * 1024;
@@ -101,13 +100,6 @@ module.exports = function unfurl({ app, db, C, auth, wrap, bad, rateLimit, publi
   const sign = (u) => C.hmac('unfurl-img:' + u).slice(0, 32);
   const proxied = (u) => (u ? `/api/unfurl/img?u=${encodeURIComponent(u)}&s=${sign(u)}` : null);
 
-  // Our own Buzz share links: <origin>/b/<story id>.
-  async function buzzCard(id) {
-    const r = await db.one('SELECT id, title, summary, ai_summary, image_url, url, source_id, via FROM feed_items WHERE id=?', [id]);
-    if (!r) return null;
-    return { kind: 'buzz', buzzId: r.id, url: r.url, title: clip(r.title, 200), description: clip(r.ai_summary || r.summary, 220), image: r.image_url, site: r.via || byId(r.source_id)?.name || hostOf(r.url) };
-  }
-
   async function fetchPreview(url) {
     const host = hostOf(url);
     const o = await viaOembed(url, host);
@@ -140,10 +132,7 @@ module.exports = function unfurl({ app, db, C, auth, wrap, bad, rateLimit, publi
   }
 
   async function preview(url, req) {
-    const own = new URL(publicOrigin(req));
     const u = new URL(url);
-    const bm = /^\/b\/([a-f0-9]{24})$/.exec(u.pathname);
-    if (bm && (u.host === own.host || u.host === req.get('host'))) return buzzCard(bm[1]);
     const hit = cache.get(url);
     if (hit && Date.now() - hit.at < (hit.data ? TTL : FAIL_TTL)) return hit.data;
     if (!inflight.has(url)) inflight.set(url, fetchPreview(url).catch(() => null).then((d) => { remember(url, d); inflight.delete(url); return d; }));
@@ -192,13 +181,7 @@ module.exports = function unfurl({ app, db, C, auth, wrap, bad, rateLimit, publi
     res.status(508).end();
   }));
 
-  // Buzz share links open the story itself (also outside the app).
-  app.get('/b/:id', wrap(async (req, res) => {
-    const id = String(req.params.id);
-    if (!/^[a-f0-9]{24}$/.test(id)) return res.redirect('/');
-    const r = await db.one('SELECT url FROM feed_items WHERE id=?', [id]);
-    res.redirect(r && /^https?:\/\//.test(r.url) ? r.url : '/');
-  }));
+
 };
 
 function privateIp(ip) {

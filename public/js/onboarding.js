@@ -2,8 +2,6 @@
 // The same list powers Settings → Features.
 import { h, icon, toggle, toast } from './ui.js';
 import { S, api } from './core.js';
-import { storyStrip, openStories } from './stories.js';
-import { featureCards } from './cards.js';
 
 export const FEATURE_GROUPS = [
   {
@@ -68,41 +66,22 @@ export function featureList(features, onChange) {
 }
 
 export function showOnboarding(onDone) {
-  const features = { ...(S.config.features || {}), ...(S.me.settings.features || {}) };
-  const privacy = { readReceipts: S.me.settings.readReceipts, typing: S.me.settings.typing, lastSeen: S.me.settings.lastSeen };
-  const list = h('div');
-  const strip = h('div');
-  const draw = () => {
-    strip.replaceChildren(storyStrip(FEATURE_GROUPS, features, (k, v) => { features[k] = v; draw(); }));
-    drawList();
-  };
-  const all = FEATURE_GROUPS.flatMap((g) => g.items);
-  const set = (k, v) => { features[k] = v; draw(); };
-  const drawList = () => list.replaceChildren(
-    ...featureCards(FEATURE_GROUPS, features, set, (key) => openStories(all, all.findIndex((it) => it[0] === key), features, set)),
-    h('div', { class: 'group-label' }, 'Privacy'),
-    h('div', { class: 'group feat-group' }, PRIVACY.map((it) => row(it, privacy[it[0]] !== false, (k, v) => { privacy[k] = v; }))));
-  const btn = h('button', { class: 'btn', onclick: async () => {
-    btn.disabled = true;
+  const error = h('p', { class: 'wk-error', role: 'alert' });
+  const button = h('button', { class: 'btn', onclick: async () => {
+    button.disabled = true;
     try {
-      const { user } = await api('PATCH', '/api/me', { settings: { ...privacy, features, onboarded: true } });
-      S.me = user;
-      root.remove();
-      onDone?.();
-    } catch (e) { toast(e.message, { error: true }); btn.disabled = false; }
-  } }, 'Start pinging');
-  const root = h('div', { class: 'onboard' },
-    h('div', { class: 'onboard-in' },
-      h('img', { class: 'onboard-hand', src: '/icons/hand.svg', alt: '' }),
-      h('h1', null, `Hi ${S.me.name.split(' ')[0]}`),
-      h('p', { class: 'sub' }, 'Tap a circle to see each feature in action. Keep what you like — change anything later in Settings → Features.'),
-      strip,
-      h('div', { class: 'onboard-all' },
-        h('button', { class: 'link', onclick: () => { for (const g of FEATURE_GROUPS) for (const [k] of g.items) features[k] = true; draw(); } }, 'Turn all on'),
-        h('span', { class: 'muted' }, ' · '),
-        h('button', { class: 'link', onclick: () => { for (const g of FEATURE_GROUPS) for (const [k] of g.items) features[k] = false; draw(); } }, 'Keep it simple (all off)')),
-      list),
-    h('div', { class: 'onboard-foot' }, btn));
-  draw();
+      const { user } = await api('PATCH', '/api/me', { settings: { onboarded: true } });
+      S.me = user; root.remove(); onDone?.(); dispatchEvent(new Event('pm:workspace'));
+    } catch (e) { error.textContent = e.message; button.disabled = false; }
+  } }, 'Open Workspace');
+  const root = h('div', { class: 'onboard' }, h('div', { class: 'onboard-in wk-welcome' },
+    h('h1', null, 'Welcome to Ping Me'),
+    h('p', { class: 'sub' }, 'A place for your team to talk and work together.'),
+    h('div', { class: 'wk-welcome-grid' },
+      h('div', null, icon('users'), h('h2', null, 'Your organization'), h('p', null, 'Create a workspace or accept an invitation from your team.')),
+      h('div', null, icon('msg'), h('h2', null, 'Conversations in channels'), h('p', null, 'Keep projects organized with channels, messages, and shared files.')),
+      h('div', null, icon('video'), h('h2', null, 'Connect with a call'), h('p', null, 'Start an audio or video call right from a conversation.'))),
+    h('p', { class: 'muted' }, 'Owners and admins manage your organization. You control your profile, status, and notification preferences in Settings.'), error),
+    h('div', { class: 'onboard-foot' }, button));
   document.body.append(root);
 }

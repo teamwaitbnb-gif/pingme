@@ -18,7 +18,7 @@ const COOKIE = 'mm_sess';
 // Identifies this running copy of the server (changes on every deploy).
 const INSTANCE_ID = (process.env.K_REVISION || 'local') + '-' + require('crypto').randomBytes(4).toString('hex');
 const REACTION_MAX = 16;
-const DEFAULT_SETTINGS = { readReceipts: true, typing: true, lastSeen: true, previews: true, dpViews: true, buzzAlerts: true, petAlerts: true };
+const DEFAULT_SETTINGS = { readReceipts: true, typing: true, lastSeen: true, previews: true, dpViews: true, petAlerts: true };
 // Advanced features each person can switch on/off (first-run setup + Settings → Features).
 const FEATURES = {
   scamRadar: true, promiseTracker: true, intentTags: true, secureMessages: true, eyesOnly: true,
@@ -212,8 +212,8 @@ async function membersOf(chatIds, viewerId) {
 
 async function serializeChats(viewerId, chatId = null) {
   const rows = await db.q(
-    `SELECT c.*, cm.role, cm.last_read_id, cm.cleared_before_id, cm.muted_until, cm.pinned, cm.archived, cm.removed
-       FROM chat_members cm JOIN chats c ON c.id = cm.chat_id
+    `SELECT c.*, wc.workspace_id, cm.role, cm.last_read_id, cm.cleared_before_id, cm.muted_until, cm.pinned, cm.archived, cm.removed
+       FROM chat_members cm JOIN chats c ON c.id = cm.chat_id LEFT JOIN workspace_channels wc ON wc.chat_id=c.id
       WHERE cm.user_id=? AND cm.active=1 ${chatId ? 'AND c.id=?' : ''}
       ORDER BY c.last_msg_at DESC`,
     chatId ? [viewerId, chatId] : [viewerId]
@@ -250,6 +250,7 @@ async function serializeChats(viewerId, chatId = null) {
     return {
       id,
       type: r.type,
+      workspaceId: r.workspace_id ? Number(r.workspace_id) : null,
       title: C.dec(r.title_enc) || '',
       avatarV: Number(r.avatar_v) || 0,
       createdBy: Number(r.created_by),
@@ -319,11 +320,11 @@ function notifyText(m) {
   }
 }
 
-// A message that is only a link reads as "Link · site" (or "Buzz story") in lists and notifications.
+// A message that is only a link reads as "Link · site" in lists and notifications.
 function linkOnly(text) {
   const t = (text || '').trim();
   if (!/^https?:\/\/\S+$/.test(t)) return null;
-  try { const u = new URL(t); return /^\/b\/[a-f0-9]{24}$/.test(u.pathname) ? 'Shared a Buzz story' : 'Link · ' + u.hostname.replace(/^www\./, ''); } catch { return null; }
+  try { const u = new URL(t); return 'Link · ' + u.hostname.replace(/^www\./, ''); } catch { return null; }
 }
 
 function preview(m) {
@@ -588,11 +589,6 @@ async function insertMessage({ chatId, senderId, kind, body, replyTo = null, att
   }
 
   if (kind !== 'system') notifyMembers(chatId, senderId, msg, members).catch(() => {});
-  // Buzz personalisation from chats (only if the sender turned it on): topic keywords from their own
-  // text messages — never private/eyes-only/ink messages, and the message itself isn't stored there.
-  if (kind === 'text' && body.text && !body.secure && !body.eyes && effect !== 'ink' && !incognito) {
-    getUser(senderId).then((u) => { if (u?.settings?.buzzFromChats) buzz.learnFromChat(senderId, body.text); }).catch(() => {});
-  }
   return msg;
 }
 
@@ -1189,11 +1185,6 @@ app.patch('/api/me', auth, wrap(async (req, res) => {
         s.status = { kind: st.kind, text: clampStr(String(st.text || ''), 80).trim(), until };
       }
     }
-    if (typeof inSet.buzzFromChats === 'boolean') {
-      s.buzzFromChats = inSet.buzzFromChats;
-      if (!inSet.buzzFromChats) buzz.forgetChatInterests(req.uid).catch(() => {}); // turning it off forgets everything learned
-    }
-    if (typeof inSet.buzzRegion === 'string' && (inSet.buzzRegion === 'india' || Object.prototype.hasOwnProperty.call(require('./buzz/sources').CITIES, inSet.buzzRegion))) s.buzzRegion = inSet.buzzRegion;
     if (typeof inSet.smsPhone === 'string') {
       const digits = inSet.smsPhone.replace(/[\s()-]/g, '');
       if (digits && !/^\+?[0-9]{7,15}$/.test(digits)) throw bad('Enter a valid phone number, like +91 98765 43210');
@@ -1284,6 +1275,7 @@ app.post('/api/me/sessions/logout-others', auth, wrap(async (req, res) => {
 
 app.delete('/api/me', auth, wrap(async (req, res) => {
   rateLimit('del:' + req.uid, 5, 60000);
+  if (await db.one('SELECT 1 x FROM workspace_members WHERE user_id=? LIMIT 1', [req.uid])) throw bad('Leave your organizations before deleting your account; owners must assign another owner first');
   res.on('finish', () => { if (res.statusCode < 300) monitor.log(req.uid, 'deleted'); });
   const row = await db.one('SELECT pass_hash FROM users WHERE id=?', [req.uid]);
   const u = await getUser(req.uid);
@@ -1294,7 +1286,7 @@ app.delete('/api/me', auth, wrap(async (req, res) => {
   }
   const chats = await db.q('SELECT chat_id FROM chat_members WHERE user_id=? AND active=1', [req.uid]);
   await db.q('UPDATE chat_members SET active=0 WHERE user_id=?', [req.uid]);
-  for (const t of ['sessions', 'push_subs', 'oauth_accounts', 'user_locations', 'money_tx', 'money_prefs']) await db.q(`DELETE FROM ${t} WHERE user_id=?`, [req.uid]);
+  for (const t of ['sessions', 'push_subs', 'oauth_accounts', 'money_tx', 'money_prefs']) await db.q(`DELETE FROM ${t} WHERE user_id=?`, [req.uid]);
   await db.q('DELETE FROM blocks WHERE user_id=? OR blocked_id=?', [req.uid, req.uid]);
   await db.q('DELETE FROM scheduled_messages WHERE sender_id=?', [req.uid]);
   await db.q('DELETE FROM users WHERE id=?', [req.uid]);
@@ -1508,6 +1500,9 @@ app.get('/api/chats/:id/sms-contact', auth, wrap(async (req, res) => {
   const blocked = u && (await isBlockedBetween(req.uid, u.id));
   res.json({ phone: u && !blocked && u.settings.smsBackup && u.settings.smsPhone ? u.settings.smsPhone : null });
 }));
+
+require('./workspaces')({ app, db, C, auth, wrap, rateLimit, publicUser, getUser, emitToUser, joinUserToChat,
+  disconnectUser: (uid) => { for (const s of online.get(uid) || []) s.disconnect(true); }, publicOrigin });
 
 app.get('/api/chats/:id', auth, wrap(async (req, res) => {
   const id = toInt(req.params.id);
@@ -1965,20 +1960,16 @@ const advanced = require('./features')({
   serializeMessagesFor: serializeMessages, monitor,
 });
 
-// Buzz: the live news feed tab.
-const buzz = require('./buzz')({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, rateLimit, publicUser, ms });
-// Link previews for links shared in chats (+ Buzz share links).
+// Link previews for links shared in chats.
 require('./unfurl')({ app, db, C, auth, wrap, bad, rateLimit, publicOrigin });
 // Usage analytics + the owner's admin portal (/admin, unlocked with ADMIN_KEY).
-const adminPortal = require('./admin')({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online, buzz, monitor, activeCalls: () => calls.size, petState: advanced.petState });
-// Owner notifications: one-off messages from the admin page + automatic Buzz / hungry-pet alerts.
+const adminPortal = require('./admin')({ app, io, db, C, auth, wrap, bad, rateLimit, publicUser, getUser, parseCookies, online, monitor, activeCalls: () => calls.size, petState: advanced.petState });
+// Owner notifications: one-off messages from the admin page + automatic hungry-pet alerts.
 // Money: expense tracker fed by the person's own bank SMS (forwarded by their phone).
 require('./money')({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, rateLimit, emitToUser, push, monitor, publicOrigin });
-// Friends map: opt-in location sharing with friends.
-require('./location')({ app, db, C, auth, wrap, bad, toInt, rateLimit, emitToUser, getUser, userPublic: publicUser, monitor });
-// In-app ads (photo/video, in Buzz and above the chat list), managed from the admin page.
-require('./ads')({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, isAdmin: adminPortal.isAdmin, media, express, buzz });
-const notifier = require('./notify')({ app, db, C, push, emitToUser, getUser, isAdmin: adminPortal.isAdmin, wrap, bad, toInt, clampStr, buzz, petState: advanced.petState, monitor, pushStats: () => pushStats });
+// In-app ads (photo/video, above the chat list), managed from the admin page.
+require('./ads')({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, isAdmin: adminPortal.isAdmin, media, express });
+const notifier = require('./notify')({ app, db, C, push, emitToUser, getUser, isAdmin: adminPortal.isAdmin, wrap, bad, toInt, clampStr, petState: advanced.petState, monitor, pushStats: () => pushStats });
 
 app.use('/api', (req, res) => res.status(404).json({ error: 'Not found' }));
 
@@ -2613,7 +2604,6 @@ db.init().then(async () => {
     }
     throw e;
   });
-  buzz.start(); // background news collection (needs the database)
   server.listen(PORT, () => console.log(`Ping Me running on http://localhost:${PORT}`));
   // On redeploy Cloud Run stops the old copy: disconnect everyone cleanly so phones reconnect to the new one.
   process.on('SIGTERM', () => { io.disconnectSockets(true); server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 3000).unref(); });

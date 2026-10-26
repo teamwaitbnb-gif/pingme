@@ -1,7 +1,7 @@
 {
   "name": "ping-me",
   "version": "1.0.0",
-  "description": "Ping Me - encrypted messaging and HD video calling PWA",
+  "description": "Ping Me - organization channels, team messaging and HD calls",
   "main": "server/index.js",
   "type": "commonjs",
   "scripts": {
@@ -19,7 +19,6 @@
     "compression": "^1.8.2",
     "dotenv": "^16.6.1",
     "express": "^4.22.3",
-    "fast-xml-parser": "^4.5.3",
     "mysql2": "^3.24.6",
     "socket.io": "^4.8.4",
     "web-push": "^3.6.7"

@@ -1,13 +1,13 @@
 // In-app ads, run by the owner from the admin page. Each ad is a photo or a video with a headline,
-// a short text, a button and a link. Placements: inside the Buzz feed, and a banner above the chat
+// a short text, a button and a link. Placements: a banner above the chat
 // list. Ads can target a city, run between dates, and be weighted. Every ad is clearly marked
 // "Sponsored". Views (shown on screen for a second) and taps are counted per day.
 const crypto = require('crypto');
 
-const PLACEMENTS = ['buzz', 'chats'];
+const PLACEMENTS = ['chats'];
 const MAX_MEDIA = 40 * 1024 * 1024; // 40 MB per photo/video
 
-module.exports = function ads({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, isAdmin, media, express, buzz }) {
+module.exports = function ads({ app, db, C, auth, wrap, bad, notFound, toInt, clampStr, isAdmin, media, express }) {
   const adminOnly = (req, res, next) => (isAdmin(req) ? next() : res.status(401).json({ error: 'Admin key required' }));
   const istDay = (t = Date.now()) => new Date(t + 5.5 * 3600e3).toISOString().slice(0, 10);
 
@@ -33,7 +33,7 @@ module.exports = function ads({ app, db, C, auth, wrap, bad, notFound, toInt, cl
     text: a.text, cta: a.cta, url: a.url, weight: a.weight, every: a.every });
 
   app.get('/api/ads', auth, wrap(async (req, res) => {
-    const placement = PLACEMENTS.includes(String(req.query.placement)) ? String(req.query.placement) : 'buzz';
+    const placement = PLACEMENTS.includes(String(req.query.placement)) ? String(req.query.placement) : 'chats';
     const region = String(req.query.region || 'india');
     res.set('Cache-Control', 'no-store');
     res.json({ ads: (await running()).filter((a) => a.placement === placement && (a.region === 'all' || a.region === region)).map(forPhone) });
@@ -84,7 +84,7 @@ module.exports = function ads({ app, db, C, auth, wrap, bad, notFound, toInt, cl
     const by = new Map(stats.map((s) => [Number(s.ad_id), s]));
     res.json({
       ads: rows.map((r) => { const a = view(r); const s = by.get(a.id) || {}; return { ...a, mediaUrl: a.mediaId ? `/api/admin/ads/media/${a.mediaId}` : null, views: Number(s.views || 0), clicks: Number(s.clicks || 0), todayViews: Number(s.today_views || 0), todayClicks: Number(s.today_clicks || 0) }; }),
-      cities: [{ id: 'all', name: 'Everywhere' }, ...Object.entries(buzz.CITIES).map(([id, x]) => ({ id, name: x.name })).sort((a, b) => a.name.localeCompare(b.name)), { id: 'india', name: 'People who chose “All of India”' }],
+      cities: [{ id: 'all', name: 'Everyone' }],
     });
   }));
   // Admin preview of the media (same bytes, admin cookie instead of a user session).
@@ -118,14 +118,14 @@ module.exports = function ads({ app, db, C, auth, wrap, bad, notFound, toInt, cl
   // Create or update an ad.
   app.post('/api/admin/ads', adminOnly, wrap(async (req, res) => {
     const b = req.body || {};
-    const placement = PLACEMENTS.includes(b.placement) ? b.placement : 'buzz';
+    const placement = PLACEMENTS.includes(b.placement) ? b.placement : 'chats';
     const url = String(b.url || '').trim();
     if (url && !/^https:\/\//.test(url)) throw bad('The link must start with https://');
     const headline = clampStr(String(b.headline || ''), 90).trim();
     if (!headline) throw bad('Add a headline');
     const mediaId = toInt(b.mediaId);
     if (!mediaId || !(await db.one('SELECT 1 x FROM attachments WHERE id=? AND chat_id=0 AND complete=1', [mediaId]))) throw bad('Upload a photo or video first');
-    const region = b.region === 'all' || buzz.REGIONS.has(String(b.region)) ? String(b.region) : 'all';
+    const region = 'all';
     const data = {
       name: clampStr(String(b.name || headline), 60), advertiser: clampStr(String(b.advertiser || ''), 40).trim(), headline,
       text: clampStr(String(b.text || ''), 180).trim(), cta: clampStr(String(b.cta || 'Learn more'), 24).trim() || 'Learn more', url,

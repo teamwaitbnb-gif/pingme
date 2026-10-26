@@ -1,9 +1,10 @@
 const fs = require('fs');
 const mysql = require('mysql2/promise');
 
-let pool, bgPool;
+let pool;
 
 const SCHEMA = [
+  ...require('./workspaces').SCHEMA,
   `CREATE TABLE IF NOT EXISTS pet_wallets (
     user_id BIGINT UNSIGNED PRIMARY KEY,
     state_enc MEDIUMTEXT NOT NULL
@@ -115,29 +116,10 @@ const SCHEMA = [
     user_id BIGINT UNSIGNED NOT NULL,
     day DATE NOT NULL,
     secs INT NOT NULL DEFAULT 0,
-    buzz TINYINT NOT NULL DEFAULT 0,
-    buzz_secs INT NOT NULL DEFAULT 0,
     opens INT NOT NULL DEFAULT 0,
     PRIMARY KEY (user_id, day), INDEX (day)
   )`,
-  `CREATE TABLE IF NOT EXISTS user_interests (
-    user_id BIGINT UNSIGNED PRIMARY KEY,
-    data_enc MEDIUMTEXT NOT NULL,
-    updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
-  )`,
-  // Buzz impressions: each story a person has seen (so it never comes back) and which part of the
-  // algorithm served it (p personal · m section mix · t trending · x explore · r more-like-this ·
   // g no profile yet) — the admin portal measures each part against the others.
-  `CREATE TABLE IF NOT EXISTS feed_seen (
-    user_id BIGINT UNSIGNED NOT NULL,
-    item_id CHAR(24) NOT NULL,
-    slot CHAR(1) NOT NULL DEFAULT 'g',
-    topic VARCHAR(20) NULL,
-    source_id VARCHAR(40) NULL,
-    seq INT UNSIGNED NOT NULL DEFAULT 0,
-    seen_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (user_id, item_id), INDEX (seen_at), INDEX (user_id, seen_at)
-  )`,
   // Admin: what each account did (sign-up, sign-in, photo/name changes, calls…). Metadata only, encrypted.
   `CREATE TABLE IF NOT EXISTS activity_log (
     id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
@@ -211,57 +193,6 @@ const SCHEMA = [
     standalone TINYINT NOT NULL DEFAULT 0,
     updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
   )`,
-  `CREATE TABLE IF NOT EXISTS feed_sources (
-    id VARCHAR(40) PRIMARY KEY,
-    etag VARCHAR(255) NULL,
-    last_modified VARCHAR(100) NULL,
-    last_ok DATETIME(3) NULL,
-    last_attempt DATETIME(3) NULL,
-    next_try DATETIME(3) NULL,
-    fails INT NOT NULL DEFAULT 0,
-    status VARCHAR(20) NOT NULL DEFAULT 'pending',
-    error VARCHAR(300) NULL,
-    items INT NOT NULL DEFAULT 0,
-    logo MEDIUMBLOB NULL,
-    logo_type VARCHAR(60) NULL,
-    logo_at DATETIME(3) NULL
-  )`,
-  `CREATE TABLE IF NOT EXISTS feed_items (
-    id CHAR(24) PRIMARY KEY,
-    source_id VARCHAR(40) NOT NULL,
-    region VARCHAR(20) NOT NULL,
-    topic VARCHAR(20) NOT NULL,
-    url VARCHAR(1024) NOT NULL,
-    title VARCHAR(600) NOT NULL,
-    summary TEXT NULL,
-    image_url VARCHAR(1024) NULL,
-    video_url VARCHAR(1024) NULL,
-    via VARCHAR(160) NULL,
-    discuss_url VARCHAR(300) NULL,
-    engagement TEXT NULL,
-    src_rank INT NULL,
-    published_at DATETIME(3) NULL,
-    fetched_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    enriched TINYINT NOT NULL DEFAULT 0,
-    ai_summary TEXT NULL,
-    ai_model VARCHAR(60) NULL,
-    ai_tries TINYINT NOT NULL DEFAULT 0,
-    INDEX (region, fetched_at),
-    INDEX (published_at)
-  )`,
-  `CREATE TABLE IF NOT EXISTS feed_likes (
-    item_id CHAR(24) NOT NULL, user_id BIGINT UNSIGNED NOT NULL, created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (item_id, user_id)
-  )`,
-  `CREATE TABLE IF NOT EXISTS feed_reposts (
-    item_id CHAR(24) NOT NULL, user_id BIGINT UNSIGNED NOT NULL, created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    PRIMARY KEY (item_id, user_id), INDEX (user_id)
-  )`,
-  `CREATE TABLE IF NOT EXISTS feed_comments (
-    id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY, item_id CHAR(24) NOT NULL, user_id BIGINT UNSIGNED NOT NULL,
-    body_enc TEXT NOT NULL, created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    INDEX (item_id)
-  )`,
   `CREATE TABLE IF NOT EXISTS chat_pets (
     chat_id BIGINT UNSIGNED PRIMARY KEY,
     caged TINYINT NOT NULL DEFAULT 0,
@@ -295,13 +226,6 @@ const SCHEMA = [
     data_enc TEXT NOT NULL,
     link_hash CHAR(64) NULL,
     UNIQUE KEY (link_hash)
-  )`,
-  // Friends map: who each person shares their location with, and their latest location (both encrypted).
-  `CREATE TABLE IF NOT EXISTS user_locations (
-    user_id BIGINT UNSIGNED PRIMARY KEY,
-    share_enc TEXT NOT NULL,
-    loc_enc TEXT NULL,
-    updated_at DATETIME(3) NULL
   )`,
   // In-app ads run from the admin page (details encrypted like everything else) and their daily numbers.
   `CREATE TABLE IF NOT EXISTS ads (
@@ -480,9 +404,7 @@ async function init() {
   await boot.end();
 
   pool = mysql.createPool({ ...base, database: dbName, connectionLimit: 10, waitForConnections: true, enableKeepAlive: true });
-  // Background work (collecting Buzz news, enriching stories) gets its own 3 connections, so it can
   // never make people wait for the database.
-  bgPool = mysql.createPool({ ...base, database: dbName, connectionLimit: 3, waitForConnections: true, enableKeepAlive: true });
   for (const sql of SCHEMA) await pool.query(sql);
   await migrate(dbName);
   return pool;
@@ -513,10 +435,6 @@ async function migrate(dbName) {
   }
   const sessions = await cols('sessions');
   if (!sessions.has('device_hash')) await pool.query('ALTER TABLE sessions ADD COLUMN device_hash CHAR(64) NULL AFTER ua_enc');
-  const fitems = await cols('feed_items');
-  if (fitems.size && !fitems.has('ai_summary')) await pool.query('ALTER TABLE feed_items ADD COLUMN ai_summary TEXT NULL, ADD COLUMN ai_model VARCHAR(60) NULL, ADD COLUMN ai_tries TINYINT NOT NULL DEFAULT 0');
-  const fsrc = await cols('feed_sources');
-  if (fsrc.size && !fsrc.has('logo')) await pool.query('ALTER TABLE feed_sources ADD COLUMN logo MEDIUMBLOB NULL, ADD COLUMN logo_type VARCHAR(60) NULL, ADD COLUMN logo_at DATETIME(3) NULL');
   const members = await cols('chat_members');
   if (!members.has('removed')) {
     // "Deleted" conversations used to be parked in Archived; give them their own hidden state.
@@ -545,9 +463,4 @@ const q = (sql, params) => {
   return pool.query(sql, params).then(([rows]) => rows).finally(() => { if (hooks.onQuery) { try { hooks.onQuery(sql, Number(process.hrtime.bigint() - t) / 1e6); } catch {} } });
 };
 const one = async (sql, params) => (await q(sql, params))[0] || null;
-const bg = {
-  q: (sql, params) => (bgPool || pool).query(sql, params).then(([rows]) => rows),
-  one: async (sql, params) => (await bg.q(sql, params))[0] || null,
-};
-
-module.exports = { init, q, one, bg, hooks, get pool() { return pool; } };
+module.exports = { init, q, one, hooks, get pool() { return pool; } };
